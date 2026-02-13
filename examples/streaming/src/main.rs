@@ -16,7 +16,11 @@ use odyssey_rs::core::{
 use odyssey_rs::init_logging;
 use odyssey_rs::memory::FileMemoryProvider;
 use odyssey_rs::protocol::EventPayload;
-use odyssey_rs_sandbox::{BubblewrapProvider, LocalSandboxProvider, SandboxProvider};
+#[cfg(target_os = "linux")]
+use odyssey_rs_sandbox::BubblewrapProvider;
+#[cfg(not(target_os = "linux"))]
+use odyssey_rs_sandbox::LocalSandboxProvider;
+use odyssey_rs_sandbox::SandboxProvider;
 use odyssey_rs_tools::builtin_tool_registry;
 use std::io::{self, Write};
 use std::{path::Path, sync::Arc};
@@ -38,10 +42,15 @@ async fn main() -> Result<()> {
         .build()
         .context("failed to build OpenAI LLM provider")?;
 
-    let sandbox_provider = if std::env::consts::OS == "linux" {
-        "bubblewrap"
-    } else {
-        "local"
+    let sandbox_provider = {
+        #[cfg(target_os = "linux")]
+        {
+            "bubblewrap"
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            "local"
+        }
     };
 
     let config = OdysseyConfig::builder()
@@ -92,11 +101,18 @@ async fn main() -> Result<()> {
         memory_clone,
     );
 
-    let sandbox: Option<Arc<dyn SandboxProvider>> = if std::env::consts::OS == "linux" {
-        Some(Arc::new(BubblewrapProvider::new().unwrap()))
-    } else {
-        //Not yet supported
-        Some(Arc::new(LocalSandboxProvider::default()))
+    let sandbox: Option<Arc<dyn SandboxProvider>> = {
+        #[cfg(target_os = "linux")]
+        {
+            Some(Arc::new(
+                BubblewrapProvider::new().context("failed to init bubblewrap provider")?,
+            ))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // Not yet supported.
+            Some(Arc::new(LocalSandboxProvider::default()))
+        }
     };
 
     let orchestrator = Orchestrator::new(config, tools, sandbox, None, Some(skill_store), None)?;

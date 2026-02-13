@@ -35,7 +35,11 @@ use odyssey_rs_core::{
 };
 use odyssey_rs_memory::FileMemoryProvider;
 use odyssey_rs_protocol::ApprovalDecision;
-use odyssey_rs_sandbox::{BubblewrapProvider, LocalSandboxProvider, SandboxProvider};
+#[cfg(target_os = "linux")]
+use odyssey_rs_sandbox::BubblewrapProvider;
+#[cfg(not(target_os = "linux"))]
+use odyssey_rs_sandbox::LocalSandboxProvider;
+use odyssey_rs_sandbox::SandboxProvider;
 use odyssey_rs_tools::builtin_tool_registry;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -183,11 +187,18 @@ async fn main() -> anyhow::Result<()> {
             .context("failed to create memory provider")?,
     );
     let cwd = std::env::current_dir().context("failed to resolve current working directory")?;
-    let sandbox: Option<Arc<dyn SandboxProvider>> = if std::env::consts::OS == "linux" {
-        Some(Arc::new(BubblewrapProvider::new().unwrap()))
-    } else {
-        //Not yet supported
-        Some(Arc::new(LocalSandboxProvider::default()))
+    let sandbox: Option<Arc<dyn SandboxProvider>> = {
+        #[cfg(target_os = "linux")]
+        {
+            Some(Arc::new(
+                BubblewrapProvider::new().context("failed to init bubblewrap provider")?,
+            ))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // Not yet supported.
+            Some(Arc::new(LocalSandboxProvider::default()))
+        }
     };
     let skill_store =
         Arc::new(SkillStore::load(&config.skills, &cwd).context("failed to load skills")?);
