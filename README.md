@@ -11,7 +11,7 @@
 [![codecov](https://codecov.io/gh/liquidos-ai/Odyssey/graph/badge.svg)](https://codecov.io/gh/liquidos-ai/Odyssey)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/liquidos-ai/Odyssey)
 
-[Examples](examples/) | [Contributing](CONTRIBUTING.md)
+[Documentation](https://liquidos-ai.github.io/Odyssey/) | [Examples](examples/) | [Contributing](CONTRIBUTING.md)
 
 </div>
 
