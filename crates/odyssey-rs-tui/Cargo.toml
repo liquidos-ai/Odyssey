@@ -10,6 +10,7 @@ categories.workspace = true
 readme.workspace = true
 
 [features]
+default = []
 local = ["dep:autoagents-llamacpp"]
 cuda = ["local", "autoagents-llamacpp/cuda"]
 metal = ["local", "autoagents-llamacpp/metal"]

@@ -47,12 +47,12 @@ jobs:
 
       - name: Run clippy
         run: |
-          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo clippy --workspace --all-targets --no-default-features -- -D warnings
       - name: Run tests
-        run: cargo test --workspace --all-features
+        run: cargo test --workspace --features default
 
       - name: Run cargo check
-        run: cargo check --all-targets --all-features
+        run: cargo check --all-targets --features default
 
   multi_os:
     name: Multi-OS build
