@@ -6,6 +6,10 @@
 **Agent Orcehstrator SDK in Rust with Batteries included**
 
 [![License](https://img.shields.io/crates/l/odyssey-rs.svg)](https://github.com/liquidos-ai/Odyssey#license)
+[![Documentation](https://docs.rs/odyssey/badge.svg)](https://liquidos-ai.github.io/Odyssey)
+[![Build Status](https://github.com/liquidos-ai/Odyssey/workflows/Coverage/badge.svg)](https://github.com/liquidos-ai/Odyssey/actions)
+[![codecov](https://codecov.io/gh/liquidos-ai/Odyssey/graph/badge.svg)](https://codecov.io/gh/liquidos-ai/Odyssey)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/liquidos-ai/Odyssey)
 
 [Examples](examples/) | [Contributing](CONTRIBUTING.md)
 
