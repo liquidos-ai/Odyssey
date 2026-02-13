@@ -2,8 +2,10 @@
 
 use super::{
     ConfigLayer, ConfigLayerSource, DEFAULT_CONFIG_DIR, DEFAULT_CONFIG_FILE, LoadedLayer,
-    SYSTEM_CONFIG_PATH, SYSTEM_REQUIREMENTS_PATH, SchemaMode, schema,
+    SchemaMode, schema,
 };
+#[cfg(any(unix, windows))]
+use super::{SYSTEM_CONFIG_PATH, SYSTEM_REQUIREMENTS_PATH};
 use crate::ConfigError;
 use directories::UserDirs;
 use log::debug;
@@ -77,7 +79,11 @@ pub(super) fn default_system_config_path() -> Option<PathBuf> {
     {
         Some(PathBuf::from(SYSTEM_CONFIG_PATH))
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        Some(PathBuf::from(SYSTEM_CONFIG_PATH))
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         None
     }
@@ -89,7 +95,11 @@ pub(super) fn default_requirements_path() -> Option<PathBuf> {
     {
         Some(PathBuf::from(SYSTEM_REQUIREMENTS_PATH))
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        Some(PathBuf::from(SYSTEM_REQUIREMENTS_PATH))
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         None
     }

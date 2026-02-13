@@ -31,6 +31,12 @@ const SYSTEM_CONFIG_PATH: &str = "/etc/odyssey/odyssey.json5";
 #[cfg(unix)]
 /// Default requirements path on Unix.
 const SYSTEM_REQUIREMENTS_PATH: &str = "/etc/odyssey/requirements.json5";
+#[cfg(windows)]
+/// Default system config path on Windows.
+const SYSTEM_CONFIG_PATH: &str = "C:\\ProgramData\\odyssey\\odyssey.json5";
+#[cfg(windows)]
+/// Default requirements path on Windows.
+const SYSTEM_REQUIREMENTS_PATH: &str = "C:\\ProgramData\\odyssey\\requirements.json5";
 
 /// Effective config plus metadata about which layers were loaded.
 #[derive(Debug, Clone)]

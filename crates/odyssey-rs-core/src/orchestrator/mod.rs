@@ -24,9 +24,9 @@ use directories::BaseDirs;
 use log::{debug, info, warn};
 use odyssey_rs_config::{OdysseyConfig, SessionsConfig};
 use odyssey_rs_protocol::{EventMsg, EventSink, SkillProvider, SkillSummary, TurnId};
-use odyssey_rs_sandbox::{
-    BubblewrapProvider, LocalSandboxProvider, SandboxProvider, default_provider_name,
-};
+#[cfg(target_os = "linux")]
+use odyssey_rs_sandbox::BubblewrapProvider;
+use odyssey_rs_sandbox::{LocalSandboxProvider, SandboxProvider, default_provider_name};
 use odyssey_rs_tools::{QuestionHandler, ToolRegistry};
 use parking_lot::RwLock;
 use std::path::PathBuf;
@@ -584,9 +584,14 @@ fn build_default_sandbox_provider(
         .to_lowercase();
     info!("initializing sandbox provider (provider={})", provider);
     match provider.as_str() {
+        #[cfg(target_os = "linux")]
         "bubblewrap" | "bwrap" => BubblewrapProvider::new()
             .map(|provider| Arc::new(provider) as Arc<dyn SandboxProvider>)
             .map_err(|err| OdysseyCoreError::Sandbox(err.to_string())),
+        #[cfg(not(target_os = "linux"))]
+        "bubblewrap" | "bwrap" => Err(OdysseyCoreError::Sandbox(
+            "bubblewrap provider is only supported on Linux".to_string(),
+        )),
         "local" | "none" | "nosandbox" => Ok(Arc::new(LocalSandboxProvider::new())),
         other => Err(OdysseyCoreError::Sandbox(format!(
             "unsupported sandbox provider: {other}"
