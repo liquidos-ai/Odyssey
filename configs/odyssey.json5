@@ -1,0 +1,99 @@
+{
+  // Additional agents (the default agent is registered in code).
+  agents: {
+    setting_sources: ["project"],
+    paths: [],
+    list: [
+      {
+        id: "writer",
+        description: "Summarizes files and writes notes.",
+        prompt: "Focus on file-based summaries and avoid destructive actions.",
+        model: { provider: "openai", name: "gpt-4.1-mini" },
+        tools: {
+          allow: ["Read", "Write", "Edit", "Glob", "Grep", "Task", "Skill", "Bash"],
+          deny: ["WebSearch", "WebFetch"]
+        }
+      }
+    ]
+  },
+
+  tools: {
+    output_policy: {
+      max_string_bytes: 200000,
+      max_array_len: 500,
+      max_object_entries: 500,
+      redact_keys: ["api_key", "token", "secret"],
+      redact_values: [],
+      replacement: "[REDACTED]"
+    }
+  },
+
+  permissions: {
+    mode: "default",
+    rules: [
+      { action: "allow", tool: "Bash" },
+      { action: "ask", tool: "Write" },
+      { action: "ask", tool: "Edit" },
+      { action: "allow", tool: "Read" },
+      { action: "allow", tool: "Glob" }
+    ]
+  },
+
+  memory: {
+    enabled: true,
+    provider: "file",
+    path: ".odyssey/memory",
+    recall_k: 8,
+    recall: { mode: "text", min_score: 0.2 },
+    capture: {
+      capture_messages: true,
+      capture_tool_output: false,
+      deny_patterns: [],
+      redact_patterns: [],
+      max_message_chars: 4000,
+      detect_secrets: true,
+      secret_entropy_threshold: 3.7,
+      max_tool_output_chars: 20000
+    },
+    compaction: {
+      enabled: true,
+      max_messages: 200,
+      summary_max_chars: 4000,
+      max_total_chars: 200000
+    },
+    instruction_roots: []
+  },
+
+  skills: {
+    enabled: true,
+    setting_sources: ["project"],
+    paths: ["./configs/skills"],
+    allow: ["*"],
+    deny: []
+  },
+
+  sandbox: {
+    enabled: true,
+    mode: "workspace_write",
+    filesystem: {
+      allow_read: [],
+      deny_read: [],
+      allow_write: [],
+      deny_write: [],
+      allow_exec: ["/usr/bin/curl", "/bin/curl"],
+      deny_exec: []
+    },
+    network: {
+      allow_domains: ["wttr.in", "wttr", "api.open-meteo.com", "open-meteo.com"],
+      deny_domains: []
+    },
+    env: { allow: [], deny: [], set: {} },
+    limits: {}
+  },
+
+  sessions: {
+    enabled: true,
+    provider: "jsonl",
+    path: ".odyssey/sessions"
+  }
+}

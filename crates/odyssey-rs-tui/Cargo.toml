@@ -1,0 +1,36 @@
+[package]
+name = "odyssey-rs-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[features]
+local = ["dep:autoagents-llamacpp"]
+cuda = ["local", "autoagents-llamacpp/cuda"]
+metal = ["local", "autoagents-llamacpp/metal"]
+
+[dependencies]
+odyssey-rs-config.workspace = true
+odyssey-rs-core.workspace = true
+odyssey-rs-memory.workspace = true
+odyssey-rs-protocol.workspace = true
+odyssey-rs-tools.workspace = true
+odyssey-rs-sandbox = { workspace = true }
+autoagents-core.workspace = true
+autoagents-llm = { workspace = true, features = ["openai"] }
+autoagents-llamacpp = { workspace = true, optional = true }
+
+anyhow.workspace = true
+clap.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+env_logger.workspace = true
+log.workspace = true
+sysinfo = "0.38.1"

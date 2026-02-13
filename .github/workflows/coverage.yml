@@ -1,0 +1,69 @@
+name: Coverage
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - ".github/workflows/coverage.yml"
+  # pull_request:
+  #   paths:
+  #     - "crates/**"
+  #     - "Cargo.toml"
+  #     - ".github/workflows/coverage.yml"
+
+jobs:
+  coverage:
+    name: Coverage
+    permissions:
+      contents: read
+      pull-requests: write
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-C target-cpu=native"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Install Rust (via rustup)
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          components: llvm-tools-preview
+
+      - name: Show CPU info
+        run: lscpu
+
+      - name: Install Tarpaulin
+        run: cargo install cargo-tarpaulin
+
+      - name: Generate code coverage
+        run: |
+          cargo tarpaulin \
+            --engine llvm \
+            --skip-clean \
+            --workspace \
+            --exclude odyssey-rs-server \
+            --exclude odyssey-rs-tui \
+            --all-features \
+            --timeout 120 \
+            --out Xml \
+            --ignore-panics
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          verbose: true
+          fail_ci_if_error: true
+          files: ./cobertura.xml
+          branch: ${{ github.ref_name }} # branch name
+          pr: ${{ github.event.pull_request.number || '' }} # PR number if exists

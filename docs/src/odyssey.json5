@@ -1,0 +1,79 @@
+// Odyssey config template (matches current JSON5 schema)
+{
+  orchestrator: {
+    // Accepted by schema but not wired into the runtime yet.
+    system_prompt: "You are the Odyssey Orchestrator.",
+    append_system_prompt: "Keep replies concise.",
+    subagent_window_size: 20,
+  },
+  tools: {
+    output_policy: {
+      max_string_bytes: 32000,
+      max_array_len: 256,
+      max_object_entries: 256,
+      redact_keys: ["api_key", "token"],
+      redact_values: ["sk-"],
+      replacement: "[REDACTED]",
+    },
+  },
+  permissions: {
+    mode: "default",
+    rules: [
+      { action: "ask", tool: "Bash" },
+      { action: "deny", command: ["rm", "-rf"] },
+    ],
+  },
+  memory: {
+    provider: "file",
+    path: ".odyssey/memory",
+    capture: {
+      capture_messages: true,
+      capture_tool_output: false,
+      detect_secrets: true,
+      secret_entropy_threshold: 3.7,
+    },
+    compaction: {
+      enabled: false,
+      max_messages: 40,
+      summary_max_chars: 1500,
+    },
+    instruction_roots: ["."],
+  },
+  skills: {
+    setting_sources: ["user", "project"],
+    paths: [".odyssey/skills"],
+    allow: ["*"],
+    deny: [],
+  },
+  sandbox: {
+    enabled: true,
+    mode: "workspace_write",
+    filesystem: {
+      allow_read: ["."],
+      allow_write: ["."],
+      deny_read: [],
+      deny_write: [],
+      allow_exec: [],
+      deny_exec: [],
+    },
+    network: {
+      allow_domains: [],
+      deny_domains: [],
+    },
+    env: {
+      allow: ["PATH"],
+      deny: [],
+      set: {},
+    },
+    limits: {
+      cpu_seconds: 30,
+      memory_bytes: 1073741824,
+      nofile: 256,
+      pids: 128,
+    },
+  },
+  sessions: {
+    enabled: true,
+    path: ".odyssey/sessions",
+  },
+}
