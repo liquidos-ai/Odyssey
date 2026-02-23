@@ -72,6 +72,7 @@ pub trait CommandOutputSink: Send {
 
 /// Mount specification for sandbox environments.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Mount {
     /// Source path on the host.
     source: PathBuf,
@@ -89,12 +90,15 @@ pub struct PreparedSandbox {
     /// Environment variables to inject.
     env: BTreeMap<String, String>,
     /// Resource limits.
+    #[allow(dead_code)]
     limits: SandboxLimits,
     /// Network policy.
+    #[allow(dead_code)]
     network: SandboxNetworkMode,
     /// Default working directory.
     working_dir: PathBuf,
     /// Mount list for the sandbox.
+    #[allow(dead_code)]
     mounts: Vec<Mount>,
 }
 
@@ -696,12 +700,12 @@ async fn run_local_process(
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
 
-    let limits = prepared.limits.clone();
-
     #[cfg(target_os = "linux")]
-    unsafe {
-        #[cfg(target_os = "linux")]
-        command.pre_exec(move || crate::provider::linux::apply_rlimits(&limits));
+    {
+        let limits = prepared.limits.clone();
+        unsafe {
+            command.pre_exec(move || crate::provider::linux::apply_rlimits(&limits));
+        }
     }
 
     let mut child = command.spawn().map_err(SandboxError::Io)?;
