@@ -206,7 +206,7 @@ async fn main() -> anyhow::Result<()> {
             if openai_registered {
                 model_name.clone()
             } else {
-                String::new()
+                String::default()
             }
         }
         #[cfg(feature = "local")]
@@ -216,7 +216,7 @@ async fn main() -> anyhow::Result<()> {
             } else if let Some(local) = local_registration.as_ref() {
                 local.label.clone()
             } else {
-                String::new()
+                String::default()
             }
         }
     };

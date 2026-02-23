@@ -35,6 +35,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+const ENV_USER: &str = "USER";
+const ENV_USERNAME: &str = "USERNAME";
+
 /// Supported slash commands in the TUI input box.
 enum SlashCommand {
     New,
@@ -109,7 +112,7 @@ pub async fn run(
     debug!("loaded models (count={})", models.len());
     app.set_models(models);
 
-    app.model_id = config.model_id.clone();
+    app.model_id.clone_from(&config.model_id);
     let app_model = if config.model_name.is_empty() {
         config.model_id.clone()
     } else {
@@ -211,85 +214,68 @@ async fn handle_app_event(
     }
 }
 
-/// Handle keyboard input and dispatch actions.
-async fn handle_input(
+/// Handle keyboard input while a viewer panel is open.
+async fn handle_viewer_input(
+    key: KeyEvent,
+    kind: ViewerKind,
+    client: &Arc<OrchestratorClient>,
+    app: &mut App,
+    sender: mpsc::Sender<AppEvent>,
+    stream_handle: &mut Option<JoinHandle<()>>,
+) -> anyhow::Result<bool> {
+    match key.code {
+        KeyCode::Up => match kind {
+            ViewerKind::Sessions => {
+                if app.selected_session > 0 {
+                    app.selected_session -= 1;
+                }
+            }
+            ViewerKind::Skills => app.viewer_scroll_up(1),
+            ViewerKind::Models => {
+                if app.selected_model > 0 {
+                    app.selected_model -= 1;
+                }
+            }
+        },
+        KeyCode::Down => match kind {
+            ViewerKind::Sessions => {
+                if app.selected_session + 1 < app.sessions.len() {
+                    app.selected_session += 1;
+                }
+            }
+            ViewerKind::Skills => app.viewer_scroll_down(1),
+            ViewerKind::Models => {
+                if app.selected_model + 1 < app.models.len() {
+                    app.selected_model += 1;
+                }
+            }
+        },
+        KeyCode::PageUp => app.viewer_scroll_up(5),
+        KeyCode::PageDown => app.viewer_scroll_down(5),
+        KeyCode::Home => app.viewer_scroll_up(u16::MAX),
+        KeyCode::End => app.viewer_scroll_down(u16::MAX),
+        KeyCode::Enter => {
+            if matches!(kind, ViewerKind::Sessions) {
+                activate_selected_session(client, app, sender, stream_handle).await?;
+                app.close_viewer();
+            } else if matches!(kind, ViewerKind::Models) {
+                activate_selected_model(app)?;
+                app.close_viewer();
+            }
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+/// Handle keyboard input in the default (non-viewer) state.
+async fn handle_default_input(
     key: KeyEvent,
     client: &Arc<OrchestratorClient>,
     app: &mut App,
     sender: mpsc::Sender<AppEvent>,
     stream_handle: &mut Option<JoinHandle<()>>,
 ) -> anyhow::Result<bool> {
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-        return Ok(true);
-    }
-    if key.code == KeyCode::Esc {
-        if app.viewer.is_some() {
-            app.close_viewer();
-            return Ok(false);
-        }
-        if app.show_slash_commands {
-            app.show_slash_commands = false;
-            app.input.clear();
-            return Ok(false);
-        }
-        return Ok(true);
-    }
-
-    if let Some(permission) = app.pending_permissions.front().cloned()
-        && matches!(
-            key.code,
-            KeyCode::Char('y') | KeyCode::Char('a') | KeyCode::Char('n')
-        )
-    {
-        return handle_permission_input(key, client, app, permission).await;
-    }
-
-    if let Some(kind) = app.viewer {
-        match key.code {
-            KeyCode::Up => match kind {
-                ViewerKind::Sessions => {
-                    if app.selected_session > 0 {
-                        app.selected_session -= 1;
-                    }
-                }
-                ViewerKind::Skills => app.viewer_scroll_up(1),
-                ViewerKind::Models => {
-                    if app.selected_model > 0 {
-                        app.selected_model -= 1;
-                    }
-                }
-            },
-            KeyCode::Down => match kind {
-                ViewerKind::Sessions => {
-                    if app.selected_session + 1 < app.sessions.len() {
-                        app.selected_session += 1;
-                    }
-                }
-                ViewerKind::Skills => app.viewer_scroll_down(1),
-                ViewerKind::Models => {
-                    if app.selected_model + 1 < app.models.len() {
-                        app.selected_model += 1;
-                    }
-                }
-            },
-            KeyCode::PageUp => app.viewer_scroll_up(5),
-            KeyCode::PageDown => app.viewer_scroll_down(5),
-            KeyCode::Home => app.viewer_scroll_up(u16::MAX),
-            KeyCode::End => app.viewer_scroll_down(u16::MAX),
-            KeyCode::Enter => {
-                if matches!(kind, ViewerKind::Sessions) {
-                    activate_selected_session(client, app, sender, stream_handle).await?;
-                    app.close_viewer();
-                } else if matches!(kind, ViewerKind::Models) {
-                    activate_selected_model(app)?;
-                    app.close_viewer();
-                }
-            }
-            _ => {}
-        }
-        return Ok(false);
-    }
-
     match key.code {
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             create_session(client, app, sender, stream_handle).await?;
@@ -350,6 +336,46 @@ async fn handle_input(
     }
 
     Ok(false)
+}
+
+/// Handle keyboard input and dispatch actions.
+async fn handle_input(
+    key: KeyEvent,
+    client: &Arc<OrchestratorClient>,
+    app: &mut App,
+    sender: mpsc::Sender<AppEvent>,
+    stream_handle: &mut Option<JoinHandle<()>>,
+) -> anyhow::Result<bool> {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        return Ok(true);
+    }
+    if key.code == KeyCode::Esc {
+        if app.viewer.is_some() {
+            app.close_viewer();
+            return Ok(false);
+        }
+        if app.show_slash_commands {
+            app.show_slash_commands = false;
+            app.input.clear();
+            return Ok(false);
+        }
+        return Ok(true);
+    }
+
+    if let Some(permission) = app.pending_permissions.front().cloned()
+        && matches!(
+            key.code,
+            KeyCode::Char('y') | KeyCode::Char('a') | KeyCode::Char('n')
+        )
+    {
+        return handle_permission_input(key, client, app, permission).await;
+    }
+
+    if let Some(kind) = app.viewer {
+        return handle_viewer_input(key, kind, client, app, sender, stream_handle).await;
+    }
+
+    handle_default_input(key, client, app, sender, stream_handle).await
 }
 
 /// Handle keyboard input for a pending permission prompt.
@@ -676,8 +702,8 @@ fn spawn_input_handler(sender: mpsc::Sender<AppEvent>) {
     tokio::spawn(async move {
         const MOUSE_SCROLL_LINES: i16 = 3;
         loop {
-            if let Ok(true) = crossterm::event::poll(Duration::from_millis(30)) {
-                while let Ok(true) = crossterm::event::poll(Duration::from_millis(0)) {
+            if matches!(crossterm::event::poll(Duration::from_millis(30)), Ok(true)) {
+                while matches!(crossterm::event::poll(Duration::from_millis(0)), Ok(true)) {
                     let event = match crossterm::event::read() {
                         Ok(event) => event,
                         Err(_) => break,
@@ -725,8 +751,8 @@ fn spawn_tick(sender: mpsc::Sender<AppEvent>) {
 }
 
 fn resolve_user_name() -> String {
-    std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
+    std::env::var(ENV_USER)
+        .or_else(|_| std::env::var(ENV_USERNAME))
         .unwrap_or_else(|_| "user".to_string())
 }
 
