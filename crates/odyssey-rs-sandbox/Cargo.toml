@@ -8,8 +8,10 @@ repository.workspace = true
 readme.workspace = true
 
 [dependencies]
+odyssey-rs-config.workspace = true
 odyssey-rs-protocol.workspace = true
 async-trait.workspace = true
+clap.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 uuid.workspace = true
@@ -17,6 +19,9 @@ parking_lot.workspace = true
 which.workspace = true
 libc.workspace = true
 log.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock.workspace = true
 
 [dev-dependencies]
 tempfile = "3.10.1"
@@ -26,3 +31,11 @@ criterion = "0.8.2"
 [[bench]]
 name = "sandbox_run"
 harness = false
+
+[[bin]]
+name = "odyssey-rs-sandbox-cli"
+path = "src/bin/odyssey-rs-sandbox-cli.rs"
+
+[[bin]]
+name = "odyssey-rs-sandbox-internal-landlock-helper"
+path = "src/bin/odyssey-rs-sandbox-internal-landlock-helper.rs"

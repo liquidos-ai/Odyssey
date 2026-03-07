@@ -2,11 +2,11 @@
 
 use super::agent_factory::AgentExecutorRunner;
 use crate::error::OdysseyCoreError;
+use crate::memory::MemoryProvider;
 use crate::types::{AgentID, LLMProviderID};
 use autoagents_llm::LLMProvider;
 use log::{debug, info};
 use odyssey_rs_config::{AgentSandboxConfig, MemoryConfig, PermissionMode, ToolPolicy};
-use odyssey_rs_memory::MemoryProvider;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -209,15 +209,18 @@ impl LLMRegistry {
 #[cfg(test)]
 mod tests {
     use super::{AgentEntry, AgentRegistry, LLMEntry, LLMRegistry};
+    use crate::agent_runtime::agent_factory::{AgentExecutorRunner, AgentInput};
     use crate::error::OdysseyCoreError;
-    use crate::orchestrator::agent_factory::{AgentExecutorRunner, AgentInput};
+    use crate::memory::{
+        MemoryCompactionPolicy, MemoryError, MemoryProvider, MemoryRecallOptions, MemoryRecord,
+    };
     use async_trait::async_trait;
     use autoagents_core::tool::ToolT;
     use autoagents_llm::LLMProvider;
     use futures_util::Stream;
     use odyssey_rs_config::{PermissionMode, ToolPolicy};
     use odyssey_rs_protocol::{EventSink, TurnContext, TurnId};
-    use odyssey_rs_test_utils::{FailingLLM, StubMemory};
+    use odyssey_rs_test_utils::FailingLLM;
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
 
@@ -265,9 +268,45 @@ mod tests {
             Some(PermissionMode::Default),
             None,
             None,
-            Arc::new(StubMemory::default()),
+            Arc::new(TestMemory),
             Arc::new(DummyExecutor),
         )
+    }
+
+    #[derive(Clone)]
+    struct TestMemory;
+
+    #[async_trait]
+    impl MemoryProvider for TestMemory {
+        async fn store(&self, _record: MemoryRecord) -> Result<(), MemoryError> {
+            Ok(())
+        }
+
+        async fn recall(
+            &self,
+            _session_id: uuid::Uuid,
+            _query: Option<&str>,
+            _limit: usize,
+        ) -> Result<Vec<MemoryRecord>, MemoryError> {
+            Ok(Vec::new())
+        }
+
+        async fn recall_initial(
+            &self,
+            _query: Option<&str>,
+            _limit: usize,
+            _options: MemoryRecallOptions,
+        ) -> Result<Option<Vec<MemoryRecord>>, MemoryError> {
+            Ok(None)
+        }
+
+        async fn compact(
+            &self,
+            _session_id: uuid::Uuid,
+            _policy: &MemoryCompactionPolicy,
+        ) -> Result<Option<MemoryRecord>, MemoryError> {
+            Ok(None)
+        }
     }
 
     #[test]

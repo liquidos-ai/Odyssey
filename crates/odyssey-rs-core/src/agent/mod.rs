@@ -6,8 +6,9 @@ use autoagents_core::{
     tool::ToolT,
     tool::shared_tools_to_boxes,
 };
-use odyssey_rs_config::ToolPolicy;
-use odyssey_rs_memory::MemoryProvider;
+use odyssey_rs_config::{
+    AgentSandboxConfig, MemoryConfig, ModelConfig, PermissionMode, ToolPolicy,
+};
 use std::{fmt::Debug, sync::Arc};
 
 use crate::types::OdysseyAgentRuntime;
@@ -23,8 +24,25 @@ pub trait AgentInstance: OdysseyAgentRuntime {
         ToolPolicy::allow_all()
     }
 
-    /// Memory provider used to persist and recall session state.
-    fn memory_provider(&self) -> Arc<dyn MemoryProvider>;
+    /// Optional model override for this agent.
+    fn model(&self) -> Option<ModelConfig> {
+        None
+    }
+
+    /// Optional permission mode override for this agent.
+    fn permission_mode(&self) -> Option<PermissionMode> {
+        None
+    }
+
+    /// Optional sandbox override for this agent.
+    fn sandbox(&self) -> Option<AgentSandboxConfig> {
+        None
+    }
+
+    /// Optional memory override for this agent.
+    fn memory(&self) -> Option<MemoryConfig> {
+        None
+    }
 }
 
 /// Odyssey agent wrapper used by the AutoAgents runtime.

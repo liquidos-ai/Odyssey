@@ -28,14 +28,14 @@ async fn workspace_mode_blocks_external_paths() {
         AccessDecision::Allow
     );
     assert!(matches!(
-        provider.check_access(&handle, &outside, AccessMode::Read),
+        provider.check_access(&handle, &outside, AccessMode::Write),
         AccessDecision::Deny(_)
     ));
 }
 
-/// Allow lists should restrict access to explicitly allowed paths.
+/// Explicit read roots should restrict access to allowed paths.
 #[tokio::test]
-async fn allowlist_restricts_access() {
+async fn read_roots_restrict_access() {
     let temp = tempdir().expect("tempdir");
     let allow_path = temp.path().join("allowed");
     std::fs::create_dir_all(&allow_path).expect("create allow dir");
@@ -43,12 +43,12 @@ async fn allowlist_restricts_access() {
     let mut policy = SandboxPolicy::default();
     policy
         .filesystem
-        .allow_read
+        .read_roots
         .push(allow_path.to_string_lossy().to_string());
 
     let ctx = SandboxContext {
         workspace_root: temp.path().to_path_buf(),
-        mode: SandboxMode::WorkspaceWrite,
+        mode: SandboxMode::ReadOnly,
         policy,
     };
     let provider = LocalSandboxProvider::new();
@@ -62,7 +62,7 @@ async fn allowlist_restricts_access() {
         AccessDecision::Allow
     );
     assert!(matches!(
-        provider.check_access(&handle, &denied, AccessMode::Read),
+        provider.check_access(&handle, &denied, AccessMode::Write),
         AccessDecision::Deny(_)
     ));
 }

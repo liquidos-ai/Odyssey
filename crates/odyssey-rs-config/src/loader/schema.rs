@@ -13,12 +13,12 @@ pub(super) fn validate_layer_schema(
     let map = expect_object(value, layer, "")?;
     let allowed = [
         "$schema",
-        "orchestrator",
         "agents",
         "tools",
         "permissions",
         "memory",
         "skills",
+        "mcp",
         "sandbox",
         "sessions",
     ];
@@ -26,9 +26,6 @@ pub(super) fn validate_layer_schema(
 
     if let Some(value) = map.get("$schema") {
         expect_string(value, layer, "$schema")?;
-    }
-    if let Some(value) = map.get("orchestrator") {
-        validate_orchestrator(value, layer, "orchestrator")?;
     }
     if let Some(value) = map.get("agents") {
         validate_agents(value, layer, "agents")?;
@@ -45,6 +42,9 @@ pub(super) fn validate_layer_schema(
     if let Some(value) = map.get("skills") {
         validate_skills(value, layer, "skills")?;
     }
+    if let Some(value) = map.get("mcp") {
+        validate_mcp(value, layer, "mcp")?;
+    }
     if let Some(value) = map.get("sandbox") {
         validate_sandbox(value, layer, "sandbox")?;
     }
@@ -58,52 +58,12 @@ pub(super) fn validate_layer_schema(
 /// Validate the "agents" block.
 fn validate_agents(value: &Value, layer: &str, path: &str) -> Result<(), ConfigError> {
     let map = expect_object(value, layer, path)?;
-    ensure_allowed_keys(
-        map,
-        &["list", "setting_sources", "settingSources", "paths"],
-        layer,
-        path,
-    )?;
-    if let Some(value) = map.get("setting_sources") {
-        validate_setting_sources(value, layer, &join_path(path, "setting_sources"))?;
-    }
-    if let Some(value) = map.get("settingSources") {
-        validate_setting_sources(value, layer, &join_path(path, "settingSources"))?;
-    }
-    if let Some(value) = map.get("paths") {
-        validate_string_array(value, layer, &join_path(path, "paths"))?;
-    }
+    ensure_allowed_keys(map, &["list"], layer, path)?;
     if let Some(list) = map.get("list") {
         let arr = expect_array(list, layer, &join_path(path, "list"))?;
         for (idx, entry) in arr.iter().enumerate() {
             validate_agent(entry, layer, &format!("{path}.list[{idx}]"))?;
         }
-    }
-    Ok(())
-}
-
-/// Validate the "orchestrator" block.
-fn validate_orchestrator(value: &Value, layer: &str, path: &str) -> Result<(), ConfigError> {
-    let map = expect_object(value, layer, path)?;
-    ensure_allowed_keys(
-        map,
-        &[
-            "system_prompt",
-            "append_system_prompt",
-            "subagent_window_size",
-        ],
-        layer,
-        path,
-    )?;
-
-    if let Some(value) = map.get("system_prompt") {
-        expect_string(value, layer, &join_path(path, "system_prompt"))?;
-    }
-    if let Some(value) = map.get("append_system_prompt") {
-        expect_string(value, layer, &join_path(path, "append_system_prompt"))?;
-    }
-    if let Some(value) = map.get("subagent_window_size") {
-        expect_u64(value, layer, &join_path(path, "subagent_window_size"))?;
     }
     Ok(())
 }
@@ -319,23 +279,13 @@ fn validate_path_access(value: &Value, layer: &str, path: &str) -> Result<(), Co
 fn validate_memory(value: &Value, layer: &str, path: &str) -> Result<(), ConfigError> {
     let map = expect_object(value, layer, path)?;
     let allowed = [
-        "enabled",
-        "provider",
         "path",
         "recall_k",
-        "capture",
-        "recall",
-        "compaction",
         "instruction_roots",
+        "capture_tool_output",
     ];
     ensure_allowed_keys(map, &allowed, layer, path)?;
 
-    if let Some(value) = map.get("enabled") {
-        expect_bool(value, layer, &join_path(path, "enabled"))?;
-    }
-    if let Some(value) = map.get("provider") {
-        expect_string(value, layer, &join_path(path, "provider"))?;
-    }
     if let Some(value) = map.get("path") {
         expect_string(value, layer, &join_path(path, "path"))?;
     }
@@ -345,115 +295,8 @@ fn validate_memory(value: &Value, layer: &str, path: &str) -> Result<(), ConfigE
     if let Some(value) = map.get("instruction_roots") {
         validate_string_array(value, layer, &join_path(path, "instruction_roots"))?;
     }
-    if let Some(value) = map.get("capture") {
-        validate_memory_capture(value, layer, &join_path(path, "capture"))?;
-    }
-    if let Some(value) = map.get("recall") {
-        validate_memory_recall(value, layer, &join_path(path, "recall"))?;
-    }
-    if let Some(value) = map.get("compaction") {
-        validate_memory_compaction(value, layer, &join_path(path, "compaction"))?;
-    }
-    Ok(())
-}
-
-/// Validate memory capture configuration.
-fn validate_memory_capture(value: &Value, layer: &str, path: &str) -> Result<(), ConfigError> {
-    let map = expect_object(value, layer, path)?;
-    let allowed = [
-        "capture_messages",
-        "capture_tool_output",
-        "deny_patterns",
-        "redact_patterns",
-        "max_message_chars",
-        "detect_secrets",
-        "secret_entropy_threshold",
-        "max_tool_output_chars",
-    ];
-    ensure_allowed_keys(map, &allowed, layer, path)?;
-
-    if let Some(value) = map.get("capture_messages") {
-        expect_bool(value, layer, &join_path(path, "capture_messages"))?;
-    }
     if let Some(value) = map.get("capture_tool_output") {
         expect_bool(value, layer, &join_path(path, "capture_tool_output"))?;
-    }
-    if let Some(value) = map.get("deny_patterns") {
-        validate_string_array(value, layer, &join_path(path, "deny_patterns"))?;
-    }
-    if let Some(value) = map.get("redact_patterns") {
-        validate_string_array(value, layer, &join_path(path, "redact_patterns"))?;
-    }
-    if let Some(value) = map.get("max_message_chars") {
-        expect_u64(value, layer, &join_path(path, "max_message_chars"))?;
-    }
-    if let Some(value) = map.get("detect_secrets") {
-        expect_bool(value, layer, &join_path(path, "detect_secrets"))?;
-    }
-    if let Some(value) = map.get("secret_entropy_threshold") {
-        expect_f64(value, layer, &join_path(path, "secret_entropy_threshold"))?;
-    }
-    if let Some(value) = map.get("max_tool_output_chars") {
-        expect_u64(value, layer, &join_path(path, "max_tool_output_chars"))?;
-    }
-    Ok(())
-}
-
-/// Validate memory recall configuration.
-fn validate_memory_recall(value: &Value, layer: &str, path: &str) -> Result<(), ConfigError> {
-    let map = expect_object(value, layer, path)?;
-    let allowed = ["mode", "text_weight", "vector_weight", "min_score"];
-    ensure_allowed_keys(map, &allowed, layer, path)?;
-
-    if let Some(value) = map.get("mode") {
-        validate_memory_recall_mode(value, layer, &join_path(path, "mode"))?;
-    }
-    if let Some(value) = map.get("text_weight") {
-        expect_f64(value, layer, &join_path(path, "text_weight"))?;
-    }
-    if let Some(value) = map.get("vector_weight") {
-        expect_f64(value, layer, &join_path(path, "vector_weight"))?;
-    }
-    if let Some(value) = map.get("min_score") {
-        expect_f64(value, layer, &join_path(path, "min_score"))?;
-    }
-    Ok(())
-}
-
-/// Validate memory recall mode values.
-fn validate_memory_recall_mode(value: &Value, layer: &str, path: &str) -> Result<(), ConfigError> {
-    let Some(mode) = value.as_str() else {
-        return Err(invalid_field(layer, path, "expected string"));
-    };
-    if matches!(mode, "text" | "vector" | "hybrid") {
-        Ok(())
-    } else {
-        Err(invalid_field(layer, path, "invalid recall mode"))
-    }
-}
-
-/// Validate memory compaction configuration.
-fn validate_memory_compaction(value: &Value, layer: &str, path: &str) -> Result<(), ConfigError> {
-    let map = expect_object(value, layer, path)?;
-    let allowed = [
-        "enabled",
-        "max_messages",
-        "summary_max_chars",
-        "max_total_chars",
-    ];
-    ensure_allowed_keys(map, &allowed, layer, path)?;
-
-    if let Some(value) = map.get("enabled") {
-        expect_bool(value, layer, &join_path(path, "enabled"))?;
-    }
-    if let Some(value) = map.get("max_messages") {
-        expect_u64(value, layer, &join_path(path, "max_messages"))?;
-    }
-    if let Some(value) = map.get("summary_max_chars") {
-        expect_u64(value, layer, &join_path(path, "summary_max_chars"))?;
-    }
-    if let Some(value) = map.get("max_total_chars") {
-        expect_u64(value, layer, &join_path(path, "max_total_chars"))?;
     }
     Ok(())
 }
@@ -514,6 +357,111 @@ fn validate_setting_sources(value: &Value, layer: &str, path: &str) -> Result<()
     Ok(())
 }
 
+/// Validate MCP client configuration.
+fn validate_mcp(value: &Value, layer: &str, path: &str) -> Result<(), ConfigError> {
+    let map = expect_object(value, layer, path)?;
+    ensure_allowed_keys(map, &["enabled", "servers"], layer, path)?;
+
+    if let Some(value) = map.get("enabled") {
+        expect_bool(value, layer, &join_path(path, "enabled"))?;
+    }
+    if let Some(value) = map.get("servers") {
+        let arr = expect_array(value, layer, &join_path(path, "servers"))?;
+        for (idx, entry) in arr.iter().enumerate() {
+            validate_mcp_server(entry, layer, &format!("{path}.servers[{idx}]"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Validate a single MCP server entry.
+fn validate_mcp_server(value: &Value, layer: &str, path: &str) -> Result<(), ConfigError> {
+    let map = expect_object(value, layer, path)?;
+    let allowed = [
+        "name",
+        "protocol",
+        "command",
+        "args",
+        "env",
+        "cwd",
+        "description",
+        "sandbox",
+    ];
+    ensure_allowed_keys(map, &allowed, layer, path)?;
+
+    for key in ["name", "command"] {
+        let key_path = join_path(path, key);
+        let value = map
+            .get(key)
+            .ok_or_else(|| invalid_field(layer, &key_path, "missing required field"))?;
+        expect_string(value, layer, &key_path)?;
+    }
+
+    if let Some(value) = map.get("protocol") {
+        let protocol_path = join_path(path, "protocol");
+        let Some(protocol) = value.as_str() else {
+            return Err(invalid_field(layer, &protocol_path, "expected string"));
+        };
+        if protocol != "stdio" {
+            return Err(invalid_field(
+                layer,
+                &protocol_path,
+                "only stdio MCP servers are supported",
+            ));
+        }
+    }
+    if let Some(value) = map.get("args") {
+        validate_string_array(value, layer, &join_path(path, "args"))?;
+    }
+    if let Some(value) = map.get("env") {
+        let env_map = expect_object(value, layer, &join_path(path, "env"))?;
+        for (key, value) in env_map {
+            if value.as_str().is_none() {
+                return Err(invalid_field(
+                    layer,
+                    &join_path(&join_path(path, "env"), key),
+                    "expected string",
+                ));
+            }
+        }
+    }
+    if let Some(value) = map.get("cwd") {
+        expect_string(value, layer, &join_path(path, "cwd"))?;
+    }
+    if let Some(value) = map.get("description") {
+        expect_string(value, layer, &join_path(path, "description"))?;
+    }
+    if let Some(value) = map.get("sandbox") {
+        validate_mcp_server_sandbox(value, layer, &join_path(path, "sandbox"))?;
+    }
+    Ok(())
+}
+
+/// Validate sandbox overrides for an MCP server.
+fn validate_mcp_server_sandbox(value: &Value, layer: &str, path: &str) -> Result<(), ConfigError> {
+    let map = expect_object(value, layer, path)?;
+    ensure_allowed_keys(
+        map,
+        &["filesystem", "network", "env", "limits"],
+        layer,
+        path,
+    )?;
+
+    if let Some(value) = map.get("filesystem") {
+        validate_sandbox_filesystem(value, layer, &join_path(path, "filesystem"))?;
+    }
+    if let Some(value) = map.get("network") {
+        validate_sandbox_network(value, layer, &join_path(path, "network"))?;
+    }
+    if let Some(value) = map.get("env") {
+        validate_sandbox_env(value, layer, &join_path(path, "env"))?;
+    }
+    if let Some(value) = map.get("limits") {
+        validate_sandbox_limits(value, layer, &join_path(path, "limits"))?;
+    }
+    Ok(())
+}
+
 /// Validate sandbox configuration.
 fn validate_sandbox(value: &Value, layer: &str, path: &str) -> Result<(), ConfigError> {
     let map = expect_object(value, layer, path)?;
@@ -567,24 +515,9 @@ fn validate_sandbox_mode(value: &Value, layer: &str, path: &str) -> Result<(), C
 /// Validate filesystem sandbox configuration.
 fn validate_sandbox_filesystem(value: &Value, layer: &str, path: &str) -> Result<(), ConfigError> {
     let map = expect_object(value, layer, path)?;
-    let allowed = [
-        "allow_read",
-        "deny_read",
-        "allow_write",
-        "deny_write",
-        "allow_exec",
-        "deny_exec",
-    ];
-    ensure_allowed_keys(map, &allowed, layer, path)?;
+    ensure_allowed_keys(map, &["read", "write", "exec"], layer, path)?;
 
-    for key in [
-        "allow_read",
-        "deny_read",
-        "allow_write",
-        "deny_write",
-        "allow_exec",
-        "deny_exec",
-    ] {
+    for key in ["read", "write", "exec"] {
         if let Some(value) = map.get(key) {
             validate_string_array(value, layer, &join_path(path, key))?;
         }
@@ -596,13 +529,23 @@ fn validate_sandbox_filesystem(value: &Value, layer: &str, path: &str) -> Result
 /// Validate network sandbox configuration.
 fn validate_sandbox_network(value: &Value, layer: &str, path: &str) -> Result<(), ConfigError> {
     let map = expect_object(value, layer, path)?;
-    ensure_allowed_keys(map, &["allow_domains", "deny_domains"], layer, path)?;
+    ensure_allowed_keys(map, &["mode"], layer, path)?;
 
-    if let Some(value) = map.get("allow_domains") {
-        validate_string_array(value, layer, &join_path(path, "allow_domains"))?;
-    }
-    if let Some(value) = map.get("deny_domains") {
-        validate_string_array(value, layer, &join_path(path, "deny_domains"))?;
+    if let Some(value) = map.get("mode") {
+        let Some(mode) = value.as_str() else {
+            return Err(invalid_field(
+                layer,
+                &join_path(path, "mode"),
+                "expected string",
+            ));
+        };
+        if !matches!(mode, "disabled" | "allow_all") {
+            return Err(invalid_field(
+                layer,
+                &join_path(path, "mode"),
+                "invalid sandbox network mode",
+            ));
+        }
     }
     Ok(())
 }
@@ -610,13 +553,10 @@ fn validate_sandbox_network(value: &Value, layer: &str, path: &str) -> Result<()
 /// Validate environment sandbox configuration.
 fn validate_sandbox_env(value: &Value, layer: &str, path: &str) -> Result<(), ConfigError> {
     let map = expect_object(value, layer, path)?;
-    ensure_allowed_keys(map, &["allow", "deny", "set"], layer, path)?;
+    ensure_allowed_keys(map, &["inherit", "set"], layer, path)?;
 
-    if let Some(value) = map.get("allow") {
-        validate_string_array(value, layer, &join_path(path, "allow"))?;
-    }
-    if let Some(value) = map.get("deny") {
-        validate_string_array(value, layer, &join_path(path, "deny"))?;
+    if let Some(value) = map.get("inherit") {
+        validate_string_array(value, layer, &join_path(path, "inherit"))?;
     }
     if let Some(value) = map.get("set") {
         let set_map = expect_object(value, layer, &join_path(path, "set"))?;
@@ -638,12 +578,28 @@ fn validate_sandbox_limits(value: &Value, layer: &str, path: &str) -> Result<(),
     let map = expect_object(value, layer, path)?;
     ensure_allowed_keys(
         map,
-        &["cpu_seconds", "memory_bytes", "nofile", "pids"],
+        &[
+            "cpu_seconds",
+            "memory_bytes",
+            "nofile",
+            "pids",
+            "wall_clock_seconds",
+            "stdout_bytes",
+            "stderr_bytes",
+        ],
         layer,
         path,
     )?;
 
-    for key in ["cpu_seconds", "memory_bytes", "nofile", "pids"] {
+    for key in [
+        "cpu_seconds",
+        "memory_bytes",
+        "nofile",
+        "pids",
+        "wall_clock_seconds",
+        "stdout_bytes",
+        "stderr_bytes",
+    ] {
         if let Some(value) = map.get(key) {
             expect_u64(value, layer, &join_path(path, key))?;
         }
@@ -744,15 +700,6 @@ fn expect_u64(value: &Value, layer: &str, path: &str) -> Result<(), ConfigError>
         Ok(())
     } else {
         Err(invalid_field(layer, path, "expected integer"))
-    }
-}
-
-/// Expect a JSON f64 or return a typed error.
-fn expect_f64(value: &Value, layer: &str, path: &str) -> Result<(), ConfigError> {
-    if value.is_f64() || value.is_u64() || value.is_i64() {
-        Ok(())
-    } else {
-        Err(invalid_field(layer, path, "expected number"))
     }
 }
 

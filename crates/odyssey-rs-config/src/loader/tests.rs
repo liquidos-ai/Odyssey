@@ -31,6 +31,15 @@ fn rejects_unknown_top_level_key() {
     assert!(msg.contains("unknown key"));
 }
 
+#[test]
+fn rejects_legacy_orchestrator_block() {
+    let json5 = r#"{ orchestrator: { system_prompt: "legacy" } }"#;
+    let err = OdysseyConfig::load_from_str(json5).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("orchestrator"));
+    assert!(msg.contains("unknown key"));
+}
+
 /// Reject invalid permission mode values.
 #[test]
 fn rejects_invalid_permission_mode() {

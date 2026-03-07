@@ -7,8 +7,6 @@
 pub use odyssey_rs_config as config;
 pub use odyssey_rs_core as core;
 /// Re-export for convenience.
-pub use odyssey_rs_memory as memory;
-/// Re-export for convenience.
 pub use odyssey_rs_protocol as protocol;
 
 #[inline]

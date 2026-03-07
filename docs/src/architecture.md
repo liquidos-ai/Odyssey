@@ -7,7 +7,7 @@ This document reflects the architecture as implemented in the Rust crates.
 - Server: `odyssey-rs-server` is currently a stub.
 
 ## Core components
-- **Orchestrator (odyssey-rs-core)**  
+- **AgentRuntime (odyssey-rs-core)**  
   Owns config, tool routing, permission engine, skill store, sessions, and execution.
 - **ToolRouter (odyssey-rs-core)**  
   Filters tools by allow/deny and adapts them for AutoAgents.
@@ -48,7 +48,7 @@ The final prompt includes:
 - Footer notes
 
 ## Agent registration flow
-1. Create `Orchestrator`.
+1. Create `AgentRuntime`.
 2. Register LLM providers with `register_llm_provider(LLMEntry)`.
    Use `list_llm_ids()` to enumerate registered LLM provider ids.
 3. Register agents with `register_agent(AgentBuilder)`.
@@ -63,7 +63,7 @@ registry is `default_LLM`.
 - `list_sessions()` lists sessions from state store or cache.
 - `delete_session(session_id)` deletes persisted rollouts when enabled.
 
-## Run flow (Orchestrator::run)
+## Run flow (AgentRuntime::run)
 1. Resolve agent and session.
 2. Build system prompt with `PromptBuilder`.
 3. Build tool context and tool specs for the agent.
@@ -71,7 +71,7 @@ registry is `default_LLM`.
 5. Capture outputs to memory and sessions.
 6. Return `RunResult`.
 
-## Streaming flow (Orchestrator::run_stream)
+## Streaming flow (AgentRuntime::run_stream)
 1. Resolve agent/session and start turn executor.
 2. Emit events through the run event bus.
 3. Caller consumes the event stream and calls `finish()` for the final result.

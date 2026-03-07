@@ -1,21 +1,19 @@
-//! Orchestrator integration tests with a mock LLM.
+//! AgentRuntime integration tests with a mock LLM.
 
 use autoagents_core::agent::prebuilt::executor::ReActAgent;
 use autoagents_llm::LLMProvider;
 use futures_util::StreamExt;
 use odyssey_rs_config::OdysseyConfig;
-use odyssey_rs_core::{AgentBuilder, DEFAULT_AGENT_ID, LLMEntry, OdysseyAgent, Orchestrator};
-use odyssey_rs_memory::FileMemoryProvider;
+use odyssey_rs_core::{AgentBuilder, AgentRuntime, DEFAULT_AGENT_ID, LLMEntry, OdysseyAgent};
 use odyssey_rs_protocol::EventPayload;
 use odyssey_rs_test_utils::{DummyTool, FixedLLM, RecordingLLM, StreamingLLM, base_tool_context};
 use odyssey_rs_tools::{ToolRegistry, builtin_tool_registry, tool_to_adaptor};
 use parking_lot::RwLock;
 use pretty_assertions::assert_eq;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::tempdir;
 
-/// Orchestrator should execute a run using the mock LLM.
+/// AgentRuntime should execute a run using the mock LLM.
 #[tokio::test]
 async fn orchestrator_runs_with_mock_llm() {
     let llm: Arc<dyn LLMProvider> = Arc::new(FixedLLM::new("mock response"));
@@ -23,19 +21,12 @@ async fn orchestrator_runs_with_mock_llm() {
     let temp = tempdir().expect("tempdir");
     let mut config = OdysseyConfig::default();
     config.memory.path = Some(temp.path().join("memory").to_string_lossy().to_string());
-    let memory = Arc::new(
-        FileMemoryProvider::new(PathBuf::from(
-            config.memory.path.clone().expect("memory path"),
-        ))
-        .expect("memory provider"),
-    );
     let default_agent = AgentBuilder::new(
         DEFAULT_AGENT_ID.to_string(),
         ReActAgent::new(OdysseyAgent::new("Test agent".to_string(), Vec::new())),
-        memory,
     );
     let orchestrator =
-        Orchestrator::new(config, tools, None, None, None, None).expect("build orchestrator");
+        AgentRuntime::new(config, tools, None, None, None, None).expect("build orchestrator");
     orchestrator
         .register_llm_provider(LLMEntry {
             id: "default_LLM".to_string(),
@@ -52,7 +43,7 @@ async fn orchestrator_runs_with_mock_llm() {
     assert_eq!(result.response, "mock response");
 }
 
-/// Orchestrator should merge registry tools with agent-defined tools.
+/// AgentRuntime should merge registry tools with agent-defined tools.
 #[tokio::test]
 async fn orchestrator_merges_registry_and_agent_tools() {
     let temp = tempdir().expect("tempdir");
@@ -63,12 +54,6 @@ async fn orchestrator_merges_registry_and_agent_tools() {
         registry.register(Arc::new(DummyTool::new("RegistryTool")));
         registry
     };
-    let memory = Arc::new(
-        FileMemoryProvider::new(PathBuf::from(
-            config.memory.path.clone().expect("memory path"),
-        ))
-        .expect("memory provider"),
-    );
     let ctx = Arc::new(RwLock::new(base_tool_context()));
     let agent_tool = tool_to_adaptor(Arc::new(DummyTool::new("AgentTool")), ctx);
     let default_agent = AgentBuilder::new(
@@ -77,12 +62,11 @@ async fn orchestrator_merges_registry_and_agent_tools() {
             "Test agent".to_string(),
             vec![agent_tool],
         )),
-        memory,
     );
     let (llm, seen_tools) = RecordingLLM::new("mock response");
     let llm: Arc<dyn LLMProvider> = Arc::new(llm);
     let orchestrator =
-        Orchestrator::new(config, tools, None, None, None, None).expect("build orchestrator");
+        AgentRuntime::new(config, tools, None, None, None, None).expect("build orchestrator");
     orchestrator
         .register_llm_provider(LLMEntry {
             id: "default_LLM".to_string(),
@@ -104,7 +88,7 @@ async fn orchestrator_merges_registry_and_agent_tools() {
     );
 }
 
-/// Orchestrator should stream agent deltas and turn lifecycle events.
+/// AgentRuntime should stream agent deltas and turn lifecycle events.
 #[tokio::test]
 async fn orchestrator_streams_run_events() {
     let llm: Arc<dyn LLMProvider> = Arc::new(StreamingLLM::new(vec![
@@ -115,19 +99,12 @@ async fn orchestrator_streams_run_events() {
     let temp = tempdir().expect("tempdir");
     let mut config = OdysseyConfig::default();
     config.memory.path = Some(temp.path().join("memory").to_string_lossy().to_string());
-    let memory = Arc::new(
-        FileMemoryProvider::new(PathBuf::from(
-            config.memory.path.clone().expect("memory path"),
-        ))
-        .expect("memory provider"),
-    );
     let default_agent = AgentBuilder::new(
         DEFAULT_AGENT_ID.to_string(),
         ReActAgent::new(OdysseyAgent::new("Test agent".to_string(), Vec::new())),
-        memory,
     );
     let orchestrator =
-        Orchestrator::new(config, tools, None, None, None, None).expect("build orchestrator");
+        AgentRuntime::new(config, tools, None, None, None, None).expect("build orchestrator");
     orchestrator
         .register_llm_provider(LLMEntry {
             id: "default_LLM".to_string(),

@@ -12,10 +12,16 @@ pub enum SandboxError {
     /// Invalid sandbox configuration.
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
+    /// The sandbox backend is unsupported on this platform or environment.
+    #[error("unsupported sandbox: {0}")]
+    Unsupported(String),
     /// Access denied by sandbox policy.
     #[error("access denied: {0}")]
     AccessDenied(String),
     /// Missing dependency required by provider.
     #[error("dependency missing: {0}")]
     DependencyMissing(String),
+    /// The sandboxed process exceeded a configured limit.
+    #[error("limit exceeded: {0}")]
+    LimitExceeded(String),
 }

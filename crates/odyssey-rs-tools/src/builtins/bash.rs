@@ -418,6 +418,7 @@ mod tests {
         services.sandbox = Some(ToolSandbox {
             provider: Arc::new(provider),
             handle,
+            lease: None,
         });
         services.event_sink = Some(sink.clone());
 

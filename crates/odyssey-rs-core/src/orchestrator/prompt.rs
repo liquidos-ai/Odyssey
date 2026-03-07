@@ -3,8 +3,8 @@
 use super::memory::{format_memory_records, recall_options_from_config};
 use crate::error::OdysseyCoreError;
 use crate::instructions::resolve_instruction_roots;
+use crate::memory::MemoryProvider;
 use odyssey_rs_config::MemoryConfig;
-use odyssey_rs_memory::MemoryProvider;
 use odyssey_rs_protocol::SkillProvider;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -50,7 +50,7 @@ impl PromptBuilder {
         let cwd = std::env::current_dir().map_err(OdysseyCoreError::Io)?;
         let instruction_roots = resolve_instruction_roots(&memory_config.instruction_roots, &cwd);
         let bootstrap_sections = load_bootstrap_sections(&instruction_roots)?;
-        let recall_options = recall_options_from_config(&memory_config.recall);
+        let recall_options = recall_options_from_config(memory_config);
         let recall_records = self
             .memory_provider
             .recall_initial(None, memory_config.recall_k, recall_options)
@@ -200,10 +200,13 @@ fn render_skill_section(store: Option<&Arc<dyn SkillProvider>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{PromptBuilder, PromptProfile};
+    use crate::memory::{
+        MemoryCompactionPolicy, MemoryError, MemoryProvider, MemoryRecallOptions, MemoryRecord,
+    };
+    use async_trait::async_trait;
     use odyssey_rs_config::MemoryConfig;
-    use odyssey_rs_memory::MemoryRecord;
     use odyssey_rs_protocol::SkillSummary;
-    use odyssey_rs_test_utils::{StubMemory, StubSkillProvider};
+    use odyssey_rs_test_utils::StubSkillProvider;
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use std::sync::Arc;
@@ -219,7 +222,7 @@ mod tests {
             metadata: json!({}),
             created_at: chrono::Utc::now(),
         };
-        let memory = Arc::new(StubMemory::with_initial(vec![record]));
+        let memory = Arc::new(TestMemory::with_initial(vec![record]));
         let skills = Arc::new(StubSkillProvider::new(
             vec![SkillSummary {
                 name: "Checklist".to_string(),
@@ -247,7 +250,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_system_prompt_handles_empty_skills() {
-        let memory = Arc::new(StubMemory::with_initial(Vec::new()));
+        let memory = Arc::new(TestMemory::with_initial(Vec::new()));
         let builder = PromptBuilder::new(memory, None);
         let prompt = builder
             .build_system_prompt(
@@ -259,5 +262,51 @@ mod tests {
             .expect("prompt");
         assert!(prompt.contains("No skills available."));
         assert_eq!(prompt.contains("Additional Instructions"), false);
+    }
+
+    #[derive(Clone, Default)]
+    struct TestMemory {
+        initial_records: Option<Vec<MemoryRecord>>,
+    }
+
+    impl TestMemory {
+        fn with_initial(initial_records: Vec<MemoryRecord>) -> Self {
+            Self {
+                initial_records: Some(initial_records),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl MemoryProvider for TestMemory {
+        async fn store(&self, _record: MemoryRecord) -> Result<(), MemoryError> {
+            Ok(())
+        }
+
+        async fn recall(
+            &self,
+            _session_id: uuid::Uuid,
+            _query: Option<&str>,
+            _limit: usize,
+        ) -> Result<Vec<MemoryRecord>, MemoryError> {
+            Ok(Vec::new())
+        }
+
+        async fn recall_initial(
+            &self,
+            _query: Option<&str>,
+            _limit: usize,
+            _options: MemoryRecallOptions,
+        ) -> Result<Option<Vec<MemoryRecord>>, MemoryError> {
+            Ok(self.initial_records.clone())
+        }
+
+        async fn compact(
+            &self,
+            _session_id: uuid::Uuid,
+            _policy: &MemoryCompactionPolicy,
+        ) -> Result<Option<MemoryRecord>, MemoryError> {
+            Ok(None)
+        }
     }
 }

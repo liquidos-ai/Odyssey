@@ -20,6 +20,11 @@ impl ToolRouter {
         Self { registry }
     }
 
+    /// Expose the underlying registry for startup-time tool registration.
+    pub fn registry(&self) -> &ToolRegistry {
+        &self.registry
+    }
+
     #[allow(dead_code)]
     /// List the names of all registered tools.
     pub fn list(&self) -> Vec<String> {

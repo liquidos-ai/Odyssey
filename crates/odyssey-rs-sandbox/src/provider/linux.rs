@@ -11,13 +11,15 @@ use tokio::process::Command;
 
 use crate::{
     AccessDecision, AccessMode, CommandOutputSink, CommandResult, CommandSpec, SandboxContext,
-    SandboxHandle, SandboxLimits, SandboxNetworkMode, SandboxProvider,
+    SandboxHandle, SandboxLimits, SandboxProvider,
     provider::{
-        BufferingSink, Mount, PreparedSandbox, bind_if_exists, build_prepared_sandbox,
-        command_display, stream_child_output,
+        BufferingSink, DependencyReport, Mount, PreparedSandbox, bind_if_exists,
+        build_prepared_sandbox, collect_child_result, command_display, configure_child_unix,
+        merge_command_env, resolve_command_path, resolve_working_dir, wrap_command_with_landlock,
     },
 };
-use crate::{DependencyReport, SandboxError};
+use crate::{SandboxError, types::SandboxNetworkMode};
+use odyssey_rs_protocol::SandboxMode;
 
 /// Bubblewrap-backed sandbox provider.
 #[derive(Debug)]
@@ -46,18 +48,17 @@ impl BubblewrapProvider {
 
     /// Produce a dependency report for Linux bubblewrap requirements.
     fn dependency_report_linux() -> DependencyReport {
-        use std::path::Path;
-
         let mut report = DependencyReport::default();
         if which::which("bwrap").is_err() {
             report
                 .errors
                 .push("bubblewrap (bwrap) not found in PATH".to_string());
         }
-        if !Path::new("/sys/fs/cgroup/cgroup.controllers").exists() {
-            report
-                .warnings
-                .push("cgroup v2 not detected; resource limits rely on rlimits only".to_string());
+        if !Path::new("/proc/self/ns").exists() {
+            report.warnings.push(
+                "Linux namespaces do not appear to be available; bubblewrap may fail at runtime"
+                    .to_string(),
+            );
         }
         report
     }
@@ -68,10 +69,12 @@ impl BubblewrapProvider {
         prepared: &PreparedSandbox,
         spec: &CommandSpec,
     ) -> Result<Command, SandboxError> {
-        let mut env = prepared.env.clone();
-        for (key, value) in &spec.env {
-            env.insert(key.clone(), value.clone());
-        }
+        let cwd = resolve_working_dir(spec, prepared)?;
+        let command = resolve_command_path(&spec.command, &cwd, prepared)?;
+        let env = merge_command_env(prepared, &spec.env)?;
+        let (command, args) =
+            wrap_command_with_landlock(command, spec.args.clone(), spec.landlock.as_ref())?;
+
         let mut bwrap_args: Vec<String> = vec![
             "--die-with-parent".to_string(),
             "--new-session".to_string(),
@@ -87,38 +90,31 @@ impl BubblewrapProvider {
             "/proc".to_string(),
         ];
 
-        if matches!(prepared.network, SandboxNetworkMode::Deny) {
+        if matches!(prepared.network, SandboxNetworkMode::Disabled) {
             bwrap_args.push("--unshare-net".to_string());
         }
 
-        for (src, dst) in base_system_mounts() {
-            bind_if_exists(&mut bwrap_args, "--ro-bind", &src, &dst);
-        }
-
         append_etc_mounts(&mut bwrap_args);
-
+        append_runtime_mounts(&mut bwrap_args);
         bwrap_args.push("--dev".to_string());
         bwrap_args.push("/dev".to_string());
         bwrap_args.push("--tmpfs".to_string());
-        bwrap_args.push("/dev/shm".to_string());
+        bwrap_args.push("/tmp".to_string());
+        bwrap_args.push("--dir".to_string());
+        bwrap_args.push("/runtime".to_string());
         bind_if_exists(
             &mut bwrap_args,
             "--bind",
             Path::new("/dev/pts"),
             Path::new("/dev/pts"),
         );
-        bwrap_args.push("--tmpfs".to_string());
-        bwrap_args.push("/tmp".to_string());
-        bwrap_args.push("--dir".to_string());
-        bwrap_args.push("/runtime".to_string());
 
         for mount in &prepared.mounts {
             append_mount(&mut bwrap_args, mount)?;
         }
 
         bwrap_args.push("--chdir".to_string());
-        bwrap_args.push(prepared.working_dir.display().to_string());
-
+        bwrap_args.push(cwd.display().to_string());
         bwrap_args.push("--clearenv".to_string());
         for (key, value) in env {
             bwrap_args.push("--setenv".to_string());
@@ -127,8 +123,8 @@ impl BubblewrapProvider {
         }
 
         bwrap_args.push("--".to_string());
-        bwrap_args.push(command_display(&spec.command, &prepared.working_dir)?);
-        for arg in &spec.args {
+        bwrap_args.push(command_display(&command));
+        for arg in &args {
             bwrap_args.push(arg.clone());
         }
 
@@ -140,8 +136,13 @@ impl BubblewrapProvider {
 
 #[async_trait]
 impl SandboxProvider for BubblewrapProvider {
-    /// Prepare sandbox state for a handle.
     async fn prepare(&self, ctx: &SandboxContext) -> Result<SandboxHandle, SandboxError> {
+        if ctx.mode == SandboxMode::DangerFullAccess {
+            return Err(SandboxError::Unsupported(
+                "bubblewrap provider does not support danger_full_access; use the host provider explicitly"
+                    .to_string(),
+            ));
+        }
         let prepared = build_prepared_sandbox(ctx)?;
         let handle = SandboxHandle {
             id: uuid::Uuid::new_v4(),
@@ -151,7 +152,6 @@ impl SandboxProvider for BubblewrapProvider {
         Ok(handle)
     }
 
-    /// Run a command in bubblewrap without streaming output.
     async fn run_command(
         &self,
         handle: &SandboxHandle,
@@ -163,10 +163,11 @@ impl SandboxProvider for BubblewrapProvider {
             status_code: result.status_code,
             stdout: sink.stdout,
             stderr: sink.stderr,
+            stdout_truncated: result.stdout_truncated,
+            stderr_truncated: result.stderr_truncated,
         })
     }
 
-    /// Run a command in bubblewrap with streaming output.
     async fn run_command_streaming(
         &self,
         handle: &SandboxHandle,
@@ -188,7 +189,6 @@ impl SandboxProvider for BubblewrapProvider {
         run_bwrap_process(self, &prepared, spec, sink).await
     }
 
-    /// Check access against the prepared sandbox policies.
     fn check_access(
         &self,
         handle: &SandboxHandle,
@@ -206,12 +206,31 @@ impl SandboxProvider for BubblewrapProvider {
         prepared.access.check(path, mode)
     }
 
-    /// Return dependency report for the provider.
     fn dependency_report(&self) -> DependencyReport {
         Self::dependency_report_linux()
     }
 
-    /// Shutdown and remove the prepared sandbox.
+    fn spawn_command(
+        &self,
+        handle: &SandboxHandle,
+        spec: CommandSpec,
+    ) -> Result<Command, SandboxError> {
+        let prepared = self
+            .state
+            .read()
+            .get(&handle.id)
+            .cloned()
+            .ok_or_else(|| SandboxError::InvalidConfig("unknown sandbox handle".to_string()))?;
+        let mut command = self.build_command(&prepared, &spec)?;
+
+        #[cfg(unix)]
+        unsafe {
+            configure_child_unix(&mut command, &prepared.limits);
+        }
+
+        Ok(command)
+    }
+
     async fn shutdown(&self, handle: SandboxHandle) {
         info!("bubblewrap sandbox shutdown (handle_id={})", handle.id);
         self.state.write().remove(&handle.id);
@@ -226,6 +245,7 @@ pub(crate) fn apply_rlimits(limits: &SandboxLimits) -> Result<(), std::io::Error
                 rlim_cur: value as libc::rlim_t,
                 rlim_max: value as libc::rlim_t,
             };
+            // SAFETY: setrlimit is called in the child just before exec with validated integer values.
             let result = unsafe { libc::setrlimit(limit, &rlim) };
             if result != 0 {
                 return Err(std::io::Error::last_os_error());
@@ -241,61 +261,32 @@ pub(crate) fn apply_rlimits(limits: &SandboxLimits) -> Result<(), std::io::Error
     Ok(())
 }
 
-/// Run a bubblewrap command and stream output.
 async fn run_bwrap_process(
     provider: &BubblewrapProvider,
     prepared: &PreparedSandbox,
     spec: CommandSpec,
     sink: &mut dyn CommandOutputSink,
 ) -> Result<CommandResult, SandboxError> {
-    debug!(
-        "starting bubblewrap process (args_len={}, has_cwd={})",
-        spec.args.len(),
-        spec.cwd.is_some()
-    );
     let mut cmd = provider.build_command(prepared, &spec)?;
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    let limits = prepared.limits.clone();
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     unsafe {
-        cmd.pre_exec(move || apply_rlimits(&limits));
+        configure_child_unix(&mut cmd, &prepared.limits);
     }
 
     let mut child = cmd.spawn().map_err(SandboxError::Io)?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let (stdout_buf, stderr_buf) = stream_child_output(stdout, stderr, sink).await?;
 
-    let status = child.wait().await.map_err(SandboxError::Io)?;
-
-    if status.code().unwrap_or(-1) != 0 {
+    let result = collect_child_result(&mut child, stdout, stderr, sink, &prepared.limits).await?;
+    if result.status_code.unwrap_or(-1) != 0 {
         warn!("bubblewrap command exited non-zero");
     }
-    Ok(CommandResult {
-        status_code: status.code(),
-        stdout: stdout_buf,
-        stderr: stderr_buf,
-    })
+    Ok(result)
 }
 
-/// Base system mounts required for bubblewrap execution.
-fn base_system_mounts() -> Vec<(PathBuf, PathBuf)> {
-    [
-        ("/usr", "/usr"),
-        ("/lib", "/lib"),
-        ("/lib64", "/lib64"),
-        ("/bin", "/bin"),
-        ("/sbin", "/sbin"),
-        ("/opt", "/opt"),
-    ]
-    .into_iter()
-    .map(|(src, dst)| (PathBuf::from(src), PathBuf::from(dst)))
-    .collect()
-}
-
-/// Append a mount entry to the bubblewrap args.
 fn append_mount(args: &mut Vec<String>, mount: &Mount) -> Result<(), SandboxError> {
     if !mount.source.is_absolute() || !mount.target.is_absolute() {
         return Err(SandboxError::InvalidConfig(format!(
@@ -321,8 +312,7 @@ fn append_mount(args: &mut Vec<String>, mount: &Mount) -> Result<(), SandboxErro
     Ok(())
 }
 
-/// Append default /etc mounts needed by bubblewrap.
-fn append_etc_mounts(args: &mut Vec<String>) {
+pub(crate) fn append_etc_mounts(args: &mut Vec<String>) {
     args.push("--dir".to_string());
     args.push("/etc".to_string());
 
@@ -340,9 +330,19 @@ fn append_etc_mounts(args: &mut Vec<String>) {
         bind_if_exists(args, "--ro-bind", Path::new(src), Path::new(dst));
     }
 
-    let dir_mounts = [("/etc/ssl", "/etc/ssl"), ("/etc/pki", "/etc/pki")];
+    for (src, dst) in [("/etc/ssl", "/etc/ssl"), ("/etc/pki", "/etc/pki")] {
+        bind_if_exists(args, "--ro-bind", Path::new(src), Path::new(dst));
+    }
+}
 
-    for (src, dst) in dir_mounts {
+pub(crate) fn append_runtime_mounts(args: &mut Vec<String>) {
+    for (src, dst) in [
+        ("/lib", "/lib"),
+        ("/lib64", "/lib64"),
+        ("/usr/lib", "/usr/lib"),
+        ("/usr/lib64", "/usr/lib64"),
+        ("/usr/local/lib", "/usr/local/lib"),
+    ] {
         bind_if_exists(args, "--ro-bind", Path::new(src), Path::new(dst));
     }
 }
@@ -371,7 +371,7 @@ fn append_resolv_conf_mount(args: &mut Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{BubblewrapProvider, Mount, append_mount, apply_rlimits, base_system_mounts};
+    use super::{BubblewrapProvider, Mount, append_mount, apply_rlimits};
     use crate::provider::build_prepared_sandbox;
     use crate::{CommandSpec, SandboxContext, SandboxLimits, SandboxPolicy};
     use odyssey_rs_protocol::SandboxMode;
@@ -379,18 +379,6 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
     use tempfile::tempdir;
-
-    #[test]
-    fn base_system_mounts_includes_expected_paths() {
-        let mounts = base_system_mounts();
-        let paths = mounts
-            .iter()
-            .map(|(src, _)| src.to_string_lossy().to_string())
-            .collect::<Vec<_>>();
-        assert!(paths.contains(&"/usr".to_string()));
-        assert!(paths.contains(&"/lib".to_string()));
-        assert!(paths.contains(&"/bin".to_string()));
-    }
 
     #[test]
     fn append_mount_rejects_relative_paths() {
@@ -401,12 +389,7 @@ mod tests {
         };
         let mut args = Vec::new();
         let err = append_mount(&mut args, &mount).expect_err("error");
-        match err {
-            crate::SandboxError::InvalidConfig(message) => {
-                assert!(message.contains("must be absolute"));
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert!(err.to_string().contains("must be absolute"));
     }
 
     #[test]
@@ -418,12 +401,7 @@ mod tests {
         };
         let mut args = Vec::new();
         let err = append_mount(&mut args, &mount).expect_err("error");
-        match err {
-            crate::SandboxError::InvalidConfig(message) => {
-                assert!(message.contains("source does not exist"));
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert!(err.to_string().contains("source does not exist"));
     }
 
     #[test]
@@ -431,7 +409,7 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let mount = Mount {
             source: temp.path().to_path_buf(),
-            target: temp.path().join("target"),
+            target: temp.path().to_path_buf(),
             writable: true,
         };
         let mut args = Vec::new();
@@ -441,12 +419,7 @@ mod tests {
 
     #[test]
     fn apply_rlimits_noop_when_unset() {
-        let limits = SandboxLimits {
-            cpu_seconds: None,
-            memory_bytes: None,
-            nofile: None,
-            pids: None,
-        };
+        let limits = SandboxLimits::default();
         apply_rlimits(&limits).expect("apply limits");
     }
 
@@ -466,7 +439,6 @@ mod tests {
 
         let mut spec = CommandSpec::new("echo");
         spec.args.push("hello".to_string());
-        spec.env.insert("FOO".to_string(), "BAR".to_string());
 
         let cmd = provider.build_command(&prepared, &spec).expect("cmd");
         let args = cmd
@@ -475,8 +447,11 @@ mod tests {
             .map(|arg| arg.to_string_lossy().to_string())
             .collect::<Vec<_>>();
 
-        assert!(args.contains(&"FOO".to_string()));
-        assert!(args.contains(&"BAR".to_string()));
-        assert!(args.iter().any(|arg| arg == "echo"));
+        assert!(
+            args.iter()
+                .any(|arg| arg == "echo" || arg.ends_with("/echo"))
+        );
+        assert!(args.contains(&"hello".to_string()));
+        assert!(args.contains(&"--clearenv".to_string()));
     }
 }

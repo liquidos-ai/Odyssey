@@ -4,6 +4,7 @@ pub mod adaptor;
 pub mod builtins;
 pub mod context;
 pub mod events;
+pub mod mcp;
 pub mod output_policy;
 pub mod permissions;
 pub mod question;
@@ -19,6 +20,8 @@ pub use builtins::{builtin_tool_registry, register_builtin_tools};
 pub use context::{ToolContext, ToolResultHandler, ToolSandbox, TurnServices};
 /// Event sink for streaming events (re-exported from protocol).
 pub use events::EventSink;
+/// MCP client connection manager and error types.
+pub use mcp::{McpClientManager, McpError};
 /// Tool output policy.
 pub use output_policy::ToolOutputPolicy;
 /// Permission checking interfaces for tool execution.

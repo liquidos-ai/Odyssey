@@ -3,12 +3,10 @@
 use autoagents_core::agent::prebuilt::executor::ReActAgent;
 use autoagents_llm::LLMProvider;
 use odyssey_rs_config::OdysseyConfig;
-use odyssey_rs_core::{AgentBuilder, DEFAULT_AGENT_ID, LLMEntry, OdysseyAgent, Orchestrator};
-use odyssey_rs_memory::FileMemoryProvider;
+use odyssey_rs_core::{AgentBuilder, AgentRuntime, DEFAULT_AGENT_ID, LLMEntry, OdysseyAgent};
 use odyssey_rs_test_utils::FixedLLM;
 use odyssey_rs_tools::builtin_tool_registry;
 use pretty_assertions::assert_eq;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::tempdir;
 
@@ -23,18 +21,11 @@ async fn resumes_session_from_state_store() {
 
     let llm: Arc<dyn LLMProvider> = Arc::new(FixedLLM::new("persisted response"));
     let tools = builtin_tool_registry();
-    let memory = Arc::new(
-        FileMemoryProvider::new(PathBuf::from(
-            config.memory.path.clone().expect("memory path"),
-        ))
-        .expect("memory provider"),
-    );
     let default_agent = AgentBuilder::new(
         DEFAULT_AGENT_ID.to_string(),
         ReActAgent::new(OdysseyAgent::new("Test agent".to_string(), Vec::new())),
-        memory.clone(),
     );
-    let orchestrator = Orchestrator::new(config.clone(), tools, None, None, None, None)
+    let orchestrator = AgentRuntime::new(config.clone(), tools, None, None, None, None)
         .expect("build orchestrator");
     orchestrator
         .register_llm_provider(LLMEntry {
@@ -51,10 +42,9 @@ async fn resumes_session_from_state_store() {
     let default_agent = AgentBuilder::new(
         DEFAULT_AGENT_ID.to_string(),
         ReActAgent::new(OdysseyAgent::new("Test agent".to_string(), Vec::new())),
-        memory,
     );
     let orchestrator =
-        Orchestrator::new(config, tools, None, None, None, None).expect("build orchestrator");
+        AgentRuntime::new(config, tools, None, None, None, None).expect("build orchestrator");
     orchestrator
         .register_llm_provider(LLMEntry {
             id: "default_LLM".to_string(),

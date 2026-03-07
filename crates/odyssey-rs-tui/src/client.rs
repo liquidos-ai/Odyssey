@@ -4,7 +4,7 @@ use crate::event::AppEvent;
 use crate::event_bus::EventBus;
 use anyhow::Result;
 use log::{debug, info};
-use odyssey_rs_core::Orchestrator;
+use odyssey_rs_core::AgentRuntime;
 use odyssey_rs_core::types::{Session, SessionSummary};
 use odyssey_rs_protocol::{ApprovalDecision, SkillSummary};
 use std::sync::Arc;
@@ -13,14 +13,14 @@ use uuid::Uuid;
 
 /// Local client that wraps an embedded orchestrator.
 #[derive(Clone)]
-pub struct OrchestratorClient {
-    orchestrator: Arc<Orchestrator>,
+pub struct AgentRuntimeClient {
+    orchestrator: Arc<AgentRuntime>,
     events: EventBus,
 }
 
-impl OrchestratorClient {
+impl AgentRuntimeClient {
     /// Create a new local client.
-    pub fn new(orchestrator: Arc<Orchestrator>, events: EventBus) -> Self {
+    pub fn new(orchestrator: Arc<AgentRuntime>, events: EventBus) -> Self {
         Self {
             orchestrator,
             events,

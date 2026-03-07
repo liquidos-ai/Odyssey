@@ -15,7 +15,7 @@ use autoagents_llm::backends::openai::OpenAI;
 use autoagents_llm::builder::LLMBuilder;
 use odyssey_rs::config::OdysseyConfig;
 use odyssey_rs::core::prompt::{PromptBuilder, PromptProfile};
-use odyssey_rs::core::{AgentBuilder, DEFAULT_AGENT_ID, LLMEntry, OdysseyAgent, Orchestrator};
+use odyssey_rs::core::{AgentBuilder, DEFAULT_AGENT_ID, LLMEntry, OdysseyAgent, AgentRuntime};
 use odyssey_rs::core::skills::SkillStore;
 use odyssey_rs::memory::FileMemoryProvider;
 use odyssey_rs_tools::builtin_tool_registry;
@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
         .build_system_prompt("", &config.memory, PromptProfile::OrchestratorDefault)
         .await?;
 
-    let orchestrator = Orchestrator::new(
+    let orchestrator = AgentRuntime::new(
         config,
         tools,
         None,

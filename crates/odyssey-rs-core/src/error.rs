@@ -27,6 +27,9 @@ pub enum OdysseyCoreError {
     /// Sandbox provider error.
     #[error("sandbox error: {0}")]
     Sandbox(String),
+    /// MCP initialization or execution error.
+    #[error("mcp error: {0}")]
+    Mcp(String),
     /// IO error.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

@@ -10,7 +10,7 @@ pub struct OdysseyConfig {
     #[serde(default, rename = "$schema")]
     pub schema: Option<String>,
     #[serde(default)]
-    pub orchestrator: OrchestratorConfig,
+    pub agents: AgentsConfig,
     #[serde(default)]
     pub tools: ToolsConfig,
     #[serde(default)]
@@ -19,6 +19,8 @@ pub struct OdysseyConfig {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub skills: SkillsConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
     #[serde(default)]
     pub sandbox: SandboxConfig,
     #[serde(default)]
@@ -52,15 +54,15 @@ impl OdysseyConfigBuilder {
         self
     }
 
-    /// Replace the global permissions configuration.
-    pub fn permissions(mut self, permissions: PermissionsConfig) -> Self {
-        self.config.permissions = permissions;
+    /// Replace the managed agent configuration.
+    pub fn agents(mut self, agents: AgentsConfig) -> Self {
+        self.config.agents = agents;
         self
     }
 
-    /// Replace the orchestrator configuration.
-    pub fn orchestrator(mut self, orchestrator: OrchestratorConfig) -> Self {
-        self.config.orchestrator = orchestrator;
+    /// Replace the global permissions configuration.
+    pub fn permissions(mut self, permissions: PermissionsConfig) -> Self {
+        self.config.permissions = permissions;
         self
     }
 
@@ -73,6 +75,12 @@ impl OdysseyConfigBuilder {
     /// Replace the global skills configuration.
     pub fn skills(mut self, skills: SkillsConfig) -> Self {
         self.config.skills = skills;
+        self
+    }
+
+    /// Replace the global MCP configuration.
+    pub fn mcp(mut self, mcp: McpConfig) -> Self {
+        self.config.mcp = mcp;
         self
     }
 
@@ -94,24 +102,38 @@ impl OdysseyConfigBuilder {
     }
 }
 
-/// Configuration for the built-in Odyssey orchestrator agent.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct OrchestratorConfig {
-    #[serde(default)]
-    pub additional_instruction_prompt: Option<String>,
-    #[serde(default = "default_subagent_window_size")]
-    pub subagent_window_size: usize,
-}
-
-fn default_subagent_window_size() -> usize {
-    20
-}
-
 /// Model provider configuration for an agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub provider: String,
     pub name: String,
+}
+
+/// Managed config-defined agent registrations.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentsConfig {
+    #[serde(default)]
+    pub list: Vec<ManagedAgentConfig>,
+}
+
+/// A config-defined ReAct agent managed by Odyssey.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManagedAgentConfig {
+    pub id: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub model: Option<ModelConfig>,
+    #[serde(default)]
+    pub tools: ToolPolicy,
+    #[serde(default)]
+    pub memory: Option<MemoryConfig>,
+    #[serde(default)]
+    pub sandbox: Option<AgentSandboxConfig>,
+    #[serde(default)]
+    pub permissions: Option<AgentPermissionsConfig>,
 }
 
 /// Tool allow/deny policy for a single agent.
@@ -193,173 +215,30 @@ fn default_redaction_replacement() -> String {
 /// Memory backend configuration for an agent or global defaults.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryConfig {
-    #[serde(default = "default_memory_provider")]
-    pub provider: String,
     #[serde(default)]
     pub path: Option<String>,
     #[serde(default = "default_recall_k")]
     pub recall_k: usize,
     #[serde(default)]
-    pub capture: MemoryCapturePolicy,
-    #[serde(default)]
-    pub recall: MemoryRecallConfig,
-    #[serde(default)]
-    pub compaction: MemoryCompactionPolicy,
-    #[serde(default)]
     pub instruction_roots: Vec<String>,
+    #[serde(default)]
+    pub capture_tool_output: bool,
 }
 
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
-            provider: default_memory_provider(),
             path: None,
             recall_k: default_recall_k(),
-            capture: MemoryCapturePolicy::default(),
-            recall: MemoryRecallConfig::default(),
-            compaction: MemoryCompactionPolicy::default(),
             instruction_roots: Vec::new(),
+            capture_tool_output: false,
         }
     }
-}
-
-/// Default memory provider identifier.
-fn default_memory_provider() -> String {
-    "file".to_string()
 }
 
 /// Default number of memory items to recall.
 fn default_recall_k() -> usize {
     6
-}
-
-/// Capture policy used by memory providers.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MemoryCapturePolicy {
-    #[serde(default = "default_capture_messages")]
-    pub capture_messages: bool,
-    #[serde(default)]
-    pub capture_tool_output: bool,
-    #[serde(default)]
-    pub deny_patterns: Vec<String>,
-    #[serde(default)]
-    pub redact_patterns: Vec<String>,
-    #[serde(default)]
-    pub max_message_chars: Option<usize>,
-    #[serde(default = "default_detect_secrets")]
-    pub detect_secrets: bool,
-    #[serde(default = "default_secret_entropy_threshold")]
-    pub secret_entropy_threshold: f32,
-    #[serde(default)]
-    pub max_tool_output_chars: Option<usize>,
-}
-
-impl Default for MemoryCapturePolicy {
-    fn default() -> Self {
-        Self {
-            capture_messages: default_capture_messages(),
-            capture_tool_output: false,
-            deny_patterns: Vec::new(),
-            redact_patterns: Vec::new(),
-            max_message_chars: None,
-            detect_secrets: default_detect_secrets(),
-            secret_entropy_threshold: default_secret_entropy_threshold(),
-            max_tool_output_chars: None,
-        }
-    }
-}
-
-/// Default toggle for capturing user/assistant messages.
-fn default_capture_messages() -> bool {
-    true
-}
-
-/// Default toggle for secret detection in memory capture.
-fn default_detect_secrets() -> bool {
-    true
-}
-
-/// Default entropy threshold for identifying secrets.
-fn default_secret_entropy_threshold() -> f32 {
-    3.7
-}
-
-/// Recall scoring configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MemoryRecallConfig {
-    #[serde(default)]
-    pub mode: MemoryRecallMode,
-    #[serde(default = "default_text_weight")]
-    pub text_weight: f32,
-    #[serde(default = "default_vector_weight")]
-    pub vector_weight: f32,
-    #[serde(default)]
-    pub min_score: Option<f32>,
-}
-
-impl Default for MemoryRecallConfig {
-    fn default() -> Self {
-        Self {
-            mode: MemoryRecallMode::default(),
-            text_weight: default_text_weight(),
-            vector_weight: default_vector_weight(),
-            min_score: None,
-        }
-    }
-}
-
-/// Default text similarity weight for recall scoring.
-fn default_text_weight() -> f32 {
-    0.3
-}
-
-/// Default vector similarity weight for recall scoring.
-fn default_vector_weight() -> f32 {
-    0.7
-}
-
-/// Recall mode selection for memory search.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum MemoryRecallMode {
-    #[default]
-    Text,
-    Vector,
-    Hybrid,
-}
-
-/// Compaction policy for long sessions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MemoryCompactionPolicy {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default = "default_compaction_max_messages")]
-    pub max_messages: usize,
-    #[serde(default = "default_compaction_summary_chars")]
-    pub summary_max_chars: usize,
-    #[serde(default)]
-    pub max_total_chars: Option<usize>,
-}
-
-impl Default for MemoryCompactionPolicy {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            max_messages: default_compaction_max_messages(),
-            summary_max_chars: default_compaction_summary_chars(),
-            max_total_chars: None,
-        }
-    }
-}
-
-/// Default maximum message count before compaction.
-fn default_compaction_max_messages() -> usize {
-    40
-}
-
-/// Default maximum summary length during compaction.
-fn default_compaction_summary_chars() -> usize {
-    1500
 }
 
 /// Per-agent sandbox overrides.
@@ -455,6 +334,66 @@ pub use odyssey_rs_protocol::PathAccess;
 /// Re-export protocol permission action (used in permission rules).
 pub use odyssey_rs_protocol::PermissionAction;
 
+/// Global MCP client configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub servers: Vec<McpServerConfig>,
+}
+
+/// Configuration for a single MCP server connection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    pub name: String,
+    #[serde(default = "default_mcp_protocol")]
+    pub protocol: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub sandbox: McpServerSandboxConfig,
+}
+
+impl Default for McpServerConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            protocol: default_mcp_protocol(),
+            command: String::new(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            cwd: None,
+            description: None,
+            sandbox: McpServerSandboxConfig::default(),
+        }
+    }
+}
+
+fn default_mcp_protocol() -> String {
+    "stdio".to_string()
+}
+
+/// Sandbox policy for a single MCP server process.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpServerSandboxConfig {
+    #[serde(default)]
+    pub filesystem: SandboxFilesystem,
+    #[serde(default)]
+    pub network: SandboxNetwork,
+    #[serde(default)]
+    pub env: SandboxEnv,
+    #[serde(default)]
+    pub limits: SandboxLimits,
+}
+
 /// Top-level sandbox configuration applied to all tools.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxConfig {
@@ -496,38 +435,36 @@ fn default_sandbox_mode() -> SandboxMode {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SandboxFilesystem {
     #[serde(default)]
-    pub allow_read: Vec<String>,
+    pub read: Vec<String>,
     #[serde(default)]
-    pub deny_read: Vec<String>,
+    pub write: Vec<String>,
     #[serde(default)]
-    pub allow_write: Vec<String>,
-    #[serde(default)]
-    pub deny_write: Vec<String>,
-    #[serde(default)]
-    pub allow_exec: Vec<String>,
-    #[serde(default)]
-    pub deny_exec: Vec<String>,
+    pub exec: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxNetworkMode {
+    #[default]
+    Disabled,
+    AllowAll,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SandboxNetwork {
     #[serde(default)]
-    pub allow_domains: Vec<String>,
-    #[serde(default)]
-    pub deny_domains: Vec<String>,
+    pub mode: SandboxNetworkMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SandboxEnv {
     #[serde(default)]
-    pub allow: Vec<String>,
-    #[serde(default)]
-    pub deny: Vec<String>,
+    pub inherit: Vec<String>,
     #[serde(default)]
     pub set: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxLimits {
     #[serde(default)]
     pub cpu_seconds: Option<u64>,
@@ -537,6 +474,38 @@ pub struct SandboxLimits {
     pub nofile: Option<u64>,
     #[serde(default)]
     pub pids: Option<u64>,
+    #[serde(default = "default_sandbox_wall_clock_seconds")]
+    pub wall_clock_seconds: Option<u64>,
+    #[serde(default = "default_sandbox_stdout_bytes")]
+    pub stdout_bytes: Option<usize>,
+    #[serde(default = "default_sandbox_stderr_bytes")]
+    pub stderr_bytes: Option<usize>,
+}
+
+impl Default for SandboxLimits {
+    fn default() -> Self {
+        Self {
+            cpu_seconds: None,
+            memory_bytes: None,
+            nofile: None,
+            pids: None,
+            wall_clock_seconds: default_sandbox_wall_clock_seconds(),
+            stdout_bytes: default_sandbox_stdout_bytes(),
+            stderr_bytes: default_sandbox_stderr_bytes(),
+        }
+    }
+}
+
+fn default_sandbox_wall_clock_seconds() -> Option<u64> {
+    Some(60)
+}
+
+fn default_sandbox_stdout_bytes() -> Option<usize> {
+    Some(64 * 1024)
+}
+
+fn default_sandbox_stderr_bytes() -> Option<usize> {
+    Some(64 * 1024)
 }
 
 /// Session persistence settings.

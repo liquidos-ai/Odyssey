@@ -11,7 +11,6 @@ async-trait.workspace = true
 autoagents-core.workspace = true
 autoagents-llm.workspace = true
 futures-util.workspace = true
-odyssey-rs-memory.workspace = true
 odyssey-rs-protocol.workspace = true
 odyssey-rs-tools.workspace = true
 parking_lot.workspace = true

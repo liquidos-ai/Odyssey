@@ -1,4 +1,4 @@
-//! Orchestrator Core
+//! AgentRuntime Core
 
 mod agent_factory;
 mod memory;
@@ -10,24 +10,29 @@ mod tool_context;
 pub use registry::LLMEntry;
 
 use crate::AgentBuilder;
-use crate::agent::AgentInstance;
+use crate::OdysseyAgent;
+use crate::agent_runtime::registry::LLMRegistry;
 use crate::error::OdysseyCoreError;
-use crate::orchestrator::registry::LLMRegistry;
+use crate::memory::{FileMemoryProvider, MemoryProvider};
 use crate::permissions::{ApprovalHandler, ApprovalRequest, PermissionEngine, PermissionHook};
 use crate::skills::SkillStore;
 use crate::state::{JsonlStateStore, StateStore};
 use crate::tools::ToolRouter;
 use crate::types::{AgentInfo, OdysseyAgentRuntime, Session, SessionId, SessionSummary};
+use autoagents_core::agent::error::RunnableAgentError;
+use autoagents_core::agent::prebuilt::executor::ReActAgent;
 use autoagents_core::agent::{AgentDeriveT, AgentExecutor};
 use autoagents_llm::LLMProvider;
 use directories::BaseDirs;
-use log::{debug, info, warn};
-use odyssey_rs_config::{OdysseyConfig, SessionsConfig};
+use log::{debug, error, info, warn};
+use odyssey_rs_config::{ManagedAgentConfig, OdysseyConfig, SessionsConfig};
 use odyssey_rs_protocol::{EventMsg, EventSink, SkillProvider, SkillSummary, TurnId};
 #[cfg(target_os = "linux")]
 use odyssey_rs_sandbox::BubblewrapProvider;
-use odyssey_rs_sandbox::{LocalSandboxProvider, SandboxProvider, default_provider_name};
-use odyssey_rs_tools::{QuestionHandler, ToolRegistry};
+use odyssey_rs_sandbox::{
+    LocalSandboxProvider, SandboxProvider, SandboxRuntime, default_provider_name,
+};
+use odyssey_rs_tools::{McpClientManager, QuestionHandler, ToolRegistry};
 use parking_lot::RwLock;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,6 +50,113 @@ use tool_context::ToolContextFactory;
 pub const DEFAULT_AGENT_ID: &str = "odyssey-orchestrator";
 pub const DEFAULT_LLM_ID: &str = "odyssey-default-llm";
 const RUN_STREAM_BUFFER: usize = 512;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpStatus {
+    Disabled,
+    Connected {
+        server_count: usize,
+        tool_count: usize,
+    },
+    Failed(String),
+}
+
+trait PendingAgentRegistration: Send {
+    fn register(self: Box<Self>, orchestrator: &AgentRuntime) -> Result<(), OdysseyCoreError>;
+}
+
+impl<T> PendingAgentRegistration for AgentBuilder<T>
+where
+    T: OdysseyAgentRuntime,
+    String: From<<T as AgentExecutor>::Output>,
+    RunnableAgentError: From<<T as AgentExecutor>::Error>,
+{
+    fn register(self: Box<Self>, orchestrator: &AgentRuntime) -> Result<(), OdysseyCoreError> {
+        orchestrator.register_agent(*self)
+    }
+}
+
+pub struct AgentRuntimeBuilder {
+    config: OdysseyConfig,
+    tools: ToolRegistry,
+    sandbox_provider: Option<Arc<dyn SandboxProvider>>,
+    state_store: Option<Arc<dyn StateStore>>,
+    skill_store: Option<Arc<dyn SkillProvider>>,
+    event_sink: Option<Arc<dyn EventSink>>,
+    agents: Vec<Box<dyn PendingAgentRegistration>>,
+}
+
+impl AgentRuntimeBuilder {
+    pub fn new(config: OdysseyConfig, tools: ToolRegistry) -> Self {
+        Self {
+            config,
+            tools,
+            sandbox_provider: None,
+            state_store: None,
+            skill_store: None,
+            event_sink: None,
+            agents: Vec::new(),
+        }
+    }
+
+    pub fn with_sandbox_provider(mut self, sandbox_provider: Arc<dyn SandboxProvider>) -> Self {
+        self.sandbox_provider = Some(sandbox_provider);
+        self
+    }
+
+    pub fn with_state_store(mut self, state_store: Arc<dyn StateStore>) -> Self {
+        self.state_store = Some(state_store);
+        self
+    }
+
+    pub fn with_skill_store(mut self, skill_store: Arc<dyn SkillProvider>) -> Self {
+        self.skill_store = Some(skill_store);
+        self
+    }
+
+    pub fn with_event_sink(mut self, event_sink: Arc<dyn EventSink>) -> Self {
+        self.event_sink = Some(event_sink);
+        self
+    }
+
+    pub fn register_agent<T>(mut self, agent: AgentBuilder<T>) -> Self
+    where
+        T: OdysseyAgentRuntime,
+        String: From<<T as AgentExecutor>::Output>,
+        RunnableAgentError: From<<T as AgentExecutor>::Error>,
+    {
+        self.agents.push(Box::new(agent));
+        self
+    }
+
+    pub async fn build(self) -> Result<AgentRuntime, OdysseyCoreError> {
+        let has_agents = !self.agents.is_empty();
+        let mut managed_agents = self.config.agents.list.clone();
+        let mut orchestrator = AgentRuntime::new(
+            self.config,
+            self.tools,
+            self.sandbox_provider,
+            self.state_store,
+            self.skill_store,
+            self.event_sink,
+        )?;
+        orchestrator.initialize_mcp().await;
+
+        if managed_agents.is_empty() && !has_agents {
+            managed_agents.push(default_managed_agent_config());
+        }
+
+        for agent in self.agents {
+            agent.register(&orchestrator)?;
+        }
+
+        for agent in managed_agents {
+            orchestrator.register_agent(orchestrator.managed_agent_builder(agent)?)?;
+        }
+
+        Ok(orchestrator)
+    }
+}
 
 /// Result payload for a single run invocation.
 pub struct RunResult {
@@ -118,7 +230,7 @@ impl EventSink for FanoutEventSink {
 }
 
 /// Main orchestration façade: registers agents, manages sessions, and runs turns.
-pub struct Orchestrator {
+pub struct AgentRuntime {
     config: Arc<OdysseyConfig>,
     tool_router: ToolRouter,
     permission_engine: Arc<PermissionEngine>,
@@ -127,11 +239,14 @@ pub struct Orchestrator {
     agent_registry: AgentRegistry,
     session_store: SessionStore,
     executor: Arc<TurnExecutor>,
+    sandbox_runtime: Option<Arc<SandboxRuntime>>,
+    mcp_manager: Option<Arc<McpClientManager>>,
     skill_store: Option<Arc<dyn SkillProvider>>,
+    mcp_status: McpStatus,
     event_sink: Option<Arc<dyn EventSink>>,
 }
 
-impl Orchestrator {
+impl AgentRuntime {
     /// Construct a new orchestrator with optional overrides.
     pub fn new(
         config: OdysseyConfig,
@@ -170,9 +285,27 @@ impl Orchestrator {
         let permission_engine = Arc::new(PermissionEngine::new(config.permissions.clone())?);
         permission_engine.set_event_sink(event_sink.clone());
         let sandbox_provider = if sandbox_provider.is_none() && sandbox_required(&config) {
-            Some(build_default_sandbox_provider(&config.sandbox)?)
+            Some(
+                build_default_sandbox_provider(&config.sandbox).inspect_err(|err| {
+                    error!(
+                        "component=sandbox.provider_init provider={:?} mode={:?} error={}",
+                        config.sandbox.provider, config.sandbox.mode, err
+                    );
+                })?,
+            )
         } else {
             sandbox_provider
+        };
+        let sandbox_runtime = match sandbox_provider.clone() {
+            Some(provider) => Some(Arc::new(
+                build_sandbox_runtime(&config, provider).inspect_err(|err| {
+                    error!(
+                        "component=sandbox.runtime_init sandbox_enabled={} error={}",
+                        config.sandbox.enabled, err
+                    );
+                })?,
+            )),
+            None => None,
         };
         let config = Arc::new(config);
         let question_handler = Arc::new(RwLock::new(None));
@@ -180,7 +313,7 @@ impl Orchestrator {
         let session_store = SessionStore::new(state_store.clone());
         let tool_context_factory = ToolContextFactory::new(
             config.clone(),
-            sandbox_provider.clone(),
+            sandbox_runtime.clone(),
             permission_engine.clone(),
             question_handler.clone(),
             skill_store.clone(),
@@ -207,25 +340,111 @@ impl Orchestrator {
             agent_registry,
             session_store,
             executor,
+            sandbox_runtime,
+            mcp_manager: None,
             skill_store,
+            mcp_status: McpStatus::Disabled,
             llm_registry,
             event_sink,
         };
 
         if orchestrator.config.sandbox.enabled && sandbox_provider.is_none() {
             warn!("sandbox enabled without provider configured");
-            return Err(OdysseyCoreError::Sandbox(
-                "sandbox enabled but no provider configured".to_string(),
-            ));
+            let error =
+                OdysseyCoreError::Sandbox("sandbox enabled but no provider configured".to_string());
+            error!(
+                "component=sandbox.provider_missing sandbox_enabled={} error={}",
+                orchestrator.config.sandbox.enabled, error
+            );
+            return Err(error);
         }
 
         info!("orchestrator initialized");
         Ok(orchestrator)
     }
 
+    async fn initialize_mcp(&mut self) {
+        if !self.config.mcp.enabled {
+            self.mcp_status = McpStatus::Disabled;
+            return;
+        }
+
+        let Some(sandbox_runtime) = self.sandbox_runtime.clone() else {
+            let message = "MCP enabled but sandbox runtime is unavailable".to_string();
+            error!(
+                "component=mcp.runtime_missing mcp_enabled={} error={message}",
+                self.config.mcp.enabled
+            );
+            self.mcp_status = McpStatus::Failed(message);
+            return;
+        };
+        let base_dir = match std::env::current_dir() {
+            Ok(path) => path,
+            Err(error) => {
+                let message = format!("failed to resolve cwd: {error}");
+                error!(
+                    "component=mcp.cwd mcp_enabled={} error={message}",
+                    self.config.mcp.enabled
+                );
+                self.mcp_status = McpStatus::Failed(message);
+                return;
+            }
+        };
+
+        match McpClientManager::connect(
+            &self.config.mcp,
+            sandbox_runtime,
+            DEFAULT_AGENT_ID,
+            &base_dir,
+        )
+        .await
+        {
+            Ok(Some(manager)) => {
+                let server_count = manager.server_names().len();
+                let tool_count = manager.tool_names().len();
+                manager.register_tools(self.tool_router.registry());
+                self.mcp_manager = Some(Arc::new(manager));
+                self.mcp_status = McpStatus::Connected {
+                    server_count,
+                    tool_count,
+                };
+            }
+            Ok(None) => {
+                self.mcp_status = McpStatus::Disabled;
+            }
+            Err(error) => {
+                let message = error.to_string();
+                let servers = self
+                    .config
+                    .mcp
+                    .servers
+                    .iter()
+                    .map(|server| server.name.clone())
+                    .collect::<Vec<_>>();
+                error!(
+                    "component=mcp.connect servers={:?} base_dir={} error={}",
+                    servers,
+                    base_dir.display(),
+                    message
+                );
+                self.mcp_status = McpStatus::Failed(message);
+            }
+        }
+    }
+
     /// Return the shared configuration for this orchestrator.
     pub fn config(&self) -> &OdysseyConfig {
         &self.config
+    }
+
+    /// Return the startup-owned sandbox runtime, when configured.
+    pub fn sandbox_runtime(&self) -> Option<&Arc<SandboxRuntime>> {
+        self.sandbox_runtime.as_ref()
+    }
+
+    /// Return MCP status observed at startup.
+    pub fn mcp_status(&self) -> &McpStatus {
+        &self.mcp_status
     }
 
     /// Set an approval handler to resolve permission requests.
@@ -306,6 +525,7 @@ impl Orchestrator {
     where
         T: OdysseyAgentRuntime,
         String: From<<T as AgentExecutor>::Output>, //TODO: Instead of String directly Add AgentOutput for orchestrator agent
+        RunnableAgentError: From<<T as AgentExecutor>::Error>,
     {
         let id = agent.id().to_string();
         self.ensure_non_default_agent_id(&id)?;
@@ -333,17 +553,26 @@ impl Orchestrator {
     where
         T: OdysseyAgentRuntime,
         String: From<<T as AgentExecutor>::Output>,
+        RunnableAgentError: From<<T as AgentExecutor>::Error>,
     {
         let id = agent.id().to_string();
-        let description = agent.description().trim();
-        let description = if description.is_empty() {
-            None
-        } else {
+        let description = if let Some(description) = agent.description_override() {
             Some(description.to_string())
+        } else {
+            let description = agent.description().trim();
+            if description.is_empty() {
+                None
+            } else {
+                Some(description.to_string())
+            }
         };
         let prompt = agent.description().to_string();
-        let tool_policy = agent.tool_policy();
-        let memory_provider = agent.memory_provider();
+        let tool_policy = agent.tool_policy().clone();
+        let model = agent.model();
+        let permission_mode = agent.permission_mode();
+        let sandbox = agent.sandbox();
+        let memory = agent.memory();
+        let memory_provider = self.build_memory_provider(id.as_str(), memory.as_ref())?;
         let executor: Arc<dyn agent_factory::AgentExecutorRunner> =
             Arc::new(AutoAgentsExecutor::new(agent));
 
@@ -351,14 +580,58 @@ impl Orchestrator {
             id,
             description,
             prompt,
-            None,
+            model,
             tool_policy,
-            None,
-            None,
-            None,
+            permission_mode,
+            sandbox,
+            memory,
             memory_provider,
             executor,
         ))
+    }
+
+    fn managed_agent_builder(
+        &self,
+        agent: ManagedAgentConfig,
+    ) -> Result<AgentBuilder<ReActAgent<OdysseyAgent>>, OdysseyCoreError> {
+        let prompt = agent.prompt.unwrap_or_else(|| {
+            "You are Odyssey, a secure agent runtime that follows explicit permissions and tool policy."
+                .to_string()
+        });
+        let mut builder = AgentBuilder::new(
+            agent.id,
+            ReActAgent::new(OdysseyAgent::new(prompt, Vec::new())),
+        )
+        .with_tool_policy(agent.tools);
+
+        if let Some(description) = agent.description {
+            builder = builder.with_description(description);
+        }
+        if let Some(model) = agent.model {
+            builder = builder.with_model(model);
+        }
+        if let Some(permissions) = agent.permissions {
+            builder = builder.with_permissions(permissions);
+        }
+        if let Some(sandbox) = agent.sandbox {
+            builder = builder.with_sandbox(sandbox);
+        }
+        if let Some(memory) = agent.memory {
+            builder = builder.with_memory(memory);
+        }
+
+        Ok(builder)
+    }
+
+    fn build_memory_provider(
+        &self,
+        agent_id: &str,
+        override_config: Option<&odyssey_rs_config::MemoryConfig>,
+    ) -> Result<Arc<dyn MemoryProvider>, OdysseyCoreError> {
+        let root = resolve_memory_root(&self.config, agent_id, override_config)?;
+        let provider = FileMemoryProvider::new(root)
+            .map_err(|err| OdysseyCoreError::Memory(err.to_string()))?;
+        Ok(Arc::new(provider))
     }
 
     /// Override the default agent id used for new sessions.
@@ -472,6 +745,15 @@ impl Orchestrator {
                 stream: false,
             })
             .await
+            .inspect_err(|error| {
+                log::error!(
+                    "component=run.turn session_id={} agent_id={} llm_id={} error={}",
+                    session_id,
+                    agent_id,
+                    llm_id,
+                    error
+                );
+            })
     }
 
     /// Run a single turn and stream events, creating a fresh session.
@@ -520,8 +802,10 @@ impl Orchestrator {
         });
         let executor = self.executor.clone();
         let agent_id = agent_id.to_string();
+        let capture_agent_id = agent_id.clone();
+        let capture_llm_id = llm_id.to_string();
         let handle = tokio::spawn(async move {
-            executor
+            let result = executor
                 .run_turn(runtime::TurnParams {
                     session_id,
                     agent_id,
@@ -535,7 +819,18 @@ impl Orchestrator {
                     event_sink: Some(fanout),
                     stream: true,
                 })
-                .await
+                .await;
+            if let Err(error) = &result {
+                log::error!(
+                    "component=run.stream_turn session_id={} agent_id={} llm_id={} turn_id={} error={}",
+                    session_id,
+                    capture_agent_id,
+                    capture_llm_id,
+                    turn_id,
+                    error
+                );
+            }
+            result
         });
 
         Ok(RunStream {
@@ -592,11 +887,35 @@ fn build_default_sandbox_provider(
         "bubblewrap" | "bwrap" => Err(OdysseyCoreError::Sandbox(
             "bubblewrap provider is only supported on Linux".to_string(),
         )),
-        "local" | "none" | "nosandbox" => Ok(Arc::new(LocalSandboxProvider::new())),
+        "host" | "local" | "none" | "nosandbox" => Ok(Arc::new(LocalSandboxProvider::new())),
         other => Err(OdysseyCoreError::Sandbox(format!(
             "unsupported sandbox provider: {other}"
         ))),
     }
+}
+
+fn build_sandbox_runtime(
+    config: &OdysseyConfig,
+    provider: Arc<dyn SandboxProvider>,
+) -> Result<SandboxRuntime, OdysseyCoreError> {
+    let provider_name = config
+        .sandbox
+        .provider
+        .clone()
+        .unwrap_or_else(|| default_provider_name(config.sandbox.mode).to_string());
+    let root = resolve_sandbox_runtime_root()?;
+    info!(
+        "initializing sandbox runtime (provider={}, root={})",
+        provider_name,
+        root.display()
+    );
+    SandboxRuntime::new(provider_name, provider, root)
+        .map_err(|err| OdysseyCoreError::Sandbox(err.to_string()))
+}
+
+fn resolve_sandbox_runtime_root() -> Result<PathBuf, OdysseyCoreError> {
+    let cwd = std::env::current_dir().map_err(OdysseyCoreError::Io)?;
+    Ok(cwd.join(".odyssey").join("sandbox"))
 }
 
 /// Determine whether any sandbox provider is required by config.
@@ -605,6 +924,42 @@ fn sandbox_required(config: &OdysseyConfig) -> bool {
         return true;
     }
     false
+}
+
+fn default_managed_agent_config() -> ManagedAgentConfig {
+    ManagedAgentConfig {
+        id: DEFAULT_AGENT_ID.to_string(),
+        description: Some("Odyssey managed agent".to_string()),
+        prompt: None,
+        model: None,
+        tools: odyssey_rs_config::ToolPolicy::allow_all(),
+        memory: None,
+        sandbox: None,
+        permissions: None,
+    }
+}
+
+fn resolve_memory_root(
+    config: &OdysseyConfig,
+    agent_id: &str,
+    override_config: Option<&odyssey_rs_config::MemoryConfig>,
+) -> Result<PathBuf, OdysseyCoreError> {
+    let configured_path = override_config
+        .and_then(|memory| memory.path.as_ref())
+        .or(config.memory.path.as_ref())
+        .cloned();
+
+    if let Some(path) = configured_path {
+        let path = PathBuf::from(path);
+        if path.is_absolute() {
+            return Ok(path);
+        }
+        let cwd = std::env::current_dir().map_err(OdysseyCoreError::Io)?;
+        return Ok(cwd.join(path));
+    }
+
+    let sessions_root = resolve_default_root(config.sessions.path.as_ref(), "sessions")?;
+    Ok(sessions_root.join("memory").join(agent_id))
 }
 
 /// Resolve an absolute storage root for config-specified paths.

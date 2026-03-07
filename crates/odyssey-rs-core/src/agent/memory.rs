@@ -1,14 +1,14 @@
-//! AutoAgents memory adapter backed by odyssey-rs-memory.
+//! AutoAgents memory adapter backed by Odyssey core memory.
 
+use crate::memory::{
+    MemoryCapturePolicy, MemoryCompactionPolicy, MemoryProvider as OdysseyMemoryProvider,
+    MemoryRecallOptions, MemoryRecord,
+};
 use autoagents_core::agent::memory::{MemoryProvider as AutoAgentsMemoryProvider, MemoryType};
 use autoagents_llm::ToolCall;
 use autoagents_llm::chat::{ChatMessage, ChatRole, MessageType};
 use autoagents_llm::error::LLMError;
 use chrono::Utc;
-use odyssey_rs_memory::{
-    MemoryCapturePolicy, MemoryCompactionPolicy, MemoryProvider as OdysseyMemoryProvider,
-    MemoryRecallOptions, MemoryRecord,
-};
 use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -350,14 +350,14 @@ mod tests {
         tool_call_names, tool_result_content,
     };
     use crate::agent::tool_messages::TOOL_RESULT_PLACEHOLDER;
+    use crate::memory::{
+        MemoryCapturePolicy, MemoryCompactionPolicy, MemoryProvider, MemoryRecallOptions,
+        MemoryRecord,
+    };
     use autoagents_core::agent::memory::MemoryProvider as AutoAgentsMemoryProvider;
     use autoagents_llm::FunctionCall;
     use autoagents_llm::ToolCall;
     use autoagents_llm::chat::{ChatMessage, ChatRole, MessageType};
-    use odyssey_rs_memory::{
-        MemoryCapturePolicy, MemoryCompactionPolicy, MemoryProvider, MemoryRecallOptions,
-        MemoryRecord,
-    };
     use parking_lot::Mutex;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -371,7 +371,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl MemoryProvider for RecordingProvider {
-        async fn store(&self, record: MemoryRecord) -> Result<(), odyssey_rs_memory::MemoryError> {
+        async fn store(&self, record: MemoryRecord) -> Result<(), crate::memory::MemoryError> {
             self.records.lock().push(record);
             Ok(())
         }
@@ -381,7 +381,7 @@ mod tests {
             session_id: Uuid,
             _query: Option<&str>,
             _limit: usize,
-        ) -> Result<Vec<MemoryRecord>, odyssey_rs_memory::MemoryError> {
+        ) -> Result<Vec<MemoryRecord>, crate::memory::MemoryError> {
             Ok(self
                 .records
                 .lock()
@@ -389,6 +389,14 @@ mod tests {
                 .filter(|record| record.session_id == session_id)
                 .cloned()
                 .collect())
+        }
+
+        async fn compact(
+            &self,
+            _session_id: Uuid,
+            _policy: &MemoryCompactionPolicy,
+        ) -> Result<Option<MemoryRecord>, crate::memory::MemoryError> {
+            Ok(None)
         }
     }
 
@@ -437,7 +445,6 @@ mod tests {
         let capture = MemoryCapturePolicy {
             capture_messages: true,
             capture_tool_output: false,
-            ..MemoryCapturePolicy::default()
         };
         let mut adapter = OdysseyMemoryAdapter::new(
             session_id,

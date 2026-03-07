@@ -11,7 +11,9 @@ use chrono::Utc;
 use log::{debug, warn};
 use odyssey_rs_protocol::{EventMsg, EventPayload, PathAccess, PermissionRequest, ToolCallId};
 use odyssey_rs_protocol::{SkillProvider, ToolError};
-use odyssey_rs_sandbox::{AccessDecision, AccessMode, SandboxHandle, SandboxProvider};
+use odyssey_rs_sandbox::{
+    AccessDecision, AccessMode, SandboxCellLease, SandboxHandle, SandboxProvider,
+};
 use serde_json::Value;
 use serde_json::json;
 use std::path::PathBuf;
@@ -25,6 +27,8 @@ pub struct ToolSandbox {
     pub provider: Arc<dyn SandboxProvider>,
     /// Provider-specific sandbox handle.
     pub handle: SandboxHandle,
+    /// Optional reusable cell lease retained for the life of the turn.
+    pub lease: Option<Arc<SandboxCellLease>>,
 }
 
 /// Shared service dependencies for a turn (constructed once, shared via Arc).
@@ -484,6 +488,7 @@ mod tests {
         services.sandbox = Some(super::ToolSandbox {
             provider: Arc::new(provider),
             handle,
+            lease: None,
         });
         let ctx = ToolContext {
             session_id: Uuid::nil(),

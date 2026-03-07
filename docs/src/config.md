@@ -19,18 +19,10 @@ that prevent later overrides for constrained keys.
 ## Top-level schema (JSON5)
 ```json5
 {
-  orchestrator: {
-    // NOTE: Accepted by schema but not wired yet (see "Current gaps" below).
-    system_prompt: "You are the Odyssey Orchestrator.",
-    append_system_prompt: "Keep replies concise.",
-    subagent_window_size: 20
-  },
   agents: {
-    setting_sources: ["project", "user"],
-    paths: ["./.odyssey/agents"],
     list: [
       {
-        id: "writer",
+        id: "odyssey-orchestrator",
         description: "Summarizes files.",
         prompt: "Focus on file summaries.",
         model: { provider: "openai", name: "gpt-4.1-mini" },
@@ -93,32 +85,64 @@ that prevent later overrides for constrained keys.
     allow: ["*"],
     deny: []
   },
+  mcp: {
+    enabled: false,
+    servers: [
+      {
+        name: "filesystem",
+        protocol: "stdio",
+        command: "node",
+        args: ["./mcp/filesystem-server.js"],
+        cwd: ".",
+        description: "Sandboxed filesystem MCP server",
+        env: {},
+        sandbox: {
+          filesystem: {
+            read: ["./mcp"],
+            write: [],
+            exec: [],
+          },
+          network: {
+            mode: "disabled",
+          },
+          env: {
+            inherit: ["PATH"],
+            set: {},
+          },
+          limits: {
+            wall_clock_seconds: 300,
+            stdout_bytes: 65536,
+            stderr_bytes: 65536,
+          },
+        },
+      },
+    ],
+  },
+
   sandbox: {
     enabled: false,
     provider: null,
     mode: "workspace_write", // read_only | workspace_write | danger_full_access
     filesystem: {
-      allow_read: [],
-      deny_read: [],
-      allow_write: [],
-      deny_write: [],
-      allow_exec: [],
-      deny_exec: []
+      read: [],
+      write: [],
+      exec: []
     },
     network: {
-      allow_domains: [],
-      deny_domains: []
+      mode: "disabled" // disabled | allow_all
     },
     env: {
-      allow: ["PATH"],
-      deny: [],
+      inherit: ["PATH"],
       set: {}
     },
     limits: {
       cpu_seconds: null,
       memory_bytes: null,
       nofile: null,
-      pids: null
+      pids: null,
+      wall_clock_seconds: 60,
+      stdout_bytes: 65536,
+      stderr_bytes: 65536
     }
   },
   sessions: {
@@ -128,13 +152,22 @@ that prevent later overrides for constrained keys.
 }
 ```
 
+## MCP notes
+- MCP servers are connected during orchestrator startup and each server gets its own managed
+  sandbox cell. Odyssey keeps the cell alive for the MCP client lifetime and creates a dedicated
+  execution layout inside that cell for the stdio transport.
+- MCP requires an isolated sandbox backend. On Linux, Odyssey uses `bubblewrap` for namespace
+  isolation and an internal Landlock helper binary inside the MCP process so each server can only
+  access its private cell plus explicitly allow-listed filesystem roots. `host`/`local` backends
+  are rejected when `mcp.enabled = true`.
+- Any non-system paths needed by an MCP server must be allow-listed under
+  `mcp.servers[].sandbox.filesystem`.
+- Knowledge skills stay prompt-only for now. The future executable-skill design is tracked in
+  `docs/executable-skills/README.md`.
+
 ## Current gaps
-- `orchestrator.system_prompt` and `orchestrator.append_system_prompt` are validated by the
-  loader but are not currently consumed by the runtime.
-- `orchestrator.additional_instruction_prompt` exists in the Rust config type but is not
-  accepted by the JSON5 schema yet, so it cannot be set in config files.
-- `agents` is validated by the loader but is not yet wired to automatic agent registration.
-  Agents must be registered programmatically.
+- Agent prompting and default-agent behavior are now configured via `agents.list`.
+- The legacy `orchestrator` config block has been removed from schema and runtime loading.
 
 ## References
 See `odyssey.json5` for the example template used in this repo.

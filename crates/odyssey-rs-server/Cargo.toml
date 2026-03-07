@@ -14,7 +14,6 @@ odyssey-rs-config.workspace = true
 odyssey-rs-core.workspace = true
 odyssey-rs-protocol.workspace = true
 odyssey-rs-tools.workspace = true
-odyssey-rs-memory.workspace = true
 autoagents-core.workspace = true
 autoagents-llm.workspace = true
 

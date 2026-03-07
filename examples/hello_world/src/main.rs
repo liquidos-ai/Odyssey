@@ -7,14 +7,13 @@ use odyssey_rs::config::{
     OdysseyConfig, PermissionAction, PermissionRule, PermissionsConfig, SandboxConfig,
     SettingSource, SkillsConfig,
 };
-use odyssey_rs::core::orchestrator::DEFAULT_LLM_ID;
-use odyssey_rs::core::orchestrator::prompt::PromptProfile;
+use odyssey_rs::core::agent_runtime::DEFAULT_LLM_ID;
+use odyssey_rs::core::agent_runtime::prompt::PromptBuilder;
+use odyssey_rs::core::agent_runtime::prompt::PromptProfile;
+use odyssey_rs::core::memory::FileMemoryProvider;
 use odyssey_rs::core::skills::SkillStore;
-use odyssey_rs::core::{
-    AgentBuilder, DEFAULT_AGENT_ID, LLMEntry, OdysseyAgent, Orchestrator, PromptBuilder,
-};
+use odyssey_rs::core::{AgentBuilder, AgentRuntime, DEFAULT_AGENT_ID, LLMEntry, OdysseyAgent};
 use odyssey_rs::init_logging;
-use odyssey_rs::memory::FileMemoryProvider;
 #[cfg(target_os = "linux")]
 use odyssey_rs_sandbox::BubblewrapProvider;
 #[cfg(not(target_os = "linux"))]
@@ -95,7 +94,6 @@ async fn main() -> Result<()> {
     let odyssey_agent = AgentBuilder::new(
         DEFAULT_AGENT_ID.into(),
         ReActAgent::new(OdysseyAgent::new(system_prompt, vec![])),
-        memory_clone,
     );
 
     let sandbox: Option<Arc<dyn SandboxProvider>> = {
@@ -112,7 +110,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let orchestrator = Orchestrator::new(config, tools, sandbox, None, Some(skill_store), None)?;
+    let orchestrator = AgentRuntime::new(config, tools, sandbox, None, Some(skill_store), None)?;
 
     orchestrator.register_llm_provider(LLMEntry {
         id: DEFAULT_LLM_ID.into(),

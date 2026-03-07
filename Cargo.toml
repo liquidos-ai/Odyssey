@@ -22,7 +22,6 @@ readme = "README.md"
 odyssey-rs = { path = "crates/odyssey-rs", version = "0.1.0" }
 odyssey-rs-core = { path = "crates/odyssey-rs-core", version = "0.1.0" }
 odyssey-rs-config = { path = "crates/odyssey-rs-config", version = "0.1.0" }
-odyssey-rs-memory = { path = "crates/odyssey-rs-memory", version = "0.1.0" }
 odyssey-rs-protocol = { path = "crates/odyssey-rs-protocol", version = "0.1.0" }
 odyssey-rs-sandbox = { path = "crates/odyssey-rs-sandbox", version = "0.1.0" }
 odyssey-rs-tools = { path = "crates/odyssey-rs-tools", version = "0.1.0" }
@@ -73,3 +72,6 @@ which = "6.0.1"
 libc = "0.2.170"
 log = "0.4"
 env_logger = { version = "0.11" }
+rmcp = { version = "0.15.0", features = ["client", "transport-child-process"] }
+landlock = "0.4.4"
+pulldown-cmark = "0.12"

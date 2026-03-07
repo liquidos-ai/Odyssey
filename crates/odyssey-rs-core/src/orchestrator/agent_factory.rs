@@ -3,6 +3,7 @@
 use crate::error::OdysseyCoreError;
 use crate::types::{OdysseyAgentRuntime, SessionId};
 use async_trait::async_trait;
+use autoagents_core::agent::error::RunnableAgentError;
 use autoagents_core::agent::{
     AgentBuilder, AgentDeriveT, AgentExecutor, AgentHooks, DirectAgent, memory::MemoryProvider,
     task::Task,
@@ -224,6 +225,7 @@ impl<T> AgentExecutorRunner for AutoAgentsExecutor<T>
 where
     T: OdysseyAgentRuntime,
     String: From<<T as AgentExecutor>::Output>,
+    RunnableAgentError: From<<T as AgentExecutor>::Error>,
 {
     async fn run(
         &self,

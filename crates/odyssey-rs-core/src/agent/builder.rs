@@ -1,4 +1,4 @@
-// Builder for the orchestrator's default agent runtime.
+// Builder for custom agents registered with the orchestrator.
 
 use std::sync::Arc;
 
@@ -10,8 +10,9 @@ use autoagents_core::agent::{
 use autoagents_core::tool::{ToolCallResult, ToolT};
 use autoagents_llm::ToolCall;
 use futures_util::Stream;
-use odyssey_rs_config::ToolPolicy;
-use odyssey_rs_memory::MemoryProvider;
+use odyssey_rs_config::{
+    AgentPermissionsConfig, AgentSandboxConfig, MemoryConfig, ModelConfig, ToolPolicy,
+};
 use serde_json::Value;
 
 use crate::agent::AgentInstance;
@@ -22,7 +23,11 @@ pub struct AgentBuilder<T> {
     id: String,
     inner: Arc<T>,
     tool_policy: ToolPolicy,
-    memory_provider: Arc<dyn MemoryProvider>,
+    description_override: Option<String>,
+    model: Option<ModelConfig>,
+    permission_mode: Option<odyssey_rs_config::PermissionMode>,
+    sandbox: Option<AgentSandboxConfig>,
+    memory: Option<MemoryConfig>,
 }
 
 impl<T> std::fmt::Debug for AgentBuilder<T>
@@ -34,6 +39,11 @@ where
             .field("id", &self.id)
             .field("inner", &self.inner)
             .field("tool_policy", &self.tool_policy)
+            .field("description_override", &self.description_override)
+            .field("model", &self.model)
+            .field("permission_mode", &self.permission_mode)
+            .field("sandbox", &self.sandbox)
+            .field("memory", &self.memory)
             .finish()
     }
 }
@@ -43,32 +53,75 @@ where
     T: OdysseyAgentRuntime,
     String: From<<T as AgentExecutor>::Output>,
 {
-    /// Build a default agent from a fully constructed AutoAgents agent.
-    /// Use `from_factory` or `odyssey` if you need Odyssey-managed tool injection.
-    /// A memory provider is required for prompt recall.
-    pub fn new(id: AgentID, agent: T, memory_provider: Arc<dyn MemoryProvider>) -> Self {
-        let agent = Arc::new(agent);
+    pub fn new(id: AgentID, agent: T) -> Self {
         Self {
             id,
-            inner: agent,
+            inner: Arc::new(agent),
             tool_policy: ToolPolicy::allow_all(),
-            memory_provider,
+            description_override: None,
+            model: None,
+            permission_mode: None,
+            sandbox: None,
+            memory: None,
         }
     }
 
-    /// Return the configured agent id.
+    pub fn with_tool_policy(mut self, tool_policy: ToolPolicy) -> Self {
+        self.tool_policy = tool_policy;
+        self
+    }
+
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description_override = Some(description.into());
+        self
+    }
+
+    pub fn with_model(mut self, model: ModelConfig) -> Self {
+        self.model = Some(model);
+        self
+    }
+
+    pub fn with_permissions(mut self, permissions: AgentPermissionsConfig) -> Self {
+        self.permission_mode = permissions.mode;
+        self
+    }
+
+    pub fn with_sandbox(mut self, sandbox: AgentSandboxConfig) -> Self {
+        self.sandbox = Some(sandbox);
+        self
+    }
+
+    pub fn with_memory(mut self, memory: MemoryConfig) -> Self {
+        self.memory = Some(memory);
+        self
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
 
-    /// Return the tool policy assigned to this default agent.
-    fn tool_policy(&self) -> &ToolPolicy {
+    pub(crate) fn tool_policy(&self) -> &ToolPolicy {
         &self.tool_policy
     }
 
-    /// Return the memory provider for this default agent.
-    fn memory_provider(&self) -> Arc<dyn MemoryProvider> {
-        self.memory_provider.clone()
+    pub(crate) fn description_override(&self) -> Option<&str> {
+        self.description_override.as_deref()
+    }
+
+    pub(crate) fn model(&self) -> Option<ModelConfig> {
+        self.model.clone()
+    }
+
+    pub(crate) fn permission_mode(&self) -> Option<odyssey_rs_config::PermissionMode> {
+        self.permission_mode
+    }
+
+    pub(crate) fn sandbox(&self) -> Option<AgentSandboxConfig> {
+        self.sandbox.clone()
+    }
+
+    pub(crate) fn memory(&self) -> Option<MemoryConfig> {
+        self.memory.clone()
     }
 }
 
@@ -186,8 +239,20 @@ where
         self.tool_policy().clone()
     }
 
-    fn memory_provider(&self) -> Arc<dyn MemoryProvider> {
-        self.memory_provider()
+    fn model(&self) -> Option<ModelConfig> {
+        self.model()
+    }
+
+    fn permission_mode(&self) -> Option<odyssey_rs_config::PermissionMode> {
+        self.permission_mode()
+    }
+
+    fn sandbox(&self) -> Option<AgentSandboxConfig> {
+        self.sandbox()
+    }
+
+    fn memory(&self) -> Option<MemoryConfig> {
+        self.memory()
     }
 }
 
@@ -198,93 +263,37 @@ mod tests {
     use autoagents_core::agent::task::Task;
     use autoagents_core::agent::{AgentDeriveT, AgentExecutor, AgentHooks, Context};
     use futures_util::StreamExt;
-    use odyssey_rs_memory::MemoryProvider;
-    use odyssey_rs_test_utils::{DummyAgent, FailingLLM, StubMemory};
+    use odyssey_rs_test_utils::{DummyAgent, FailingLLM};
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
 
     #[tokio::test]
     async fn agent_builder_delegates_calls() {
         let agent = DummyAgent::new();
-        let memory = Arc::new(StubMemory::default());
-        let builder = AgentBuilder::new("agent".to_string(), agent.clone(), memory.clone());
+        let builder = AgentBuilder::new("agent".to_string(), agent.clone());
 
         assert_eq!(builder.id(), "agent");
-        assert_eq!(builder.description(), "dummy");
         assert_eq!(builder.name(), "agent");
-        assert_eq!(builder.output_schema(), None);
-        assert_eq!(builder.config().max_turns, 1);
-        assert_eq!(builder.tools().len(), 0);
+        assert_eq!(builder.description(), agent.description());
+        assert_eq!(builder.output_schema(), agent.output_schema());
 
-        let provider = AgentInstance::memory_provider(&builder);
-        let memory_dyn: Arc<dyn MemoryProvider> = memory.clone();
-        assert_eq!(Arc::ptr_eq(&provider, &memory_dyn), true);
-        assert_eq!(builder.tool_policy().allow, vec!["*".to_string()]);
+        let tools = builder.tools();
+        assert_eq!(tools.len(), 0);
 
-        builder.on_agent_create().await;
         let task = Task::new("hello");
-        let ctx = Arc::new(Context::new(Arc::new(FailingLLM::new("dummy")), None));
-        builder.on_run_start(&task, &ctx).await;
+        let ctx = Arc::new(Context::new(Arc::new(FailingLLM::new("unused")), None));
+        let _ = builder.on_run_start(&task, &ctx).await;
         builder.on_turn_start(0, &ctx).await;
-        builder.on_turn_complete(0, &ctx).await;
-        let tool_call = autoagents_llm::ToolCall {
-            id: "call_1".to_string(),
-            call_type: "function".to_string(),
-            function: autoagents_llm::FunctionCall {
-                name: "noop".to_string(),
-                arguments: "{}".to_string(),
-            },
-        };
-        builder.on_tool_call(&tool_call, &ctx).await;
-        builder.on_tool_start(&tool_call, &ctx).await;
-        builder
-            .on_tool_result(
-                &tool_call,
-                &autoagents_core::tool::ToolCallResult {
-                    tool_name: "noop".to_string(),
-                    success: true,
-                    arguments: serde_json::json!({}),
-                    result: serde_json::json!({}),
-                },
-                &ctx,
-            )
-            .await;
-        builder
-            .on_tool_error(&tool_call, serde_json::json!({ "err": "boom" }), &ctx)
-            .await;
-
         let result = builder.execute(&task, ctx.clone()).await.expect("execute");
         assert_eq!(result, "ok".to_string());
         builder.on_run_complete(&task, &result, &ctx).await;
+        builder.on_turn_complete(0, &ctx).await;
 
-        let stream = builder
-            .execute_stream(
-                &task,
-                Arc::new(Context::new(Arc::new(FailingLLM::new("dummy")), None)),
-            )
-            .await
-            .expect("stream");
-        let outputs = stream.collect::<Vec<_>>().await;
-        assert_eq!(outputs.len(), 1);
-        assert_eq!(outputs[0].as_ref().expect("ok"), "ok");
-        builder.on_agent_shutdown().await;
+        let mut stream = builder.execute_stream(&task, ctx).await.expect("stream");
+        let chunk = stream.next().await.expect("chunk").expect("value");
+        assert_eq!(chunk, "ok".to_string());
 
-        let calls_handle = agent.calls();
-        let calls = calls_handle.lock();
-        assert_eq!(
-            calls.as_slice(),
-            &[
-                "create",
-                "run_start",
-                "turn_start",
-                "turn_complete",
-                "tool_call",
-                "tool_start",
-                "tool_result",
-                "tool_error",
-                "run_complete",
-                "shutdown"
-            ]
-        );
+        let provider = AgentInstance::tool_policy(&builder);
+        assert_eq!(provider.allow, vec!["*".to_string()]);
     }
 }

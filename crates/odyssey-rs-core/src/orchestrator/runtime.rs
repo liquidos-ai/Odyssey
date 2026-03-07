@@ -24,6 +24,7 @@ use parking_lot::RwLock;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
 
 /// Selects how tool results are captured during a turn.
@@ -62,6 +63,76 @@ pub(crate) struct TurnParams {
     pub(crate) stream: bool,
 }
 
+#[derive(Default)]
+struct StreamingTurnState {
+    tool_called: AtomicBool,
+}
+
+impl StreamingTurnState {
+    fn note_tool_call(&self) {
+        self.tool_called.store(true, Ordering::SeqCst);
+    }
+
+    fn take_tool_call(&self) -> bool {
+        self.tool_called.swap(false, Ordering::SeqCst)
+    }
+}
+
+#[derive(Default)]
+struct StreamingResponseAccumulator {
+    response: String,
+}
+
+impl StreamingResponseAccumulator {
+    fn push_chunk(&mut self, chunk: String, reset: bool) -> Option<String> {
+        if reset {
+            self.response.clear();
+        }
+
+        if chunk.starts_with(&self.response) {
+            let delta = chunk[self.response.len()..].to_string();
+            self.response = chunk;
+            return (!delta.is_empty()).then_some(delta);
+        }
+
+        if self.response.starts_with(&chunk) {
+            return None;
+        }
+
+        self.response.push_str(&chunk);
+        Some(chunk)
+    }
+
+    fn finish(self) -> String {
+        self.response
+    }
+}
+
+struct StreamingEventSink {
+    inner: Arc<dyn EventSink>,
+    state: Arc<StreamingTurnState>,
+}
+
+impl EventSink for StreamingEventSink {
+    fn emit(&self, event: EventMsg) {
+        if matches!(event.payload, EventPayload::ToolCallStarted { .. }) {
+            self.state.note_tool_call();
+        }
+        self.inner.emit(event);
+    }
+}
+
+fn wrap_stream_event_sink(
+    event_sink: Option<Arc<dyn EventSink>>,
+    state: Option<Arc<StreamingTurnState>>,
+) -> Option<Arc<dyn EventSink>> {
+    match (event_sink, state) {
+        (Some(inner), Some(state)) => Some(Arc::new(StreamingEventSink { inner, state })),
+        (event_sink, None) => event_sink,
+        (None, Some(_)) => None,
+    }
+}
+
 /// Executes a single turn with prompt assembly and tool wiring.
 pub(crate) struct TurnExecutor {
     /// Shared configuration snapshot.
@@ -98,7 +169,7 @@ impl TurnExecutor {
     pub(crate) async fn run_turn(
         &self,
         params: TurnParams,
-    ) -> Result<crate::orchestrator::RunResult, OdysseyCoreError> {
+    ) -> Result<crate::agent_runtime::RunResult, OdysseyCoreError> {
         let TurnParams {
             session_id,
             agent_id,
@@ -114,6 +185,8 @@ impl TurnExecutor {
         } = params;
 
         let event_sink = event_sink.or_else(|| self.event_sink.clone());
+        let stream_state = stream.then(|| Arc::new(StreamingTurnState::default()));
+        let tool_event_sink = wrap_stream_event_sink(event_sink.clone(), stream_state.clone());
         let turn_id = turn_id.unwrap_or_else(Uuid::new_v4);
         info!(
             "starting turn (session_id={}, agent_id={}, prompt_len={}, subagents={})",
@@ -123,9 +196,9 @@ impl TurnExecutor {
             include_subagent_spawner,
         );
         let memory_config = self.resolve_memory_config(&entry);
-        let capture_policy = capture_policy_from_config(&memory_config.capture);
-        let compaction_policy = compaction_policy_from_config(&memory_config.compaction);
-        let recall_options = recall_options_from_config(&memory_config.recall);
+        let capture_policy = capture_policy_from_config(&memory_config);
+        let compaction_policy = compaction_policy_from_config(&memory_config);
+        let recall_options = recall_options_from_config(&memory_config);
         let system_prompt = entry.prompt.clone();
         let turn_context = self.build_turn_context(&entry)?;
 
@@ -140,7 +213,7 @@ impl TurnExecutor {
                 sandbox_enabled,
                 sandbox_mode,
                 tool_result_handler,
-                event_sink.clone(),
+                tool_event_sink.clone(),
             )
             .await?;
         let tool_context = Arc::new(RwLock::new(tool_context));
@@ -171,8 +244,11 @@ impl TurnExecutor {
 
         let event_sink_clone = event_sink.clone();
         let response = if stream {
-            let stream_sink = event_sink.clone().ok_or_else(|| {
+            let stream_sink = tool_event_sink.clone().ok_or_else(|| {
                 OdysseyCoreError::Executor("streaming requires event sink".into())
+            })?;
+            let stream_state = stream_state.clone().ok_or_else(|| {
+                OdysseyCoreError::Executor("streaming state not initialized".into())
             })?;
             let mut stream = executor
                 .run_stream(
@@ -194,24 +270,15 @@ impl TurnExecutor {
                     context: turn_context,
                 },
             });
-            let mut response = String::new();
+            let mut response = StreamingResponseAccumulator::default();
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk?;
                 if chunk.is_empty() {
                     continue;
                 }
 
-                let (delta, next_response) = if chunk.starts_with(&response) {
-                    let delta = chunk[response.len()..].to_string();
-                    (delta, chunk)
-                } else {
-                    let mut next_response = response.clone();
-                    next_response.push_str(&chunk);
-                    (chunk, next_response)
-                };
-
-                response = next_response;
-                if !delta.is_empty() {
+                let reset = stream_state.take_tool_call();
+                if let Some(delta) = response.push_chunk(chunk, reset) {
                     stream_sink.emit(EventMsg {
                         id: Uuid::new_v4(),
                         session_id,
@@ -220,6 +287,7 @@ impl TurnExecutor {
                     });
                 }
             }
+            let response = response.finish();
             stream_sink.emit(EventMsg {
                 id: Uuid::new_v4(),
                 session_id,
@@ -239,7 +307,7 @@ impl TurnExecutor {
                     tools,
                     llm,
                     memory,
-                    event_sink.clone(),
+                    tool_event_sink.clone(),
                 )
                 .await
         };
@@ -285,7 +353,7 @@ impl TurnExecutor {
             turn_id,
             response.len()
         );
-        Ok(crate::orchestrator::RunResult {
+        Ok(crate::agent_runtime::RunResult {
             session_id,
             response,
         })
@@ -449,5 +517,83 @@ fn summarize_json(value: &serde_json::Value, max_chars: usize) -> Result<String,
     } else {
         let truncated: String = text.chars().take(max_chars).collect();
         Ok(format!("{truncated}…"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StreamingResponseAccumulator, StreamingTurnState, wrap_stream_event_sink};
+    use odyssey_rs_protocol::{EventMsg, EventPayload, EventSink, TurnContext};
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+    use uuid::Uuid;
+
+    #[test]
+    fn streaming_accumulator_merges_incremental_chunks() {
+        let mut accumulator = StreamingResponseAccumulator::default();
+        assert_eq!(
+            accumulator.push_chunk("Hello".to_string(), false),
+            Some("Hello".to_string())
+        );
+        assert_eq!(
+            accumulator.push_chunk(", world".to_string(), false),
+            Some(", world".to_string())
+        );
+        assert_eq!(accumulator.finish(), "Hello, world".to_string());
+    }
+
+    #[test]
+    fn streaming_accumulator_resets_after_tool_boundary() {
+        let mut accumulator = StreamingResponseAccumulator::default();
+        let _ = accumulator.push_chunk("I will look that up".to_string(), false);
+        assert_eq!(
+            accumulator.push_chunk("Bangalore: +33C".to_string(), true),
+            Some("Bangalore: +33C".to_string())
+        );
+        assert_eq!(accumulator.finish(), "Bangalore: +33C".to_string());
+    }
+
+    #[test]
+    fn streaming_event_sink_marks_tool_boundaries() {
+        #[derive(Default)]
+        struct RecordingSink {
+            events: Mutex<Vec<EventPayload>>,
+        }
+
+        impl EventSink for RecordingSink {
+            fn emit(&self, event: EventMsg) {
+                self.events.lock().push(event.payload);
+            }
+        }
+
+        let sink = Arc::new(RecordingSink::default());
+        let state = Arc::new(StreamingTurnState::default());
+        let wrapped =
+            wrap_stream_event_sink(Some(sink.clone()), Some(state.clone())).expect("wrapped sink");
+        wrapped.emit(EventMsg {
+            id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+            created_at: chrono::Utc::now(),
+            payload: EventPayload::TurnStarted {
+                turn_id: Uuid::new_v4(),
+                context: TurnContext::default(),
+            },
+        });
+        assert!(!state.take_tool_call());
+
+        wrapped.emit(EventMsg {
+            id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+            created_at: chrono::Utc::now(),
+            payload: EventPayload::ToolCallStarted {
+                turn_id: Uuid::new_v4(),
+                tool_call_id: Uuid::new_v4(),
+                tool_name: "Bash".to_string(),
+                arguments: serde_json::json!({}),
+            },
+        });
+
+        assert!(state.take_tool_call());
+        assert_eq!(sink.events.lock().len(), 2);
     }
 }

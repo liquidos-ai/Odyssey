@@ -1,12 +1,10 @@
 // Minimal Odyssey SDK config example
 {
-  orchestrator: {
-    system_prompt: "You are the Odyssey Orchestrator.",
-  },
   agents: {
     list: [
       {
         id: "assistant",
+        prompt: "You are the Odyssey event demo agent.",
         model: { provider: "openai", name: "gpt-4.1-mini" },
         tools: { allow: ["*"], deny: [] },
       },

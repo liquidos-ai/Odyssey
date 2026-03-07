@@ -11,9 +11,8 @@ use std::sync::Arc;
 
 use odyssey_rs::protocol::EventMsg;
 use odyssey_rs::{
-    core::{AgentBuilder, DEFAULT_AGENT_ID, EventSink, LLMEntry, OdysseyAgent, Orchestrator},
+    core::{AgentBuilder, AgentRuntime, DEFAULT_AGENT_ID, EventSink, LLMEntry, OdysseyAgent},
     init_logging,
-    memory::FileMemoryProvider,
 };
 use tokio::sync::broadcast;
 
@@ -58,15 +57,6 @@ async fn main() -> Result<()> {
         .context("failed to build OpenAI LLM provider")?;
 
     let tools = builtin_tool_registry();
-    let memory_root = config
-        .memory
-        .path
-        .clone()
-        .unwrap_or_else(|| ".odyssey/memory".to_string());
-    let memory = Arc::new(
-        FileMemoryProvider::new(PathBuf::from(memory_root))
-            .context("failed to create memory provider")?,
-    );
     let sandbox_enabled = config.sandbox.enabled;
     // NoSandboxProvider executes locally; swap in a real sandbox for isolation.
     let sandbox_provider = if sandbox_enabled {
@@ -101,7 +91,7 @@ async fn main() -> Result<()> {
         println!("event forwarder task ended");
     });
 
-    let orchestrator = Orchestrator::new(
+    let orchestrator = AgentRuntime::new(
         config,
         tools,
         sandbox_provider,
@@ -119,7 +109,6 @@ async fn main() -> Result<()> {
             "Odyssey event listener".to_string(),
             Vec::new(),
         )),
-        memory,
     );
     orchestrator.register_agent(default_agent)?;
 
