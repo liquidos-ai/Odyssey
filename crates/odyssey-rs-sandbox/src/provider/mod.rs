@@ -91,6 +91,7 @@ pub trait CommandOutputSink: Send {
 
 /// Mount specification for sandbox environments.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Mount {
     /// Source path on the host.
     pub(crate) source: PathBuf,
