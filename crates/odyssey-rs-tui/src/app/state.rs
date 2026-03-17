@@ -4,9 +4,8 @@ use crate::app::types::{ChatEntry, ChatRole, PendingPermission, ViewerKind};
 use crate::tui_config::TuiConfig;
 use crate::ui::theme::{AVAILABLE_THEMES, ODYSSEY, Theme};
 use log::{debug, info};
-use odyssey_rs_core::McpStatus;
-use odyssey_rs_core::types::{Message, Role, SessionSummary};
-use odyssey_rs_protocol::SkillSummary;
+use odyssey_rs_protocol::{Message, Role, SessionSummary, SkillSummary};
+use odyssey_rs_runtime::BundleInstallSummary;
 use std::collections::{HashSet, VecDeque};
 use sysinfo::{Components, System};
 use uuid::Uuid;
@@ -15,6 +14,10 @@ use uuid::Uuid;
 pub struct App {
     /// List of available agent ids.
     pub agents: Vec<String>,
+    /// Currently selected bundle reference.
+    pub bundle_ref: String,
+    /// Installed bundles available in the local bundle store.
+    pub bundles: Vec<BundleInstallSummary>,
     /// List of sessions returned by the orchestrator.
     pub sessions: Vec<SessionSummary>,
     /// List of available skills.
@@ -23,6 +26,10 @@ pub struct App {
     pub models: Vec<String>,
     /// Index of the selected session in the viewer list.
     pub selected_session: usize,
+    /// Index of the selected bundle in the viewer list.
+    pub selected_bundle: usize,
+    /// Index of the selected agent in the viewer list.
+    pub selected_agent: usize,
     /// Index of the selected model in the viewer list.
     pub selected_model: usize,
     /// Active session id.
@@ -53,8 +60,6 @@ pub struct App {
     pub tui_config: TuiConfig,
     /// Status line text.
     pub status: String,
-    /// MCP connection status observed during startup.
-    pub mcp_status: McpStatus,
     /// Pending permission requests, shown as a queue in the header.
     pub pending_permissions: VecDeque<PendingPermission>,
     /// Current viewer mode, if any.
@@ -83,10 +88,14 @@ impl App {
     pub fn new() -> Self {
         Self {
             agents: Vec::new(),
+            bundle_ref: String::new(),
+            bundles: Vec::new(),
             sessions: Vec::new(),
             skills: Vec::new(),
             models: Vec::new(),
             selected_session: 0,
+            selected_bundle: 0,
+            selected_agent: 0,
             selected_model: 0,
             active_session: None,
             active_agent: None,
@@ -102,7 +111,6 @@ impl App {
             selected_theme: 0,
             tui_config: TuiConfig::default(),
             status: "idle".to_string(),
-            mcp_status: McpStatus::Disabled,
             pending_permissions: VecDeque::new(),
             viewer: None,
             viewer_scroll: 0,
@@ -124,8 +132,34 @@ impl App {
     pub fn set_agents(&mut self, agents: Vec<String>) {
         debug!("set agents (count={})", agents.len());
         self.agents = agents;
-        if self.active_agent.is_none() {
+        if let Some(active_agent) = &self.active_agent
+            && let Some(index) = self.agents.iter().position(|agent| agent == active_agent)
+        {
+            self.selected_agent = index;
+        } else if self.agents.is_empty() {
+            self.active_agent = None;
+            self.selected_agent = 0;
+        } else {
             self.active_agent = self.agents.first().cloned();
+            self.selected_agent = 0;
+        }
+    }
+
+    /// Update the list of installed bundles.
+    pub fn set_bundles(&mut self, bundles: Vec<BundleInstallSummary>) {
+        debug!("set bundles (count={})", bundles.len());
+        self.bundles = bundles;
+        if let Some(index) = self.bundles.iter().position(|bundle| {
+            format!(
+                "{}/{id}@{version}",
+                bundle.namespace,
+                id = bundle.id,
+                version = bundle.version
+            ) == self.bundle_ref
+        }) {
+            self.selected_bundle = index;
+        } else if self.selected_bundle >= self.bundles.len() {
+            self.selected_bundle = self.bundles.len().saturating_sub(1);
         }
     }
 
@@ -133,8 +167,26 @@ impl App {
     pub fn set_sessions(&mut self, sessions: Vec<SessionSummary>) {
         debug!("set sessions (count={})", sessions.len());
         self.sessions = sessions;
-        if self.selected_session >= self.sessions.len() {
+        if let Some(active_session) = self.active_session
+            && let Some(index) = self
+                .sessions
+                .iter()
+                .position(|session| session.id == active_session)
+        {
+            self.selected_session = index;
+        } else if self.selected_session >= self.sessions.len() {
             self.selected_session = self.sessions.len().saturating_sub(1);
+        }
+    }
+
+    /// Move the highlighted session row to the session matching `session_id`.
+    pub fn select_session(&mut self, session_id: Uuid) {
+        if let Some(index) = self
+            .sessions
+            .iter()
+            .position(|session| session.id == session_id)
+        {
+            self.selected_session = index;
         }
     }
 
@@ -171,6 +223,12 @@ impl App {
         info!("active session set (session_id={})", session_id);
         self.active_session = Some(session_id);
         self.active_agent = Some(agent_id);
+        self.select_session(session_id);
+        if let Some(active_agent) = &self.active_agent
+            && let Some(index) = self.agents.iter().position(|agent| agent == active_agent)
+        {
+            self.selected_agent = index;
+        }
         self.messages.clear();
         self.scroll = 0;
         self.auto_scroll = true;
@@ -182,6 +240,44 @@ impl App {
     /// Update the displayed user name.
     pub fn set_user_name(&mut self, user_name: String) {
         self.user_name = user_name;
+    }
+
+    /// Switch the active bundle shown in the UI and clear session-scoped state.
+    pub fn set_bundle_ref(&mut self, bundle_ref: String) {
+        self.bundle_ref = bundle_ref;
+        if let Some(index) = self.bundles.iter().position(|bundle| {
+            format!(
+                "{}/{id}@{version}",
+                bundle.namespace,
+                id = bundle.id,
+                version = bundle.version
+            ) == self.bundle_ref
+        }) {
+            self.selected_bundle = index;
+        }
+        self.active_session = None;
+        self.active_agent = None;
+        self.agents.clear();
+        self.sessions.clear();
+        self.skills.clear();
+        self.models.clear();
+        self.selected_session = 0;
+        self.selected_agent = 0;
+        self.selected_model = 0;
+        self.messages.clear();
+        self.pending_permissions.clear();
+        self.streamed_turns.clear();
+        self.scroll = 0;
+        self.auto_scroll = true;
+        self.chat_max_scroll = 0;
+    }
+
+    /// Set the active agent id used for future sessions.
+    pub fn set_active_agent(&mut self, agent_id: String) {
+        self.active_agent = Some(agent_id.clone());
+        if let Some(index) = self.agents.iter().position(|agent| agent == &agent_id) {
+            self.selected_agent = index;
+        }
     }
 
     /// Set the active model id used for future requests.
@@ -427,6 +523,29 @@ mod tests {
         app.selected_session = 5;
         app.set_sessions(vec![]);
         assert_eq!(app.selected_session, 0);
+    }
+
+    #[test]
+    fn set_sessions_tracks_active_session_selection() {
+        let mut app = make_app();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        app.active_session = Some(second);
+        app.set_sessions(vec![
+            SessionSummary {
+                id: first,
+                agent_id: "agent-a".into(),
+                message_count: 0,
+                created_at: chrono::Utc::now(),
+            },
+            SessionSummary {
+                id: second,
+                agent_id: "agent-b".into(),
+                message_count: 0,
+                created_at: chrono::Utc::now(),
+            },
+        ]);
+        assert_eq!(app.selected_session, 1);
     }
 
     #[test]

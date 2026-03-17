@@ -1,0 +1,32 @@
+{
+  id: '{{ bundle_id }}',
+  version: '0.1.0',
+  agent_spec: 'agent.yaml',
+  executor: { type: 'prebuilt', id: 'react' },
+  memory: {
+    provider: { type: 'prebuilt', id: 'sliding_window' },
+    config: { max_window: 100 }
+  },
+  skills: [],
+  resources: [],
+  tools: [],
+  server: { enable_http: true },
+  sandbox: {
+    mode: 'workspace_write',
+    permissions: {
+      filesystem: {
+        exec: [],
+        mounts: { read: [], write: [] }
+      },
+      // Empty means sandboxed commands have no network access.
+      // Add a non-empty list to opt bundle command execution into outbound network access.
+      network: [],
+      tools: {
+        mode: 'default',
+        rules: []
+      }
+    },
+    system_tools: [],
+    resources: { cpu: 1, memory_mb: 512, gpu: 0 }
+  }
+}

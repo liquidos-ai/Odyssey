@@ -1,9 +1,10 @@
 use crate::tool::ToolError;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Summary of a skill available to the orchestrator.
-#[derive(Debug, Clone)]
+/// Summary of a skill available to the runtime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillSummary {
     /// Skill name.
     pub name: String,
@@ -29,6 +30,7 @@ pub trait SkillProvider: Send + Sync {
         list
     }
 
+    /// Render a compact textual summary.
     fn render_summary(&self) -> String {
         let summaries = self.list();
         if summaries.is_empty() {
@@ -45,5 +47,83 @@ pub trait SkillProvider: Send + Sync {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SkillProvider, SkillSummary};
+    use crate::ToolError;
+    use async_trait::async_trait;
+    use pretty_assertions::assert_eq;
+    use std::path::PathBuf;
+
+    struct DummySkillProvider {
+        skills: Vec<SkillSummary>,
+    }
+
+    #[async_trait]
+    impl SkillProvider for DummySkillProvider {
+        fn list(&self) -> Vec<SkillSummary> {
+            self.skills.clone()
+        }
+
+        async fn load(&self, name: &str) -> Result<String, ToolError> {
+            Ok(format!("loaded {name}"))
+        }
+    }
+
+    #[test]
+    fn summaries_sort_skills_by_name() {
+        let provider = DummySkillProvider {
+            skills: vec![
+                SkillSummary {
+                    name: "zebra".to_string(),
+                    description: "last".to_string(),
+                    path: PathBuf::from("/tmp/zebra/SKILL.md"),
+                },
+                SkillSummary {
+                    name: "alpha".to_string(),
+                    description: "first".to_string(),
+                    path: PathBuf::from("/tmp/alpha/SKILL.md"),
+                },
+            ],
+        };
+
+        assert_eq!(
+            provider
+                .summaries()
+                .into_iter()
+                .map(|skill| skill.name)
+                .collect::<Vec<_>>(),
+            vec!["alpha".to_string(), "zebra".to_string()]
+        );
+    }
+
+    #[test]
+    fn render_summary_handles_empty_and_trimmed_descriptions() {
+        let provider = DummySkillProvider {
+            skills: vec![
+                SkillSummary {
+                    name: "alpha".to_string(),
+                    description: "  tidy repo history  ".to_string(),
+                    path: PathBuf::from("/tmp/alpha/SKILL.md"),
+                },
+                SkillSummary {
+                    name: "beta".to_string(),
+                    description: "   ".to_string(),
+                    path: PathBuf::from("/tmp/beta/SKILL.md"),
+                },
+            ],
+        };
+
+        assert_eq!(
+            provider.render_summary(),
+            "- alpha: tidy repo history\n- beta"
+        );
+        assert_eq!(
+            DummySkillProvider { skills: Vec::new() }.render_summary(),
+            String::new()
+        );
     }
 }

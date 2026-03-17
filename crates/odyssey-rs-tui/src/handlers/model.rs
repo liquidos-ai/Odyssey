@@ -18,6 +18,10 @@ pub fn activate_selected_model(app: &mut App) -> anyhow::Result<()> {
 
 /// Fetch the current model list from the orchestrator and update the app.
 pub async fn refresh_models(client: &Arc<AgentRuntimeClient>, app: &mut App) -> anyhow::Result<()> {
+    if app.bundle_ref.trim().is_empty() {
+        app.set_models(Vec::new());
+        return Ok(());
+    }
     debug!("refreshing models");
     let mut models = client.list_models().await?;
     models.sort();
@@ -31,6 +35,9 @@ pub async fn set_model_by_id(
     app: &mut App,
     model_id: String,
 ) -> Result<(), String> {
+    if app.bundle_ref.trim().is_empty() {
+        return Err("install a local bundle first".to_string());
+    }
     let mut models = client.list_models().await.map_err(|e| e.to_string())?;
     if models.is_empty() {
         return Err("no models registered".to_string());

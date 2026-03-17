@@ -1,5 +1,3 @@
-//! Standalone sandbox runner API.
-
 use crate::{
     CommandOutputSink, CommandResult, SandboxContext, SandboxError, SandboxHandle, SandboxProvider,
     SandboxRunRequest, SandboxRunResult, SandboxSupport, default_provider_name,
@@ -8,7 +6,6 @@ use crate::{
 use odyssey_rs_protocol::SandboxMode;
 use std::sync::Arc;
 
-/// High-level standalone runner that owns a concrete provider.
 #[derive(Clone)]
 pub struct SandboxRunner {
     provider_name: String,
@@ -16,7 +13,6 @@ pub struct SandboxRunner {
 }
 
 impl SandboxRunner {
-    /// Create a runner from an already-constructed provider.
     pub fn new(provider_name: impl Into<String>, provider: Arc<dyn SandboxProvider>) -> Self {
         Self {
             provider_name: provider_name.into(),
@@ -24,7 +20,6 @@ impl SandboxRunner {
         }
     }
 
-    /// Construct a runner from a provider name and sandbox mode.
     pub fn from_provider_name(
         provider_name: Option<&str>,
         mode: SandboxMode,
@@ -49,7 +44,6 @@ impl SandboxRunner {
         }
     }
 
-    /// Return provider support information for standalone tooling.
     pub fn support(&self) -> SandboxSupport {
         let DependencyReport { errors, warnings } = self.provider.dependency_report();
         SandboxSupport {
@@ -60,12 +54,10 @@ impl SandboxRunner {
         }
     }
 
-    /// Prepare a context and return the provider handle.
     pub async fn prepare(&self, context: &SandboxContext) -> Result<SandboxHandle, SandboxError> {
         self.provider.prepare(context).await
     }
 
-    /// Run a single command and tear down the prepared sandbox afterwards.
     pub async fn run(&self, request: SandboxRunRequest) -> Result<SandboxRunResult, SandboxError> {
         let handle = self.prepare(&request.context).await?;
         let result = self.provider.run_command(&handle, request.command).await;
@@ -73,7 +65,6 @@ impl SandboxRunner {
         result
     }
 
-    /// Run a single command with streaming output and tear down afterwards.
     pub async fn run_streaming(
         &self,
         request: SandboxRunRequest,
@@ -88,12 +79,10 @@ impl SandboxRunner {
         result
     }
 
-    /// Borrow the provider for runtime integration.
     pub fn provider(&self) -> Arc<dyn SandboxProvider> {
         self.provider.clone()
     }
 
-    /// Provider display name.
     pub fn provider_name(&self) -> &str {
         &self.provider_name
     }
@@ -102,8 +91,26 @@ impl SandboxRunner {
 #[cfg(test)]
 mod tests {
     use super::SandboxRunner;
+    use crate::{CommandOutputSink, CommandSpec, SandboxContext, SandboxPolicy};
     use odyssey_rs_protocol::SandboxMode;
     use pretty_assertions::assert_eq;
+    use tempfile::tempdir;
+
+    #[derive(Default)]
+    struct RecordingSink {
+        stdout: String,
+        stderr: String,
+    }
+
+    impl CommandOutputSink for RecordingSink {
+        fn stdout(&mut self, chunk: &str) {
+            self.stdout.push_str(chunk);
+        }
+
+        fn stderr(&mut self, chunk: &str) {
+            self.stderr.push_str(chunk);
+        }
+    }
 
     #[test]
     fn host_runner_is_available() {
@@ -112,5 +119,61 @@ mod tests {
         let support = runner.support();
         assert_eq!(support.provider, "host");
         assert_eq!(support.available, true);
+    }
+
+    #[test]
+    fn invalid_provider_name_is_rejected() {
+        let error =
+            match SandboxRunner::from_provider_name(Some("invalid"), SandboxMode::WorkspaceWrite) {
+                Ok(_) => panic!("invalid provider should fail"),
+                Err(error) => error,
+            };
+        assert_eq!(
+            error
+                .to_string()
+                .contains("unknown sandbox provider: invalid"),
+            true
+        );
+    }
+
+    #[tokio::test]
+    async fn runner_executes_commands_and_streams_output() {
+        let workspace = tempdir().expect("workspace");
+        let runner = SandboxRunner::from_provider_name(Some("host"), SandboxMode::DangerFullAccess)
+            .expect("runner");
+        let request = crate::SandboxRunRequest {
+            context: SandboxContext {
+                workspace_root: workspace.path().to_path_buf(),
+                mode: SandboxMode::WorkspaceWrite,
+                policy: SandboxPolicy::default(),
+            },
+            command: {
+                let mut spec = CommandSpec::new("sh");
+                spec.args.extend([
+                    "-c".to_string(),
+                    "printf 'hello'; printf 'warn' >&2".to_string(),
+                ]);
+                spec
+            },
+        };
+
+        let result = runner.run(request.clone()).await.expect("run");
+        assert_eq!(result.stdout, "hello");
+        assert_eq!(result.stderr, "warn");
+        assert_eq!(result.status_code, Some(0));
+
+        let mut sink = RecordingSink::default();
+        let streamed = runner
+            .run_streaming(request, &mut sink)
+            .await
+            .expect("run streaming");
+        assert_eq!(sink.stdout, "hello");
+        assert_eq!(sink.stderr, "warn");
+        assert_eq!(streamed.status_code, Some(0));
+        assert_eq!(runner.provider_name(), "host");
+        assert_eq!(
+            runner.provider().dependency_report().errors.is_empty(),
+            true
+        );
     }
 }

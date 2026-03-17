@@ -1,7 +1,6 @@
 //! Welcome hero panel shown in the chat area when no messages exist.
 
 use crate::app::App;
-use crate::ui::widgets::header::mcp_status_badge;
 use crate::ui::widgets::logo::{LOGO_HEIGHT, LOGO_ROWS};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -32,14 +31,18 @@ pub fn draw_hero(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
     lines.push(Line::from(""));
 
-    // ── Info line: ▍ model  ·  agent  ·  mcp ─────────────────────────────────
+    // ── Info line: ▍ model  ·  agent  ·  bundle ─────────────────────────────
     let model = if app.model.is_empty() {
         "no model selected".to_string()
     } else {
         app.model.clone()
     };
     let agent = app.active_agent.clone().unwrap_or_else(|| "default".into());
-    let (mcp, mcp_style) = mcp_status_badge(app);
+    let bundle = if app.bundle_ref.is_empty() {
+        "no bundle selected".to_string()
+    } else {
+        app.bundle_ref.clone()
+    };
 
     lines.push(centered(
         vec![
@@ -48,7 +51,7 @@ pub fn draw_hero(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Span::styled("  ·  ", dim_style),
             Span::styled(agent, text_style),
             Span::styled("  ·  ", dim_style),
-            Span::styled(format!("mcp {mcp}"), mcp_style),
+            Span::styled(bundle, dim_style),
         ],
         w,
     ));

@@ -205,3 +205,148 @@ fn write_access() -> BitFlags<AccessFs> {
         | AccessFs::Refer
         | AccessFs::Truncate
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{LauncherPolicy, parse_args, resolve_rule_path};
+    use pretty_assertions::assert_eq;
+    use std::ffi::OsString;
+    use std::path::{Path, PathBuf};
+    use tempfile::tempdir;
+
+    #[cfg(target_os = "linux")]
+    use super::{add_roots, read_access, write_access};
+
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
+
+    #[test]
+    fn parse_args_collects_policy_and_command() {
+        let temp = tempdir().expect("tempdir");
+        let read = temp.path().join("read");
+        let write = temp.path().join("write");
+        let exec = temp.path().join("exec");
+        std::fs::create_dir_all(&read).expect("create read");
+        std::fs::create_dir_all(&write).expect("create write");
+        std::fs::create_dir_all(&exec).expect("create exec");
+
+        let args = vec![
+            OsString::from("helper"),
+            OsString::from("--read"),
+            read.as_os_str().to_os_string(),
+            OsString::from("--write"),
+            write.as_os_str().to_os_string(),
+            OsString::from("--exec"),
+            exec.as_os_str().to_os_string(),
+            OsString::from("--"),
+            OsString::from("/bin/echo"),
+            OsString::from("hello"),
+        ];
+
+        let (policy, command, command_args) = parse_args(args).expect("parse args");
+
+        assert_eq!(
+            policy.read_roots,
+            vec![read.canonicalize().expect("canonical read")]
+        );
+        assert_eq!(
+            policy.write_roots,
+            vec![write.canonicalize().expect("canonical write")]
+        );
+        assert_eq!(
+            policy.exec_roots,
+            vec![exec.canonicalize().expect("canonical exec")]
+        );
+        assert_eq!(command, PathBuf::from("/bin/echo"));
+        assert_eq!(command_args, vec![OsString::from("hello")]);
+    }
+
+    #[test]
+    fn parse_args_rejects_missing_command_after_separator() {
+        let error = parse_args([OsString::from("helper"), OsString::from("--")])
+            .expect_err("missing command should fail");
+
+        assert_eq!(error, "missing command after '--'");
+    }
+
+    #[test]
+    fn parse_args_rejects_unsupported_flags() {
+        let error = parse_args([
+            OsString::from("helper"),
+            OsString::from("--unknown"),
+            OsString::from("--"),
+            OsString::from("/bin/echo"),
+        ])
+        .expect_err("unsupported flag should fail");
+
+        assert_eq!(error, "unsupported argument: --unknown");
+    }
+
+    #[test]
+    fn parse_args_requires_absolute_command() {
+        let error = parse_args([
+            OsString::from("helper"),
+            OsString::from("--"),
+            OsString::from("echo"),
+        ])
+        .expect_err("relative command should fail");
+
+        assert_eq!(error, "helper command must be absolute: echo");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_args_rejects_non_utf8_flags() {
+        let error = parse_args([
+            OsString::from("helper"),
+            OsString::from_vec(vec![0xff]),
+            OsString::from("--"),
+            OsString::from("/bin/echo"),
+        ])
+        .expect_err("non-utf8 flag should fail");
+
+        assert_eq!(error, "helper arguments must be valid UTF-8");
+    }
+
+    #[test]
+    fn resolve_rule_path_requires_absolute_path() {
+        let error = resolve_rule_path(Path::new("relative")).expect_err("relative path rejected");
+        assert_eq!(error, "Landlock root must be absolute: relative");
+    }
+
+    #[test]
+    fn resolve_rule_path_canonicalizes_existing_path() {
+        let temp = tempdir().expect("tempdir");
+        let child = temp.path().join("child");
+        std::fs::create_dir_all(&child).expect("create child");
+
+        let resolved = resolve_rule_path(&temp.path().join("child").join("..").join("child"))
+            .expect("resolve path");
+
+        assert_eq!(resolved, child.canonicalize().expect("canonical child"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn add_roots_merges_permissions_for_duplicate_paths() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("root");
+        std::fs::create_dir_all(&root).expect("create root");
+
+        let mut rights = std::collections::BTreeMap::new();
+        add_roots(&mut rights, std::slice::from_ref(&root), read_access());
+        add_roots(&mut rights, std::slice::from_ref(&root), write_access());
+
+        let merged = rights.get(&root).expect("merged rights");
+        assert!((*merged).contains(read_access()));
+        assert!((*merged).contains(write_access()));
+    }
+
+    #[test]
+    fn launcher_policy_defaults_to_empty_roots() {
+        let policy = LauncherPolicy::default();
+        assert!(policy.read_roots.is_empty());
+        assert!(policy.write_roots.is_empty());
+        assert!(policy.exec_roots.is_empty());
+    }
+}

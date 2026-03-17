@@ -1,0 +1,31 @@
+[package]
+name = "odyssey-rs-bundle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin)'] }
+
+[dependencies]
+odyssey-rs-manifest.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+walkdir.workspace = true
+thiserror.workspace = true
+directories.workspace = true
+base64 = "0.22.1"
+
+[dev-dependencies]
+axum.workspace = true
+pretty_assertions.workspace = true
+tempfile.workspace = true
+tokio.workspace = true

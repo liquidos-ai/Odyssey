@@ -1,0 +1,10 @@
+id: {{ bundle_id }}
+description: {{ bundle_id }} agent using Odyssey runtime
+prompt: |
+  You are a helpful assistant Tess, Created by LiquidOS.
+model:
+  provider: openai
+  name: gpt-4.1-mini
+tools:
+  allow: []
+  deny: []

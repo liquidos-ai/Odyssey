@@ -1,7 +1,5 @@
-//! Sandbox provider traits and shared helpers.
-
 use async_trait::async_trait;
-use log::{debug, info, warn};
+use log::info;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
@@ -27,29 +25,22 @@ const SAFE_ENV_VARS: &[&str] = &["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "
 const LANDLOCK_HELPER_ENV: &str = "ODYSSEY_SANDBOX_INTERNAL_LANDLOCK_HELPER";
 const LANDLOCK_HELPER_NAME: &str = "odyssey-rs-sandbox-internal-landlock-helper";
 
-/// Report of missing dependencies for a sandbox provider.
 #[derive(Debug, Default, Clone)]
 pub struct DependencyReport {
-    /// Hard errors preventing provider use.
     pub errors: Vec<String>,
-    /// Warnings that may degrade functionality.
     pub warnings: Vec<String>,
 }
 
-/// Sandbox provider interface.
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
-    /// Prepare a sandbox for execution.
     async fn prepare(&self, ctx: &SandboxContext) -> Result<SandboxHandle, SandboxError>;
 
-    /// Run a command in the sandbox, capturing output.
     async fn run_command(
         &self,
         handle: &SandboxHandle,
         spec: CommandSpec,
     ) -> Result<CommandResult, SandboxError>;
 
-    /// Run a command in the sandbox with streaming output.
     async fn run_command_streaming(
         &self,
         handle: &SandboxHandle,
@@ -57,11 +48,9 @@ pub trait SandboxProvider: Send + Sync {
         sink: &mut dyn CommandOutputSink,
     ) -> Result<CommandResult, SandboxError>;
 
-    /// Check access to a path within the sandbox.
     fn check_access(&self, handle: &SandboxHandle, path: &Path, mode: AccessMode)
     -> AccessDecision;
 
-    /// Build a long-lived child command for protocols like MCP stdio.
     fn spawn_command(
         &self,
         _handle: &SandboxHandle,
@@ -72,65 +61,45 @@ pub trait SandboxProvider: Send + Sync {
         ))
     }
 
-    /// Return a dependency report for the provider.
     fn dependency_report(&self) -> DependencyReport {
         DependencyReport::default()
     }
 
-    /// Shutdown and release sandbox resources.
     async fn shutdown(&self, handle: SandboxHandle);
 }
 
-/// Streaming output sink for sandboxed commands.
 pub trait CommandOutputSink: Send {
-    /// Handle stdout chunk.
     fn stdout(&mut self, chunk: &str);
-    /// Handle stderr chunk.
     fn stderr(&mut self, chunk: &str);
 }
 
-/// Mount specification for sandbox environments.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Mount {
-    /// Source path on the host.
     pub(crate) source: PathBuf,
-    /// Target path inside the sandbox.
     pub(crate) target: PathBuf,
-    /// Whether the mount is writable.
     pub(crate) writable: bool,
 }
 
-/// Fully prepared sandbox execution plan.
 #[derive(Debug, Clone)]
 pub struct PreparedSandbox {
-    /// Access policy derived from config.
     pub(crate) access: AccessPolicy,
-    /// Environment variables to inject.
     pub(crate) env: BTreeMap<String, String>,
-    /// Command-overridable environment keys.
     pub(crate) allowed_env_keys: BTreeSet<String>,
-    /// Resource limits.
     pub(crate) limits: SandboxLimits,
-    /// Network policy.
     pub(crate) network: SandboxNetworkMode,
-    /// Default working directory.
     pub(crate) working_dir: PathBuf,
-    /// Mount list for the sandbox.
     pub(crate) mounts: Vec<Mount>,
 }
 
-/// Allow rules for a specific access mode.
 #[derive(Debug, Clone)]
 struct AccessRules {
     roots: Vec<PathBuf>,
     allow_all: bool,
 }
 
-/// Aggregated access policy for read/write/exec.
 #[derive(Debug, Clone)]
 pub(crate) struct AccessPolicy {
-    workspace_root: PathBuf,
+    pub(crate) workspace_root: PathBuf,
     read: AccessRules,
     write: AccessRules,
     exec: AccessRules,
@@ -290,7 +259,6 @@ fn system_runtime_roots() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Resolve the helper binary used to apply Landlock before exec.
 pub fn resolve_internal_landlock_helper_path() -> Result<PathBuf, SandboxError> {
     if let Some(value) = std::env::var_os(LANDLOCK_HELPER_ENV) {
         return canonicalize_existing_path(Path::new(&value));
@@ -316,116 +284,13 @@ pub fn resolve_internal_landlock_helper_path() -> Result<PathBuf, SandboxError> 
         }
     }
 
-    if let Some(path) = try_auto_build_landlock_helper(&search_roots)? {
-        return Ok(path);
-    }
-
     Err(SandboxError::DependencyMissing(format!(
         "internal Landlock helper '{}' not found; set {} or place the binary on PATH",
         LANDLOCK_HELPER_NAME, LANDLOCK_HELPER_ENV
     )))
 }
 
-fn try_auto_build_landlock_helper(
-    search_roots: &[PathBuf],
-) -> Result<Option<PathBuf>, SandboxError> {
-    let (workspace_root, profile) = match infer_workspace_and_profile(search_roots) {
-        Some(values) => values,
-        None => return Ok(None),
-    };
-    let helper_source = workspace_root
-        .join("crates")
-        .join("odyssey-rs-sandbox")
-        .join("src")
-        .join("bin")
-        .join(format!("{LANDLOCK_HELPER_NAME}.rs"));
-    if !helper_source.exists() {
-        return Ok(None);
-    }
-
-    let target_dir = workspace_root.join("target").join(&profile);
-    let helper_binary = target_dir.join(LANDLOCK_HELPER_NAME);
-    if helper_binary.exists() {
-        return canonicalize_existing_path(&helper_binary).map(Some);
-    }
-
-    warn!(
-        "Landlock helper missing from PATH; attempting automatic build (workspace={}, profile={})",
-        workspace_root.display(),
-        profile
-    );
-    let mut cmd = std::process::Command::new("cargo");
-    cmd.current_dir(&workspace_root)
-        .arg("build")
-        .arg("-p")
-        .arg("odyssey-rs-sandbox")
-        .arg("--bin")
-        .arg(LANDLOCK_HELPER_NAME);
-    if profile == "release" {
-        cmd.arg("--release");
-    }
-    let output = cmd.output().map_err(SandboxError::Io)?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(SandboxError::DependencyMissing(format!(
-            "failed to auto-build internal Landlock helper: {stderr}"
-        )));
-    }
-
-    if helper_binary.exists() {
-        return canonicalize_existing_path(&helper_binary).map(Some);
-    }
-    Err(SandboxError::DependencyMissing(format!(
-        "auto-build succeeded but helper binary not found at {}",
-        helper_binary.display()
-    )))
-}
-
-fn infer_workspace_and_profile(search_roots: &[PathBuf]) -> Option<(PathBuf, String)> {
-    for root in search_roots {
-        let mut current = root.clone();
-        loop {
-            if current.join("Cargo.toml").exists()
-                && current
-                    .join("crates")
-                    .join("odyssey-rs-sandbox")
-                    .join("Cargo.toml")
-                    .exists()
-            {
-                let profile = root
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .filter(|name| *name == "release" || *name == "debug")
-                    .unwrap_or("debug")
-                    .to_string();
-                return Some((current, profile));
-            }
-            if !current.pop() {
-                break;
-            }
-        }
-    }
-
-    let cwd = std::env::current_dir().ok()?;
-    let mut current = cwd;
-    loop {
-        if current.join("Cargo.toml").exists()
-            && current
-                .join("crates")
-                .join("odyssey-rs-sandbox")
-                .join("Cargo.toml")
-                .exists()
-        {
-            return Some((current, "debug".to_string()));
-        }
-        if !current.pop() {
-            break;
-        }
-    }
-    None
-}
-
-fn wrap_command_with_landlock(
+pub(crate) fn wrap_command_with_landlock(
     command: PathBuf,
     args: Vec<String>,
     policy: Option<&CommandLandlockPolicy>,
@@ -542,7 +407,6 @@ fn effective_wall_clock(limit: Option<u64>) -> Option<std::time::Duration> {
     ))
 }
 
-/// Buffering sink that captures stdout/stderr for non-streaming runs.
 #[derive(Default)]
 pub(crate) struct BufferingSink {
     pub(crate) stdout: String,
@@ -729,8 +593,6 @@ async fn stream_child_output(
 #[cfg(unix)]
 pub(crate) unsafe fn configure_child_unix(command: &mut Command, limits: &SandboxLimits) {
     let limits = limits.clone();
-    // SAFETY: pre_exec runs in the child just before exec. We only call async-signal-safe libc
-    // functions (`setpgid`) and the rlimit setter used by the Linux backend.
     unsafe {
         command.pre_exec(move || {
             let setpgid_result = libc::setpgid(0, 0);
@@ -747,7 +609,6 @@ pub(crate) unsafe fn configure_child_unix(command: &mut Command, limits: &Sandbo
 #[cfg(unix)]
 async fn kill_process_tree(pid: u32) -> Result<(), SandboxError> {
     let pgid = -(pid as i32);
-    // SAFETY: kill is called with a negative process group id created by setpgid in the child.
     let term_result = unsafe { libc::kill(pgid, libc::SIGTERM) };
     if term_result != 0 {
         let err = std::io::Error::last_os_error();
@@ -758,7 +619,6 @@ async fn kill_process_tree(pid: u32) -> Result<(), SandboxError> {
 
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
-    // SAFETY: same as SIGTERM above, this is best-effort cleanup for the process group.
     let kill_result = unsafe { libc::kill(pgid, libc::SIGKILL) };
     if kill_result != 0 {
         let err = std::io::Error::last_os_error();
@@ -897,7 +757,6 @@ fn build_mounts_from_access(access: &AccessPolicy, mode: SandboxMode) -> Vec<Mou
         .collect()
 }
 
-/// Build a prepared sandbox from context.
 pub fn build_prepared_sandbox(ctx: &SandboxContext) -> Result<PreparedSandbox, SandboxError> {
     let workspace_root = canonicalize_existing_path(&ctx.workspace_root)?;
     let access = AccessPolicy::new(ctx.mode, &ctx.policy, &workspace_root)?;
@@ -920,7 +779,6 @@ pub fn build_prepared_sandbox(ctx: &SandboxContext) -> Result<PreparedSandbox, S
     })
 }
 
-/// Build a host child command with the prepared sandbox configuration.
 pub(crate) fn build_host_child_command(
     spec: CommandSpec,
     prepared: &PreparedSandbox,
@@ -929,13 +787,6 @@ pub(crate) fn build_host_child_command(
     let command = resolve_command_path(&spec.command, &cwd, prepared)?;
     let env = merge_command_env(prepared, &spec.env)?;
     let (command, args) = wrap_command_with_landlock(command, spec.args, spec.landlock.as_ref())?;
-
-    debug!(
-        "building host child command (command={}, args_len={}, cwd={})",
-        command.display(),
-        args.len(),
-        cwd.display()
-    );
 
     let mut child_command = Command::new(&command);
     child_command.args(&args);
@@ -951,7 +802,6 @@ pub(crate) fn build_host_child_command(
     Ok(child_command)
 }
 
-/// Run a host process with the prepared sandbox configuration.
 pub(crate) async fn run_host_process(
     spec: CommandSpec,
     prepared: &PreparedSandbox,
@@ -968,12 +818,10 @@ pub(crate) async fn run_host_process(
     collect_child_result(&mut child, stdout, stderr, sink, &prepared.limits).await
 }
 
-/// Build a displayable command string relative to working directory.
 pub fn command_display(command: &Path) -> String {
     command.display().to_string()
 }
 
-/// Add bind mount args if the source exists.
 pub fn bind_if_exists(args: &mut Vec<String>, flag: &str, source: &Path, target: &Path) {
     if source.exists() {
         args.push(flag.to_string());
@@ -985,9 +833,10 @@ pub fn bind_if_exists(args: &mut Vec<String>, flag: &str, source: &Path, target:
 #[cfg(test)]
 mod tests {
     use super::{
-        AccessPolicy, bind_if_exists, build_prepared_sandbox, command_display,
+        AccessPolicy, bind_if_exists, build_mounts_from_access, build_prepared_sandbox,
+        command_display, effective_output_limit, effective_wall_clock, merge_command_env,
         normalize_existing_roots, normalize_lexical, reject_glob, resolve_command_path,
-        resolve_user_path, run_host_process,
+        resolve_user_path, resolve_working_dir, run_host_process,
     };
     use crate::{
         AccessDecision, AccessMode, CommandSpec, SandboxContext, SandboxFilesystemPolicy,
@@ -1068,6 +917,27 @@ mod tests {
     }
 
     #[test]
+    fn resolve_user_path_rejects_empty_path() {
+        let temp = tempdir().expect("tempdir");
+        let err = resolve_user_path(Path::new(""), temp.path(), temp.path())
+            .expect_err("empty path rejected");
+        assert_eq!(err.to_string(), "access denied: empty path is not allowed");
+    }
+
+    #[test]
+    fn resolve_user_path_preserves_unresolved_suffix_inside_workspace() {
+        let temp = tempdir().expect("tempdir");
+        let existing = temp.path().join("existing");
+        std::fs::create_dir_all(&existing).expect("create existing");
+
+        let resolved =
+            resolve_user_path(Path::new("existing/new-file.txt"), temp.path(), temp.path())
+                .expect("resolve path");
+
+        assert_eq!(resolved, existing.join("new-file.txt"));
+    }
+
+    #[test]
     fn command_display_returns_absolute_path() {
         assert_eq!(
             command_display(Path::new("/tmp/bin/run")),
@@ -1101,6 +971,99 @@ mod tests {
         assert_eq!(prepared.env.contains_key("PATH"), true);
     }
 
+    #[test]
+    fn merge_command_env_rejects_unapproved_overrides() {
+        let temp = tempdir().expect("tempdir");
+        let ctx = SandboxContext {
+            workspace_root: temp.path().to_path_buf(),
+            mode: SandboxMode::WorkspaceWrite,
+            policy: SandboxPolicy::default(),
+        };
+        let prepared = build_prepared_sandbox(&ctx).expect("prepared");
+        let overrides = std::iter::once(("UNSAFE".to_string(), "1".to_string())).collect();
+
+        let error = merge_command_env(&prepared, &overrides).expect_err("override rejected");
+        assert_eq!(
+            error.to_string(),
+            "access denied: environment variable is not allowed by sandbox policy: UNSAFE"
+        );
+    }
+
+    #[test]
+    fn effective_limits_use_defaults() {
+        assert_eq!(effective_output_limit(None), 64 * 1024);
+        assert_eq!(effective_output_limit(Some(17)), 17);
+        assert_eq!(
+            effective_wall_clock(None),
+            Some(std::time::Duration::from_secs(60))
+        );
+        assert_eq!(
+            effective_wall_clock(Some(7)),
+            Some(std::time::Duration::from_secs(7))
+        );
+    }
+
+    #[test]
+    fn build_mounts_from_access_tracks_writable_roots_by_mode() {
+        let temp = tempdir().expect("tempdir");
+        let extra_read = temp.path().join("read");
+        let extra_write = temp.path().join("write");
+        std::fs::create_dir_all(&extra_read).expect("create read");
+        std::fs::create_dir_all(&extra_write).expect("create write");
+        let policy = SandboxPolicy {
+            filesystem: SandboxFilesystemPolicy {
+                read_roots: vec![extra_read.display().to_string()],
+                write_roots: vec![extra_write.display().to_string()],
+                exec_roots: Vec::new(),
+            },
+            ..SandboxPolicy::default()
+        };
+        let access =
+            AccessPolicy::new(SandboxMode::WorkspaceWrite, &policy, temp.path()).expect("access");
+
+        let mounts = build_mounts_from_access(&access, SandboxMode::WorkspaceWrite);
+        assert!(
+            mounts
+                .iter()
+                .any(|mount| mount.source == temp.path() && mount.writable)
+        );
+        assert!(
+            mounts
+                .iter()
+                .any(|mount| mount.source == extra_read && !mount.writable)
+        );
+        assert!(
+            mounts
+                .iter()
+                .any(|mount| mount.source == extra_write && mount.writable)
+        );
+
+        let no_mounts = build_mounts_from_access(&access, SandboxMode::DangerFullAccess);
+        assert!(no_mounts.is_empty());
+    }
+
+    #[test]
+    fn resolve_working_dir_rejects_file_paths() {
+        let temp = tempdir().expect("tempdir");
+        let file = temp.path().join("file.txt");
+        std::fs::write(&file, "data").expect("write file");
+        let ctx = SandboxContext {
+            workspace_root: temp.path().to_path_buf(),
+            mode: SandboxMode::WorkspaceWrite,
+            policy: SandboxPolicy::default(),
+        };
+        let prepared = build_prepared_sandbox(&ctx).expect("prepared");
+        let mut spec = CommandSpec::new("sh");
+        spec.cwd = Some(file);
+
+        let error = resolve_working_dir(&spec, &prepared).expect_err("file cwd rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("working directory is not a directory")
+        );
+    }
+
     #[tokio::test]
     async fn run_host_process_captures_output_and_truncates() {
         let temp = tempdir().expect("tempdir");
@@ -1127,6 +1090,7 @@ mod tests {
             stdout: String,
             stderr: String,
         }
+
         impl crate::provider::CommandOutputSink for RecordingSink {
             fn stdout(&mut self, chunk: &str) {
                 self.stdout.push_str(chunk);
@@ -1148,6 +1112,35 @@ mod tests {
         assert!(result.stdout.contains("truncated"));
         assert!(result.stderr.contains("truncated"));
         assert_eq!(result.status_code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn run_host_process_enforces_wall_clock_limit() {
+        let temp = tempdir().expect("tempdir");
+        let ctx = SandboxContext {
+            workspace_root: temp.path().to_path_buf(),
+            mode: SandboxMode::WorkspaceWrite,
+            policy: SandboxPolicy {
+                limits: SandboxLimits {
+                    wall_clock_seconds: Some(0),
+                    ..SandboxLimits::default()
+                },
+                ..SandboxPolicy::default()
+            },
+        };
+        let prepared = build_prepared_sandbox(&ctx).expect("prepared");
+        let mut spec = CommandSpec::new("sh");
+        spec.args = vec!["-c".to_string(), "sleep 1".to_string()];
+
+        let mut sink = crate::provider::BufferingSink::default();
+        let error = run_host_process(spec, &prepared, &mut sink)
+            .await
+            .expect_err("timeout expected");
+        assert!(
+            error
+                .to_string()
+                .contains("command exceeded wall clock limit of 0 seconds")
+        );
     }
 
     #[test]

@@ -51,8 +51,6 @@ jobs:
             --engine llvm \
             --skip-clean \
             --workspace \
-            --exclude odyssey-rs-server \
-            --exclude odyssey-rs-tui \
             --all-features \
             --timeout 120 \
             --out Xml \

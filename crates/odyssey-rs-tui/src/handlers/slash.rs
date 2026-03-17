@@ -3,7 +3,7 @@
 use crate::app::{App, ViewerKind};
 use crate::client::AgentRuntimeClient;
 use crate::event::AppEvent;
-use crate::handlers::{model, session};
+use crate::handlers::{agent, bundle, model, session};
 use crate::ui::theme::AVAILABLE_THEMES;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -27,6 +27,26 @@ pub const SLASH_COMMANDS: &[SlashEntry] = &[
         trigger: "new",
         args: "",
         description: "Create a new session",
+    },
+    SlashEntry {
+        trigger: "bundle",
+        args: "install [path] | use <ref>",
+        description: "Install or switch the active bundle",
+    },
+    SlashEntry {
+        trigger: "bundles",
+        args: "",
+        description: "List installed bundles",
+    },
+    SlashEntry {
+        trigger: "agents",
+        args: "",
+        description: "List available agents in the current bundle",
+    },
+    SlashEntry {
+        trigger: "agent",
+        args: "<id>",
+        description: "Select the active agent in the current bundle",
     },
     SlashEntry {
         trigger: "sessions",
@@ -67,6 +87,11 @@ pub fn filtered_commands(input: &str) -> Vec<&'static SlashEntry> {
 /// Commands that can be entered in the input box with a leading `/`.
 pub enum SlashCommand {
     New,
+    BundleInstall(String),
+    BundleUse(String),
+    Bundles,
+    Agents,
+    Agent(String),
     Join(Uuid),
     Sessions,
     Skills,
@@ -95,9 +120,28 @@ pub fn parse_slash_command(input: &str) -> Result<Option<SlashCommand>, String> 
 
     match command.to_lowercase().as_str() {
         "new" => Ok(Some(SlashCommand::New)),
+        "bundles" => Ok(Some(SlashCommand::Bundles)),
+        "agents" => Ok(Some(SlashCommand::Agents)),
         "skills" => Ok(Some(SlashCommand::Skills)),
         "sessions" => Ok(Some(SlashCommand::Sessions)),
         "models" => Ok(Some(SlashCommand::Models)),
+        "agent" => match parts.next() {
+            None | Some("list") => Ok(Some(SlashCommand::Agents)),
+            Some(id) => Ok(Some(SlashCommand::Agent(id.to_string()))),
+        },
+        "bundle" => match parts.next() {
+            Some("install") => Ok(Some(SlashCommand::BundleInstall(
+                parts.next().unwrap_or(".").to_string(),
+            ))),
+            Some("use") => {
+                let Some(reference) = parts.next() else {
+                    return Err("usage: /bundle use <bundle_ref>".to_string());
+                };
+                Ok(Some(SlashCommand::BundleUse(reference.to_string())))
+            }
+            Some(other) => Ok(Some(SlashCommand::BundleUse(other.to_string()))),
+            None => Err("usage: /bundle install [path] | /bundle use <bundle_ref>".to_string()),
+        },
         "model" => match parts.next() {
             None | Some("list") => Ok(Some(SlashCommand::Models)),
             Some(id) => Ok(Some(SlashCommand::Model(id.to_string()))),
@@ -151,12 +195,34 @@ pub async fn handle_slash_command(
         SlashCommand::New => session::create_session(client, app, sender, stream_handle)
             .await
             .map_err(|e| e.to_string()),
+        SlashCommand::BundleInstall(path) => {
+            bundle::install_bundle(client, app, sender, stream_handle, path).await
+        }
+        SlashCommand::BundleUse(bundle_ref) => {
+            bundle::switch_bundle(client, app, sender, stream_handle, bundle_ref).await
+        }
+        SlashCommand::Bundles => {
+            bundle::refresh_bundles(client, app).await?;
+            app.open_viewer(ViewerKind::Bundles);
+            Ok(())
+        }
+        SlashCommand::Agents => {
+            agent::refresh_agents(client, app)
+                .await
+                .map_err(|e| e.to_string())?;
+            app.open_viewer(ViewerKind::Agents);
+            Ok(())
+        }
+        SlashCommand::Agent(agent_id) => agent::set_agent_by_id(client, app, agent_id).await,
         SlashCommand::Join(session_id) => {
             session::join_session(client, app, session_id, sender, stream_handle)
                 .await
                 .map_err(|e| e.to_string())
         }
         SlashCommand::Sessions => {
+            session::refresh_sessions(client, app)
+                .await
+                .map_err(|e| e.to_string())?;
             app.open_viewer(ViewerKind::Sessions);
             Ok(())
         }
@@ -226,6 +292,62 @@ mod tests {
         assert!(matches!(
             parse_slash_command("/sessions"),
             Ok(Some(SlashCommand::Sessions))
+        ));
+    }
+
+    #[test]
+    fn parse_agents() {
+        assert!(matches!(
+            parse_slash_command("/agents"),
+            Ok(Some(SlashCommand::Agents))
+        ));
+    }
+
+    #[test]
+    fn parse_bundles() {
+        assert!(matches!(
+            parse_slash_command("/bundles"),
+            Ok(Some(SlashCommand::Bundles))
+        ));
+    }
+
+    #[test]
+    fn parse_agent_without_arg_returns_agents_list() {
+        assert!(matches!(
+            parse_slash_command("/agent"),
+            Ok(Some(SlashCommand::Agents))
+        ));
+    }
+
+    #[test]
+    fn parse_agent_with_id() {
+        assert!(matches!(
+            parse_slash_command("/agent orchestrator"),
+            Ok(Some(SlashCommand::Agent(id))) if id == "orchestrator"
+        ));
+    }
+
+    #[test]
+    fn parse_bundle_install_defaults_to_dot() {
+        assert!(matches!(
+            parse_slash_command("/bundle install"),
+            Ok(Some(SlashCommand::BundleInstall(path))) if path == "."
+        ));
+    }
+
+    #[test]
+    fn parse_bundle_install_with_path() {
+        assert!(matches!(
+            parse_slash_command("/bundle install bundles/odyssey-cowork"),
+            Ok(Some(SlashCommand::BundleInstall(path))) if path == "bundles/odyssey-cowork"
+        ));
+    }
+
+    #[test]
+    fn parse_bundle_use() {
+        assert!(matches!(
+            parse_slash_command("/bundle use odyssey-cowork@latest"),
+            Ok(Some(SlashCommand::BundleUse(reference))) if reference == "odyssey-cowork@latest"
         ));
     }
 

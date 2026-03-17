@@ -1,85 +1,106 @@
-//! Local orchestrator client for the Odyssey TUI.
+//! Local runtime client for the Odyssey TUI.
 
 use crate::event::AppEvent;
-use crate::event_bus::EventBus;
 use anyhow::Result;
-use log::{debug, info};
-use odyssey_rs_core::AgentRuntime;
-use odyssey_rs_core::types::{Session, SessionSummary};
-use odyssey_rs_protocol::{ApprovalDecision, SkillSummary};
+use log::info;
+use odyssey_rs_bundle::BundleMetadata;
+use odyssey_rs_protocol::{ApprovalDecision, Session, SessionSummary, SkillSummary};
+use odyssey_rs_runtime::{BundleInstallSummary, RunOutput, RuntimeEngine};
+use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
-/// Local client that wraps an embedded orchestrator.
+/// Local client that wraps an embedded runtime engine.
 #[derive(Clone)]
 pub struct AgentRuntimeClient {
-    orchestrator: Arc<AgentRuntime>,
-    events: EventBus,
+    runtime: Arc<RuntimeEngine>,
+    bundle_ref: Arc<std::sync::RwLock<String>>,
 }
 
 impl AgentRuntimeClient {
     /// Create a new local client.
-    pub fn new(orchestrator: Arc<AgentRuntime>, events: EventBus) -> Self {
+    pub fn new(runtime: Arc<RuntimeEngine>, bundle_ref: String) -> Self {
         Self {
-            orchestrator,
-            events,
+            runtime,
+            bundle_ref: Arc::new(std::sync::RwLock::new(bundle_ref)),
         }
     }
 
-    /// List available agent ids.
+    /// Return the currently selected bundle reference.
+    pub fn bundle_ref(&self) -> String {
+        self.bundle_ref
+            .read()
+            .expect("bundle ref lock poisoned")
+            .clone()
+    }
+
+    /// Validate and switch the active bundle reference.
+    pub async fn select_bundle(&self, bundle_ref: String) -> Result<BundleMetadata> {
+        let metadata = self.runtime.inspect_bundle(&bundle_ref)?;
+        *self.bundle_ref.write().expect("bundle ref lock poisoned") = bundle_ref;
+        Ok(metadata)
+    }
+
+    /// Build and install a bundle project, returning the installed bundle reference.
+    pub async fn install_bundle(&self, path: impl AsRef<Path>) -> Result<String> {
+        let path = path.as_ref();
+        let install = self.runtime.build_and_install(path)?;
+        Ok(format!(
+            "{}/{}@{}",
+            install.metadata.namespace, install.metadata.id, install.metadata.version
+        ))
+    }
+
+    /// List available agent ids for the configured bundle.
     pub async fn list_agents(&self) -> Result<Vec<String>> {
-        Ok(self.orchestrator.list_agents())
+        self.runtime
+            .list_agents(&self.bundle_ref())
+            .map_err(Into::into)
     }
 
     /// List available sessions.
     pub async fn list_sessions(&self) -> Result<Vec<SessionSummary>> {
-        Ok(self.orchestrator.list_sessions()?)
+        let mut sessions = Vec::new();
+        for summary in self.runtime.list_sessions() {
+            let session = self.runtime.get_session(summary.id)?;
+            if session.bundle_ref == self.bundle_ref() {
+                sessions.push(summary);
+            }
+        }
+        Ok(sessions)
     }
 
-    /// Create a session, optionally for a specific agent.
-    pub async fn create_session(&self, agent_id: Option<String>) -> Result<Uuid> {
-        Ok(self.orchestrator.create_session(agent_id)?)
+    /// List installed bundles from the default bundle store.
+    pub async fn list_bundles(&self) -> Result<Vec<BundleInstallSummary>> {
+        self.runtime.list_bundles().map_err(Into::into)
+    }
+
+    /// Create a session for the configured bundle.
+    pub async fn create_session(&self, _agent_id: Option<String>) -> Result<Uuid> {
+        Ok(self.runtime.create_session(&self.bundle_ref())?.id)
     }
 
     /// Fetch a session by id.
     pub async fn get_session(&self, session_id: Uuid) -> Result<Session> {
-        Ok(self.orchestrator.resume_session(session_id)?)
+        self.runtime.get_session(session_id).map_err(Into::into)
     }
 
-    /// Send a prompt to a session using the streaming path so that
-    /// incremental deltas are emitted to the event bus in real time.
+    /// Submit a prompt and wait for the run result.
     pub async fn send_message(
         &self,
         session_id: Uuid,
         prompt: String,
-        agent_id: Option<String>,
-        llm_id: String,
-    ) -> Result<odyssey_rs_core::RunResult> {
+        _agent_id: Option<String>,
+        _llm_id: String,
+    ) -> Result<RunOutput> {
         if prompt.trim().is_empty() {
             anyhow::bail!("prompt cannot be empty");
         }
-        let session = self.orchestrator.resume_session(session_id)?;
-        let agent_id = if let Some(agent_id) = agent_id {
-            if session.agent_id != agent_id {
-                anyhow::bail!("agent_id does not match session agent");
-            }
-            agent_id
-        } else {
-            session.agent_id
-        };
-
-        debug!(
-            "streaming session turn (session_id={}, agent_id={}, prompt_len={})",
-            session_id,
-            agent_id,
-            prompt.len()
-        );
-        let run_stream = self
-            .orchestrator
-            .run_stream_in_session(session_id, &agent_id, &llm_id, prompt)
-            .await?;
-        Ok(run_stream.finish().await?)
+        self.runtime
+            .run(session_id, prompt)
+            .await
+            .map_err(Into::into)
     }
 
     /// Resolve a permission request.
@@ -88,43 +109,265 @@ impl AgentRuntimeClient {
         request_id: Uuid,
         decision: ApprovalDecision,
     ) -> Result<bool> {
-        Ok(self.orchestrator.resolve_approval(request_id, decision))
+        self.runtime
+            .resolve_approval(request_id, decision)
+            .map_err(Into::into)
     }
 
     /// List skill summaries.
     pub async fn list_skills(&self) -> Result<Vec<SkillSummary>> {
-        Ok(self.orchestrator.list_skill_summaries())
+        self.runtime
+            .list_skills(&self.bundle_ref())
+            .map_err(Into::into)
     }
 
-    /// List registered model ids.
+    /// List configured model ids for the bundle.
     pub async fn list_models(&self) -> Result<Vec<String>> {
-        Ok(self.orchestrator.list_llm_ids())
+        self.runtime
+            .list_models(&self.bundle_ref())
+            .map_err(Into::into)
     }
 
     /// Stream events for a session.
     pub async fn stream_events(
         &self,
         session_id: Uuid,
-        sender: tokio::sync::mpsc::Sender<AppEvent>,
+        sender: mpsc::Sender<AppEvent>,
     ) -> Result<()> {
-        let mut receiver = self.events.subscribe();
-        info!(
-            "subscribing to local event stream (session_id={})",
-            session_id
-        );
+        let mut receiver = self.runtime.subscribe(session_id)?;
+        info!("subscribing to runtime event stream (session_id={session_id})");
         loop {
             match receiver.recv().await {
                 Ok(event) => {
-                    if event.session_id != session_id {
-                        continue;
-                    }
                     let _ = sender.send(AppEvent::Server(event)).await;
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => break,
             }
         }
-        info!("event stream closed (session_id={})", session_id);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentRuntimeClient;
+    use odyssey_rs_protocol::ApprovalDecision;
+    use odyssey_rs_protocol::SandboxMode;
+    use odyssey_rs_runtime::{RuntimeConfig, RuntimeEngine};
+    use pretty_assertions::assert_eq;
+    use std::fs;
+    use std::path::Path;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+    use uuid::Uuid;
+
+    fn runtime_config(root: &Path) -> RuntimeConfig {
+        RuntimeConfig {
+            cache_root: root.join("cache"),
+            session_root: root.join("sessions"),
+            sandbox_root: root.join("sandbox"),
+            bind_addr: "127.0.0.1:0".to_string(),
+            sandbox_mode_override: Some(SandboxMode::DangerFullAccess),
+            hub_url: "http://127.0.0.1:8473".to_string(),
+        }
+    }
+
+    fn write_bundle_project(
+        root: &Path,
+        bundle_id: &str,
+        agent_id: &str,
+        model_name: &str,
+        skill_name: &str,
+        skill_description: &str,
+    ) {
+        fs::create_dir_all(root.join("skills").join(skill_name)).expect("create skill dir");
+        fs::create_dir_all(root.join("data")).expect("create data dir");
+        fs::write(
+            root.join("odyssey.bundle.json5"),
+            format!(
+                r#"{{
+                    id: "{bundle_id}",
+                    version: "0.1.0",
+                    agent_spec: "agent.yaml",
+                    executor: {{ type: "prebuilt", id: "react" }},
+                    memory: {{ provider: {{ type: "prebuilt", id: "sliding_window" }} }},
+                    resources: ["data"],
+                    skills: [{{ name: "{skill_name}", path: "skills/{skill_name}" }}],
+                    tools: [{{ name: "Read", source: "builtin" }}],
+                    server: {{ enable_http: true }},
+                    sandbox: {{
+                        permissions: {{
+                            filesystem: {{ exec: [], mounts: {{ read: [], write: [] }} }},
+                            network: [],
+                            tools: {{ mode: "default", rules: [] }}
+                        }},
+                        system_tools: [],
+                        resources: {{}}
+                    }}
+                }}"#
+            ),
+        )
+        .expect("write manifest");
+        fs::write(
+            root.join("agent.yaml"),
+            format!(
+                r#"id: {agent_id}
+description: test bundle
+prompt: keep responses concise
+model:
+  provider: openai
+  name: {model_name}
+tools:
+  allow: ["Read", "Skill"]
+  deny: []
+"#
+            ),
+        )
+        .expect("write agent");
+        fs::write(
+            root.join("skills").join(skill_name).join("SKILL.md"),
+            format!("# {skill_name}\n\n{skill_description}\n"),
+        )
+        .expect("write skill");
+        fs::write(root.join("data").join("notes.txt"), "hello world\n").expect("write resource");
+    }
+
+    #[tokio::test]
+    async fn client_installs_switches_and_lists_bundle_metadata() {
+        let temp = tempdir().expect("tempdir");
+        let runtime = Arc::new(RuntimeEngine::new(runtime_config(temp.path())).expect("runtime"));
+
+        let first_project = temp.path().join("alpha-project");
+        let second_project = temp.path().join("beta-project");
+        fs::create_dir_all(&first_project).expect("create first project");
+        fs::create_dir_all(&second_project).expect("create second project");
+        write_bundle_project(
+            &first_project,
+            "alpha",
+            "alpha-agent",
+            "gpt-4.1-mini",
+            "repo-hygiene",
+            "Keep commits focused.",
+        );
+        write_bundle_project(
+            &second_project,
+            "beta",
+            "beta-agent",
+            "gpt-4.1",
+            "deploy-checks",
+            "Verify release readiness.",
+        );
+
+        let client = AgentRuntimeClient::new(runtime.clone(), "local/alpha@0.1.0".to_string());
+        let installed_ref = client
+            .install_bundle(&first_project)
+            .await
+            .expect("install first bundle");
+        runtime
+            .build_and_install(&second_project)
+            .expect("install second bundle");
+
+        assert_eq!(installed_ref, "local/alpha@0.1.0");
+        assert_eq!(client.bundle_ref(), "local/alpha@0.1.0");
+        assert_eq!(
+            client.list_agents().await.expect("agents"),
+            vec!["alpha-agent"]
+        );
+        assert_eq!(
+            client.list_models().await.expect("models"),
+            vec!["gpt-4.1-mini"]
+        );
+
+        let skills = client.list_skills().await.expect("skills");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "repo-hygiene");
+        assert_eq!(skills[0].description, "Keep commits focused.");
+
+        let bundles = client.list_bundles().await.expect("bundles");
+        assert_eq!(bundles.len(), 2);
+
+        let selected = client
+            .select_bundle("local/beta@0.1.0".to_string())
+            .await
+            .expect("select bundle");
+        assert_eq!(selected.id, "beta");
+        assert_eq!(client.bundle_ref(), "local/beta@0.1.0");
+        assert_eq!(
+            client.list_agents().await.expect("beta agents"),
+            vec!["beta-agent"]
+        );
+        assert_eq!(
+            client.list_models().await.expect("beta models"),
+            vec!["gpt-4.1"]
+        );
+    }
+
+    #[tokio::test]
+    async fn client_filters_sessions_and_rejects_empty_prompts() {
+        let temp = tempdir().expect("tempdir");
+        let runtime = Arc::new(RuntimeEngine::new(runtime_config(temp.path())).expect("runtime"));
+
+        let first_project = temp.path().join("alpha-project");
+        let second_project = temp.path().join("beta-project");
+        fs::create_dir_all(&first_project).expect("create first project");
+        fs::create_dir_all(&second_project).expect("create second project");
+        write_bundle_project(
+            &first_project,
+            "alpha",
+            "alpha-agent",
+            "gpt-4.1-mini",
+            "repo-hygiene",
+            "Keep commits focused.",
+        );
+        write_bundle_project(
+            &second_project,
+            "beta",
+            "beta-agent",
+            "gpt-4.1",
+            "deploy-checks",
+            "Verify release readiness.",
+        );
+
+        runtime
+            .build_and_install(&first_project)
+            .expect("install first bundle");
+        runtime
+            .build_and_install(&second_project)
+            .expect("install second bundle");
+
+        let client = AgentRuntimeClient::new(runtime.clone(), "local/alpha@0.1.0".to_string());
+        let session_id = client.create_session(None).await.expect("create session");
+        runtime
+            .create_session("local/beta@0.1.0")
+            .expect("create other session");
+
+        let sessions = client.list_sessions().await.expect("list sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, session_id);
+        assert_eq!(sessions[0].agent_id, "alpha-agent");
+
+        let session = client.get_session(session_id).await.expect("get session");
+        assert_eq!(session.bundle_ref, "local/alpha@0.1.0");
+        assert_eq!(session.agent_id, "alpha-agent");
+        assert!(session.messages.is_empty());
+
+        let error = client
+            .send_message(
+                session_id,
+                "   ".to_string(),
+                None,
+                "gpt-4.1-mini".to_string(),
+            )
+            .await
+            .expect_err("empty prompt should fail");
+        assert_eq!(error.to_string(), "prompt cannot be empty");
+
+        assert!(
+            !client
+                .resolve_permission(Uuid::new_v4(), ApprovalDecision::AllowOnce)
+                .await
+                .expect("resolve unknown request")
+        );
     }
 }

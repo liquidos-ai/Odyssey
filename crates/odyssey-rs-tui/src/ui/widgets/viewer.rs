@@ -17,6 +17,8 @@ pub fn draw_viewer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     };
 
     let (title, lines) = match kind {
+        ViewerKind::Agents => (" Agents ", render_agent_lines(app)),
+        ViewerKind::Bundles => (" Bundles ", render_bundle_lines(app)),
         ViewerKind::Sessions => (" Sessions ", render_session_lines(app)),
         ViewerKind::Skills => (" Skills ", render_skill_lines(app)),
         ViewerKind::Models => (" Models ", render_model_lines(app)),
@@ -85,9 +87,11 @@ pub fn draw_viewer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 pub fn draw_viewer_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let t = &app.theme;
     let hint = match app.viewer {
-        Some(ViewerKind::Sessions) | Some(ViewerKind::Models) | Some(ViewerKind::Themes) => {
-            "Up/Down to navigate  Enter to select  Esc to close"
-        }
+        Some(ViewerKind::Agents)
+        | Some(ViewerKind::Bundles)
+        | Some(ViewerKind::Sessions)
+        | Some(ViewerKind::Models)
+        | Some(ViewerKind::Themes) => "Up/Down to navigate  Enter to select  Esc to close",
         _ => "Esc to close",
     };
 
@@ -157,21 +161,31 @@ fn render_session_lines(app: &App) -> Vec<Line<'static>> {
 
     for (idx, session) in app.sessions.iter().enumerate() {
         let is_selected = idx == app.selected_session;
+        let is_active = app.active_session == Some(session.id);
         let id_str = {
             let s = session.id.to_string();
             s[..8.min(s.len())].to_string()
         };
+        let marker = if is_selected && is_active {
+            ">* "
+        } else if is_selected {
+            ">  "
+        } else if is_active {
+            " * "
+        } else {
+            "   "
+        };
         let (prefix, style) = if is_selected {
             (
                 Span::styled(
-                    "  ",
+                    marker,
                     Style::default().fg(t.primary).add_modifier(Modifier::BOLD),
                 ),
                 Style::default().fg(t.primary),
             )
         } else {
             (
-                Span::styled("   ", Style::default()),
+                Span::styled(marker, Style::default().fg(t.text_muted)),
                 Style::default().fg(t.text),
             )
         };
@@ -188,6 +202,93 @@ fn render_session_lines(app: &App) -> Vec<Line<'static>> {
         ]));
     }
     lines
+}
+
+fn render_agent_lines(app: &App) -> Vec<Line<'static>> {
+    let t = &app.theme;
+    if app.agents.is_empty() {
+        return vec![Line::from(Span::styled(
+            " No agents found in the current bundle.",
+            Style::default().fg(t.text_muted),
+        ))];
+    }
+
+    app.agents
+        .iter()
+        .enumerate()
+        .map(|(idx, agent_id)| {
+            let is_selected = idx == app.selected_agent;
+            let is_active = app.active_agent.as_deref() == Some(agent_id.as_str());
+            let marker = if is_selected && is_active {
+                ">* "
+            } else if is_selected {
+                ">  "
+            } else if is_active {
+                " * "
+            } else {
+                "   "
+            };
+            let line_style = if is_selected {
+                Style::default().fg(t.primary).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.text)
+            };
+            let active_style = if is_selected {
+                Style::default().fg(t.primary)
+            } else {
+                Style::default().fg(t.secondary)
+            };
+            Line::from(vec![
+                Span::styled(marker, Style::default().fg(t.text_muted)),
+                Span::styled(agent_id.clone(), line_style),
+                Span::styled(if is_active { " (active)" } else { "" }, active_style),
+            ])
+        })
+        .collect()
+}
+
+fn render_bundle_lines(app: &App) -> Vec<Line<'static>> {
+    let t = &app.theme;
+    if app.bundles.is_empty() {
+        return vec![Line::from(Span::styled(
+            " No installed bundles found in ~/.odyssey/bundles.",
+            Style::default().fg(t.text_muted),
+        ))];
+    }
+
+    app.bundles
+        .iter()
+        .enumerate()
+        .map(|(idx, bundle)| {
+            let bundle_ref = format!("{}/{}@{}", bundle.namespace, bundle.id, bundle.version);
+            let is_selected = idx == app.selected_bundle;
+            let is_active = app.bundle_ref == bundle_ref;
+            let marker = if is_selected && is_active {
+                ">* "
+            } else if is_selected {
+                ">  "
+            } else if is_active {
+                " * "
+            } else {
+                "   "
+            };
+            let line_style = if is_selected {
+                Style::default().fg(t.primary).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.text)
+            };
+            let path_style = if is_selected {
+                Style::default().fg(t.primary)
+            } else {
+                Style::default().fg(t.text_muted)
+            };
+            Line::from(vec![
+                Span::styled(marker, Style::default().fg(t.text_muted)),
+                Span::styled(format!("{:<28}", bundle_ref), line_style),
+                Span::styled(bundle.path.display().to_string(), path_style),
+            ])
+        })
+        .collect()
 }
 
 fn render_skill_lines(app: &App) -> Vec<Line<'static>> {

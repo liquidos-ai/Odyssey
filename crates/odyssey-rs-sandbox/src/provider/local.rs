@@ -1,34 +1,23 @@
-//! Host execution provider with policy enforcement but no kernel isolation.
-
 use crate::{
-    SandboxError,
+    AccessDecision, AccessMode, CommandOutputSink, CommandResult, CommandSpec, SandboxContext,
+    SandboxError, SandboxHandle, SandboxProvider,
     provider::{
         BufferingSink, PreparedSandbox, build_host_child_command, build_prepared_sandbox,
         run_host_process,
     },
 };
-use log::{debug, info, warn};
+use async_trait::async_trait;
+use log::{info, warn};
 use std::{collections::HashMap, path::Path};
 
-use async_trait::async_trait;
-
-use crate::{
-    AccessDecision, AccessMode, CommandOutputSink, CommandResult, CommandSpec, SandboxContext,
-    SandboxHandle, SandboxProvider,
-};
-
-/// Provider that executes on the host with path/env/limit enforcement.
 #[derive(Debug, Default)]
 pub struct HostExecProvider {
-    /// Prepared sandbox state keyed by handle id.
     state: parking_lot::RwLock<HashMap<uuid::Uuid, PreparedSandbox>>,
 }
 
-/// Backwards-compatible alias used across the existing runtime.
 pub type LocalSandboxProvider = HostExecProvider;
 
 impl HostExecProvider {
-    /// Create a new host execution provider.
     pub fn new() -> Self {
         Self::default()
     }
@@ -71,7 +60,6 @@ impl SandboxProvider for HostExecProvider {
         spec: CommandSpec,
         sink: &mut dyn CommandOutputSink,
     ) -> Result<CommandResult, SandboxError> {
-        debug!("host execution run (handle_id={})", handle.id);
         let prepared = self
             .state
             .read()

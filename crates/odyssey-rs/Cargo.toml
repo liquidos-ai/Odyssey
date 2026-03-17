@@ -9,24 +9,23 @@ keywords.workspace = true
 categories.workspace = true
 readme.workspace = true
 
-
-[features]
-default = []
-logging = ["dep:env_logger"]
+[[bin]]
+name = "odyssey"
+path = "src/main.rs"
 
 [dependencies]
-odyssey-rs-core.workspace = true
-odyssey-rs-config.workspace = true
+odyssey-rs-manifest.workspace = true
+odyssey-rs-bundle.workspace = true
 odyssey-rs-protocol.workspace = true
-
-autoagents-llm = { workspace = true, features = ["openai", "ollama"] }
+odyssey-rs-runtime.workspace = true
+odyssey-rs-server.workspace = true
 
 anyhow.workspace = true
 clap.workspace = true
+crossterm.workspace = true
+env_logger.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
-directories.workspace = true
-async-trait.workspace = true
-uuid.workspace = true
-env_logger = { workspace = true, optional = true }
+
+[dev-dependencies]
+pretty_assertions.workspace = true

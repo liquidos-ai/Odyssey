@@ -17,6 +17,10 @@ pub async fn create_session(
     sender: mpsc::Sender<AppEvent>,
     stream_handle: &mut Option<JoinHandle<()>>,
 ) -> anyhow::Result<()> {
+    if app.bundle_ref.trim().is_empty() {
+        app.push_status("install a local bundle first");
+        return Ok(());
+    }
     let agent_id = app
         .active_agent
         .clone()
@@ -26,6 +30,8 @@ pub async fn create_session(
         agent_id.as_deref().unwrap_or("default")
     );
     let session_id = client.create_session(agent_id.clone()).await?;
+    refresh_sessions(client, app).await?;
+    app.select_session(session_id);
     if let Some(agent_id) = agent_id {
         app.set_active_session(session_id, agent_id);
     } else if let Ok(session) = client.get_session(session_id).await {
@@ -45,6 +51,8 @@ pub async fn join_session(
     stream_handle: &mut Option<JoinHandle<()>>,
 ) -> anyhow::Result<()> {
     info!("joining session (session_id={})", session_id);
+    refresh_sessions(client, app).await?;
+    app.select_session(session_id);
     let session = client.get_session(session_id).await?;
     app.set_active_session(session.id, session.agent_id);
     app.load_messages(session.messages);
@@ -64,6 +72,7 @@ pub async fn activate_selected_session(
         let session_id = session.id;
         let agent_id = session.agent_id;
         info!("activating session (session_id={})", session_id);
+        app.select_session(session_id);
         app.set_active_session(session_id, agent_id);
         if let Ok(session_detail) = client.get_session(session_id).await {
             app.load_messages(session_detail.messages);

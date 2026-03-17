@@ -1,25 +1,19 @@
-//! Persistent sandbox runtime with reusable component cells.
-
 use crate::{
     SandboxContext, SandboxError, SandboxHandle, SandboxPolicy, SandboxProvider, SandboxSupport,
     default_provider_name,
     provider::{DependencyReport, local::HostExecProvider},
 };
 use odyssey_rs_protocol::SandboxMode;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::{collections::HashMap, fmt::Display};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-/// Long-lived sandbox cell kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SandboxCellKind {
-    /// Shared tooling workspace for generic tool execution.
     Tooling,
-    /// Private skill runtime cell.
     Skill,
-    /// Private MCP runtime cell.
     Mcp,
 }
 
@@ -33,21 +27,15 @@ impl SandboxCellKind {
     }
 }
 
-/// Stable identity for a reusable sandbox cell.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SandboxCellKey {
-    /// Session scope for the cell. `None` means process-global for the workspace.
     pub session_id: Option<Uuid>,
-    /// Agent id that owns the cell.
     pub agent_id: String,
-    /// Cell kind.
     pub kind: SandboxCellKind,
-    /// Component identifier within the kind.
     pub component_id: String,
 }
 
 impl SandboxCellKey {
-    /// Shared tooling cell for a session/agent pair.
     pub fn tooling(session_id: Uuid, agent_id: impl Into<String>) -> Self {
         Self {
             session_id: Some(session_id),
@@ -56,70 +44,23 @@ impl SandboxCellKey {
             component_id: "tools".to_string(),
         }
     }
-
-    /// Private skill cell for a component.
-    pub fn skill(
-        session_id: Uuid,
-        agent_id: impl Into<String>,
-        component_id: impl Into<String>,
-    ) -> Self {
-        Self {
-            session_id: Some(session_id),
-            agent_id: agent_id.into(),
-            kind: SandboxCellKind::Skill,
-            component_id: component_id.into(),
-        }
-    }
-
-    /// Private MCP cell for a component.
-    pub fn mcp(
-        session_id: Uuid,
-        agent_id: impl Into<String>,
-        component_id: impl Into<String>,
-    ) -> Self {
-        Self {
-            session_id: Some(session_id),
-            agent_id: agent_id.into(),
-            kind: SandboxCellKind::Mcp,
-            component_id: component_id.into(),
-        }
-    }
-
-    /// Shared MCP cell owned by the orchestrator runtime.
-    pub fn shared_mcp(agent_id: impl Into<String>, component_id: impl Into<String>) -> Self {
-        Self {
-            session_id: None,
-            agent_id: agent_id.into(),
-            kind: SandboxCellKind::Mcp,
-            component_id: component_id.into(),
-        }
-    }
 }
 
-/// Root policy for a reusable sandbox cell.
 #[derive(Debug, Clone)]
 pub enum SandboxCellRoot {
-    /// Reuse an existing workspace root.
     SharedWorkspace(PathBuf),
-    /// Create a managed private root under the sandbox runtime storage directory.
     ManagedPrivate,
 }
 
-/// Specification used to materialize or reuse a cell.
 #[derive(Debug, Clone)]
 pub struct SandboxCellSpec {
-    /// Stable identity for the cell.
     pub key: SandboxCellKey,
-    /// Root strategy.
     pub root: SandboxCellRoot,
-    /// Sandbox mode.
     pub mode: SandboxMode,
-    /// Sandbox policy.
     pub policy: SandboxPolicy,
 }
 
 impl SandboxCellSpec {
-    /// Shared tooling cell bound to an existing workspace root.
     pub fn tooling(
         session_id: Uuid,
         agent_id: impl Into<String>,
@@ -135,7 +76,6 @@ impl SandboxCellSpec {
         }
     }
 
-    /// Managed private cell suitable for skill or MCP execution.
     pub fn managed_component(
         key: SandboxCellKey,
         mode: SandboxMode,
@@ -150,20 +90,13 @@ impl SandboxCellSpec {
     }
 }
 
-/// Directories for a single execution inside a cell.
 #[derive(Debug, Clone)]
 pub struct SandboxExecutionLayout {
-    /// Stable execution id.
     pub execution_id: Uuid,
-    /// Root directory for the execution.
     pub root: PathBuf,
-    /// Staged read-only/read-mostly inputs.
     pub inbox: PathBuf,
-    /// Declared outputs.
     pub outbox: PathBuf,
-    /// Working directory for commands.
     pub work: PathBuf,
-    /// Temporary files for the execution.
     pub tmp: PathBuf,
 }
 
@@ -177,7 +110,6 @@ struct SandboxCellState {
     policy: SandboxPolicy,
 }
 
-/// Reusable handle to a cached sandbox cell.
 #[derive(Clone)]
 pub struct SandboxCellLease {
     provider: Arc<dyn SandboxProvider>,
@@ -185,57 +117,46 @@ pub struct SandboxCellLease {
 }
 
 impl SandboxCellLease {
-    /// Provider implementation for command execution.
     pub fn provider(&self) -> Arc<dyn SandboxProvider> {
         self.provider.clone()
     }
 
-    /// Provider-specific prepared handle.
     pub fn handle(&self) -> SandboxHandle {
         self.state.handle.clone()
     }
 
-    /// Stable cell identity.
     pub fn key(&self) -> &SandboxCellKey {
         &self.state.key
     }
 
-    /// Workspace root visible to commands in this cell.
     pub fn workspace_root(&self) -> &Path {
         &self.state.workspace_root
     }
 
-    /// Cell-private root used for managed directories.
     pub fn cell_root(&self) -> &Path {
         &self.state.cell_root
     }
 
-    /// Sandbox mode for the cell.
     pub fn mode(&self) -> SandboxMode {
         self.state.mode
     }
 
-    /// Effective policy snapshot for the cell.
     pub fn policy(&self) -> &SandboxPolicy {
         &self.state.policy
     }
 
-    /// Persistent private state directory for the cell.
     pub fn data_dir(&self) -> PathBuf {
         self.state.cell_root.join("data")
     }
 
-    /// Private cache directory for the cell.
     pub fn cache_dir(&self) -> PathBuf {
         self.state.cell_root.join("cache")
     }
 
-    /// Application bundle directory for the cell.
     pub fn app_dir(&self) -> PathBuf {
         self.state.cell_root.join("app")
     }
 
-    /// Create a fresh per-execution directory layout inside the cell.
     pub fn begin_execution(&self) -> Result<SandboxExecutionLayout, SandboxError> {
         let execution_id = Uuid::new_v4();
         let root = self
@@ -263,7 +184,6 @@ impl SandboxCellLease {
     }
 }
 
-/// Startup-owned sandbox runtime that caches prepared cells.
 pub struct SandboxRuntime {
     provider_name: String,
     provider: Arc<dyn SandboxProvider>,
@@ -271,8 +191,13 @@ pub struct SandboxRuntime {
     cells: Mutex<HashMap<SandboxCellKey, Arc<SandboxCellState>>>,
 }
 
+impl Display for SandboxRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Sandbox Provider: {}", self.provider_name)
+    }
+}
+
 impl SandboxRuntime {
-    /// Create a runtime from an existing provider.
     pub fn new(
         provider_name: impl Into<String>,
         provider: Arc<dyn SandboxProvider>,
@@ -287,7 +212,6 @@ impl SandboxRuntime {
         })
     }
 
-    /// Construct a runtime from a provider name and sandbox mode.
     pub fn from_provider_name(
         provider_name: Option<&str>,
         mode: SandboxMode,
@@ -314,7 +238,6 @@ impl SandboxRuntime {
         }
     }
 
-    /// Return provider support information.
     pub fn support(&self) -> SandboxSupport {
         let DependencyReport { errors, warnings } = self.provider.dependency_report();
         SandboxSupport {
@@ -325,12 +248,20 @@ impl SandboxRuntime {
         }
     }
 
-    /// Root directory used for cached cells and executions.
+    pub fn provider_name(&self) -> &str {
+        &self.provider_name
+    }
+
     pub fn storage_root(&self) -> &Path {
         &self.storage_root
     }
 
-    /// Lease a cached cell, creating it once if needed.
+    pub fn managed_cell_root(&self, key: &SandboxCellKey) -> Result<PathBuf, SandboxError> {
+        let root = self.materialize_cell_root(key)?;
+        self.ensure_managed_cell_dirs(&root)?;
+        Ok(root)
+    }
+
     pub async fn lease_cell(
         &self,
         spec: SandboxCellSpec,
@@ -344,8 +275,8 @@ impl SandboxRuntime {
         }
 
         let cell_root = self.materialize_cell_root(&spec.key)?;
-        let workspace_root = match spec.root {
-            SandboxCellRoot::SharedWorkspace(path) => path,
+        let workspace_root = match &spec.root {
+            SandboxCellRoot::SharedWorkspace(path) => path.clone(),
             SandboxCellRoot::ManagedPrivate => {
                 self.ensure_managed_cell_dirs(&cell_root)?;
                 cell_root.clone()
@@ -373,7 +304,6 @@ impl SandboxRuntime {
         }))
     }
 
-    /// Shut down all cached cells.
     pub async fn shutdown(&self) {
         let mut cells = self.cells.lock().await;
         let states = cells.drain().map(|(_, state)| state).collect::<Vec<_>>();
@@ -433,6 +363,7 @@ fn sanitize_segment(value: &str) -> String {
 mod tests {
     use super::{
         SandboxCellKey, SandboxCellKind, SandboxCellRoot, SandboxCellSpec, SandboxRuntime,
+        sanitize_segment,
     };
     use crate::{LocalSandboxProvider, SandboxPolicy};
     use odyssey_rs_protocol::SandboxMode;
@@ -509,5 +440,68 @@ mod tests {
         assert_eq!(execution.outbox.exists(), true);
         assert_eq!(execution.work.exists(), true);
         assert_eq!(execution.tmp.exists(), true);
+    }
+
+    #[test]
+    fn sanitize_segment_rewrites_unsafe_characters() {
+        assert_eq!(sanitize_segment("agent/name"), "agent_name");
+        assert_eq!(sanitize_segment(""), "default");
+        assert_eq!(sanitize_segment("safe-_value"), "safe-_value");
+    }
+
+    #[test]
+    fn runtime_from_provider_name_validates_known_and_unknown_backends() {
+        let temp = tempdir().expect("tempdir");
+        let runtime = SandboxRuntime::from_provider_name(
+            Some("host"),
+            SandboxMode::DangerFullAccess,
+            temp.path().join("sandbox"),
+        )
+        .expect("runtime");
+
+        assert_eq!(runtime.provider_name(), "host");
+        assert_eq!(runtime.storage_root().ends_with("sandbox"), true);
+        assert_eq!(runtime.support().available, true);
+
+        let error = match SandboxRuntime::from_provider_name(
+            Some("invalid"),
+            SandboxMode::WorkspaceWrite,
+            temp.path().join("other"),
+        ) {
+            Ok(_) => panic!("invalid provider should fail"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error
+                .to_string()
+                .contains("unknown sandbox provider: invalid"),
+            true
+        );
+    }
+
+    #[test]
+    fn managed_cell_root_creates_expected_directories() {
+        let temp = tempdir().expect("tempdir");
+        let runtime = SandboxRuntime::new(
+            "host",
+            Arc::new(LocalSandboxProvider::new()),
+            temp.path().join("sandbox"),
+        )
+        .expect("runtime");
+        let key = SandboxCellKey {
+            session_id: None,
+            agent_id: "agent/name".to_string(),
+            kind: SandboxCellKind::Mcp,
+            component_id: "comp:id".to_string(),
+        };
+
+        let root = runtime.managed_cell_root(&key).expect("managed root");
+
+        assert_eq!(root.ends_with("comp_id"), true);
+        assert_eq!(root.join("app").exists(), true);
+        assert_eq!(root.join("data").exists(), true);
+        assert_eq!(root.join("cache").exists(), true);
+        assert_eq!(root.join("runs").exists(), true);
+        assert_eq!(root.join("logs").exists(), true);
     }
 }

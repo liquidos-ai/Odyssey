@@ -3,7 +3,7 @@
 use crate::app::{App, PendingPermission, ViewerKind};
 use crate::client::AgentRuntimeClient;
 use crate::event::AppEvent;
-use crate::handlers::{model, session, slash};
+use crate::handlers::{agent, bundle, model, session, slash};
 use crate::ui::theme::AVAILABLE_THEMES;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use log::info;
@@ -74,6 +74,16 @@ async fn handle_viewer_input(
 ) -> anyhow::Result<bool> {
     match key.code {
         KeyCode::Up => match kind {
+            ViewerKind::Agents => {
+                if app.selected_agent > 0 {
+                    app.selected_agent -= 1;
+                }
+            }
+            ViewerKind::Bundles => {
+                if app.selected_bundle > 0 {
+                    app.selected_bundle -= 1;
+                }
+            }
             ViewerKind::Sessions => {
                 if app.selected_session > 0 {
                     app.selected_session -= 1;
@@ -92,6 +102,16 @@ async fn handle_viewer_input(
             }
         },
         KeyCode::Down => match kind {
+            ViewerKind::Agents => {
+                if app.selected_agent + 1 < app.agents.len() {
+                    app.selected_agent += 1;
+                }
+            }
+            ViewerKind::Bundles => {
+                if app.selected_bundle + 1 < app.bundles.len() {
+                    app.selected_bundle += 1;
+                }
+            }
             ViewerKind::Sessions => {
                 if app.selected_session + 1 < app.sessions.len() {
                     app.selected_session += 1;
@@ -114,6 +134,16 @@ async fn handle_viewer_input(
         KeyCode::Home => app.viewer_scroll_up(u16::MAX),
         KeyCode::End => app.viewer_scroll_down(u16::MAX),
         KeyCode::Enter => match kind {
+            ViewerKind::Agents => {
+                agent::activate_selected_agent(app)?;
+                app.close_viewer();
+            }
+            ViewerKind::Bundles => {
+                bundle::activate_selected_bundle(client, app, sender, stream_handle)
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                app.close_viewer();
+            }
             ViewerKind::Sessions => {
                 session::activate_selected_session(client, app, sender, stream_handle).await?;
                 app.close_viewer();

@@ -1,0 +1,38 @@
+[package]
+name = "odyssey-rs-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[dependencies]
+odyssey-rs-bundle.workspace = true
+odyssey-rs-manifest.workspace = true
+odyssey-rs-protocol.workspace = true
+odyssey-rs-tools.workspace = true
+odyssey-rs-sandbox.workspace = true
+autoagents-core = { workspace = true }
+autoagents-llm = { workspace = true, features = ["openai"] }
+autoagents-protocol.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+directories.workspace = true
+futures-util.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+uuid.workspace = true
+walkdir.workspace = true
+tera.workspace = true
+which.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+tempfile.workspace = true

@@ -1,0 +1,48 @@
+{
+  id: 'odyssey-agent',
+  version: '0.1.0',
+  agent_spec: 'agent.yaml',
+  executor: { type: 'prebuilt', id: 'react' },
+  memory: {
+    provider: { type: 'prebuilt', id: 'sliding_window' },
+    config: { max_window: 100 }
+  },
+  skills: [
+    { name: 'weather', path: 'skills/weather' }
+  ],
+  resources: [],
+  tools: [
+    { name: 'Read', source: 'builtin' },
+    { name: 'Write', source: 'builtin' },
+    { name: 'Edit', source: 'builtin' },
+    { name: 'Glob', source: 'builtin' },
+    { name: 'Grep', source: 'builtin' },
+    { name: 'Bash', source: 'builtin' },
+    { name: 'Skill', source: 'builtin' }
+  ],
+  server: { enable_http: true },
+  sandbox: {
+    mode: 'workspace_write',
+    permissions: {
+      filesystem: {
+        exec: [],
+        mounts: { read: [], write: [] }
+      },
+      network: [],
+      tools: {
+        mode: 'default',
+        rules: [
+          { action: 'allow', tool: 'Read' },
+          { action: 'allow', tool: 'Glob' },
+          { action: 'allow', tool: 'Grep' },
+          { action: 'allow', tool: 'Skill' },
+          { action: 'ask', tool: 'Write' },
+          { action: 'ask', tool: 'Edit' },
+          { action: 'ask', tool: 'Bash' }
+        ]
+      }
+    },
+    system_tools: ['bash'],
+    resources: { cpu: 1, memory_mb: 512, gpu: 0 }
+  }
+}

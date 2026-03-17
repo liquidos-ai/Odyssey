@@ -2,7 +2,6 @@
 
 use crate::app::App;
 use crate::ui::widgets::logo::logo_lines_compact;
-use odyssey_rs_core::McpStatus;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -26,17 +25,29 @@ pub fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .active_agent
         .clone()
         .unwrap_or_else(|| "none".to_string());
+    let bundle = if app.bundle_ref.is_empty() {
+        "none".to_string()
+    } else {
+        app.bundle_ref.clone()
+    };
 
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(0), Constraint::Length(CPU_WIDGET_WIDTH)])
         .split(area);
 
-    draw_header_left(frame, app, cols[0], &session, &agent);
+    draw_header_left(frame, app, cols[0], &session, &agent, &bundle);
     draw_cpu_widget(frame, app, cols[1]);
 }
 
-fn draw_header_left(frame: &mut Frame<'_>, app: &App, area: Rect, session: &str, agent: &str) {
+fn draw_header_left(
+    frame: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    session: &str,
+    agent: &str,
+    bundle: &str,
+) {
     let t = &app.theme;
 
     let block = Block::default()
@@ -75,14 +86,13 @@ fn draw_header_left(frame: &mut Frame<'_>, app: &App, area: Rect, session: &str,
         Span::styled(app.cwd.as_str(), value_style),
     ]));
 
-    let (mcp_text, mcp_style) = mcp_status_badge(app);
     let mut session_spans = vec![
         Span::styled("  session ", label_style),
         Span::styled(session.to_string(), value_style),
         Span::styled("  agent ", label_style),
         Span::styled(agent.to_string(), value_style),
-        Span::styled("  mcp ", label_style),
-        Span::styled(mcp_text, mcp_style),
+        Span::styled("  bundle ", label_style),
+        Span::styled(bundle.to_string(), value_style),
     ];
     if let Some(permission) = app.pending_permissions.front() {
         session_spans.push(Span::styled("  ", Style::default()));
@@ -171,35 +181,4 @@ fn usage_color(value: f32, warn: f32, crit: f32, accent: Color) -> Color {
     } else {
         Color::Rgb(255, 110, 110)
     }
-}
-
-pub(crate) fn mcp_status_badge(app: &App) -> (String, Style) {
-    let t = &app.theme;
-    match &app.mcp_status {
-        McpStatus::Disabled => ("disabled".to_string(), Style::default().fg(t.text_muted)),
-        McpStatus::Connected {
-            server_count,
-            tool_count,
-        } => (
-            format!("connected {server_count}s/{tool_count}t"),
-            Style::default()
-                .fg(Color::Rgb(120, 220, 140))
-                .add_modifier(Modifier::BOLD),
-        ),
-        McpStatus::Failed(message) => (
-            format!("failed ({})", truncate_status(message, 18)),
-            Style::default()
-                .fg(Color::Rgb(255, 110, 110))
-                .add_modifier(Modifier::BOLD),
-        ),
-    }
-}
-
-fn truncate_status(value: &str, max_chars: usize) -> String {
-    let len = value.chars().count();
-    if len <= max_chars {
-        return value.to_string();
-    }
-    let truncated: String = value.chars().take(max_chars).collect();
-    format!("{truncated}…")
 }

@@ -1,7 +1,5 @@
-//! Bubblewrap-based sandbox provider for Linux.
-
 use async_trait::async_trait;
-use log::{debug, info, warn};
+use log::{info, warn};
 use std::{
     collections::HashMap,
     fs,
@@ -11,27 +9,23 @@ use tokio::process::Command;
 
 use crate::{
     AccessDecision, AccessMode, CommandOutputSink, CommandResult, CommandSpec, SandboxContext,
-    SandboxHandle, SandboxLimits, SandboxProvider,
+    SandboxError, SandboxHandle, SandboxLimits, SandboxProvider,
     provider::{
         BufferingSink, DependencyReport, Mount, PreparedSandbox, bind_if_exists,
         build_prepared_sandbox, collect_child_result, command_display, configure_child_unix,
         merge_command_env, resolve_command_path, resolve_working_dir, wrap_command_with_landlock,
     },
+    types::SandboxNetworkMode,
 };
-use crate::{SandboxError, types::SandboxNetworkMode};
 use odyssey_rs_protocol::SandboxMode;
 
-/// Bubblewrap-backed sandbox provider.
 #[derive(Debug)]
 pub struct BubblewrapProvider {
-    /// Path to the bwrap executable.
     bwrap_path: PathBuf,
-    /// Prepared sandbox state keyed by handle id.
     state: parking_lot::RwLock<HashMap<uuid::Uuid, PreparedSandbox>>,
 }
 
 impl BubblewrapProvider {
-    /// Create a new bubblewrap provider by resolving the bwrap binary.
     pub fn new() -> Result<Self, SandboxError> {
         let bwrap_path = which::which("bwrap").map_err(|_| {
             SandboxError::DependencyMissing("bubblewrap (bwrap) not found in PATH".to_string())
@@ -46,7 +40,6 @@ impl BubblewrapProvider {
         })
     }
 
-    /// Produce a dependency report for Linux bubblewrap requirements.
     fn dependency_report_linux() -> DependencyReport {
         let mut report = DependencyReport::default();
         if which::which("bwrap").is_err() {
@@ -63,7 +56,6 @@ impl BubblewrapProvider {
         report
     }
 
-    /// Build the bubblewrap command from the prepared sandbox and spec.
     fn build_command(
         &self,
         prepared: &PreparedSandbox,
@@ -174,12 +166,6 @@ impl SandboxProvider for BubblewrapProvider {
         spec: CommandSpec,
         sink: &mut dyn CommandOutputSink,
     ) -> Result<CommandResult, SandboxError> {
-        debug!(
-            "bubblewrap run (handle_id={}, args_len={}, has_cwd={})",
-            handle.id,
-            spec.args.len(),
-            spec.cwd.is_some()
-        );
         let prepared = self
             .state
             .read()
@@ -237,7 +223,6 @@ impl SandboxProvider for BubblewrapProvider {
     }
 }
 
-/// Apply rlimits based on configured sandbox limits.
 pub(crate) fn apply_rlimits(limits: &SandboxLimits) -> Result<(), std::io::Error> {
     fn set(limit: libc::__rlimit_resource_t, value: Option<u64>) -> Result<(), std::io::Error> {
         if let Some(value) = value {
@@ -245,7 +230,6 @@ pub(crate) fn apply_rlimits(limits: &SandboxLimits) -> Result<(), std::io::Error
                 rlim_cur: value as libc::rlim_t,
                 rlim_max: value as libc::rlim_t,
             };
-            // SAFETY: setrlimit is called in the child just before exec with validated integer values.
             let result = unsafe { libc::setrlimit(limit, &rlim) };
             if result != 0 {
                 return Err(std::io::Error::last_os_error());
@@ -318,140 +302,97 @@ pub(crate) fn append_etc_mounts(args: &mut Vec<String>) {
 
     let file_mounts = [
         ("/etc/hosts", "/etc/hosts"),
+        ("/etc/resolv.conf", "/etc/resolv.conf"),
         ("/etc/nsswitch.conf", "/etc/nsswitch.conf"),
+        ("/etc/localtime", "/etc/localtime"),
         ("/etc/passwd", "/etc/passwd"),
         ("/etc/group", "/etc/group"),
-        ("/etc/ld.so.cache", "/etc/ld.so.cache"),
     ];
-
-    append_resolv_conf_mount(args);
-
-    for (src, dst) in file_mounts {
-        bind_if_exists(args, "--ro-bind", Path::new(src), Path::new(dst));
-    }
-
-    for (src, dst) in [("/etc/ssl", "/etc/ssl"), ("/etc/pki", "/etc/pki")] {
-        bind_if_exists(args, "--ro-bind", Path::new(src), Path::new(dst));
+    for (source, target) in file_mounts {
+        bind_if_exists(args, "--ro-bind", Path::new(source), Path::new(target));
     }
 }
 
 pub(crate) fn append_runtime_mounts(args: &mut Vec<String>) {
-    for (src, dst) in [
-        ("/lib", "/lib"),
-        ("/lib64", "/lib64"),
-        ("/usr/lib", "/usr/lib"),
-        ("/usr/lib64", "/usr/lib64"),
-        ("/usr/local/lib", "/usr/local/lib"),
-    ] {
-        bind_if_exists(args, "--ro-bind", Path::new(src), Path::new(dst));
+    for dir in ["/usr", "/lib", "/lib64", "/bin", "/sbin", "/opt"] {
+        bind_if_exists(args, "--ro-bind", Path::new(dir), Path::new(dir));
     }
-}
-
-fn append_resolv_conf_mount(args: &mut Vec<String>) {
-    let resolv_path = Path::new("/etc/resolv.conf");
-    if let Ok(resolved) = fs::canonicalize(resolv_path)
-        && resolved.as_path() != resolv_path
-    {
-        if let Some(parent) = resolved.parent() {
-            let systemd_resolve_root = Path::new("/run/systemd/resolve");
-            if parent.starts_with(systemd_resolve_root) {
-                bind_if_exists(
-                    args,
-                    "--ro-bind",
-                    systemd_resolve_root,
-                    systemd_resolve_root,
-                );
-            }
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        bind_if_exists(
+            args,
+            "--bind",
+            Path::new(&runtime_dir),
+            Path::new(&runtime_dir),
+        );
+    }
+    if Path::new("/run").exists() {
+        let metadata = fs::metadata("/run");
+        if metadata.map(|value| value.is_dir()).unwrap_or(false) {
+            bind_if_exists(args, "--ro-bind", Path::new("/run"), Path::new("/run"));
         }
-        bind_if_exists(args, "--ro-bind", &resolved, resolv_path);
-        return;
     }
-    bind_if_exists(args, "--ro-bind", resolv_path, resolv_path);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BubblewrapProvider, Mount, append_mount, apply_rlimits};
-    use crate::provider::build_prepared_sandbox;
-    use crate::{CommandSpec, SandboxContext, SandboxLimits, SandboxPolicy};
-    use odyssey_rs_protocol::SandboxMode;
+    use super::{append_mount, append_runtime_mounts};
+    use crate::provider::Mount;
     use pretty_assertions::assert_eq;
-    use std::collections::HashMap;
-    use std::path::PathBuf;
     use tempfile::tempdir;
 
     #[test]
     fn append_mount_rejects_relative_paths() {
         let mount = Mount {
-            source: PathBuf::from("relative"),
-            target: PathBuf::from("/tmp/target"),
+            source: "relative".into(),
+            target: "/sandbox/target".into(),
             writable: false,
         };
-        let mut args = Vec::new();
-        let err = append_mount(&mut args, &mount).expect_err("error");
-        assert!(err.to_string().contains("must be absolute"));
+        let error = append_mount(&mut Vec::new(), &mount).expect_err("relative source rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("sandbox mount paths must be absolute")
+        );
     }
 
     #[test]
-    fn append_mount_rejects_missing_sources() {
+    fn append_mount_requires_existing_source() {
         let mount = Mount {
-            source: PathBuf::from("/tmp/odyssey-missing"),
-            target: PathBuf::from("/tmp/target"),
+            source: "/path/that/does/not/exist".into(),
+            target: "/sandbox/target".into(),
             writable: false,
         };
-        let mut args = Vec::new();
-        let err = append_mount(&mut args, &mount).expect_err("error");
-        assert!(err.to_string().contains("source does not exist"));
+        let error = append_mount(&mut Vec::new(), &mount).expect_err("missing source rejected");
+        assert_eq!(
+            error.to_string(),
+            "invalid configuration: sandbox mount source does not exist: /path/that/does/not/exist"
+        );
     }
 
     #[test]
-    fn append_mount_writes_bind_flags() {
+    fn append_mount_uses_bind_flag_for_writable_mounts() {
         let temp = tempdir().expect("tempdir");
         let mount = Mount {
             source: temp.path().to_path_buf(),
-            target: temp.path().to_path_buf(),
+            target: temp.path().join("target"),
             writable: true,
         };
         let mut args = Vec::new();
+
         append_mount(&mut args, &mount).expect("append mount");
+
         assert_eq!(args[0], "--bind");
+        assert_eq!(args[1], temp.path().display().to_string());
+        assert_eq!(args[2], mount.target.display().to_string());
     }
 
     #[test]
-    fn apply_rlimits_noop_when_unset() {
-        let limits = SandboxLimits::default();
-        apply_rlimits(&limits).expect("apply limits");
-    }
+    fn append_runtime_mounts_binds_existing_system_roots() {
+        let mut args = Vec::new();
+        append_runtime_mounts(&mut args);
 
-    #[test]
-    fn build_command_includes_env_and_args() {
-        let temp = tempdir().expect("tempdir");
-        let ctx = SandboxContext {
-            workspace_root: temp.path().to_path_buf(),
-            mode: SandboxMode::WorkspaceWrite,
-            policy: SandboxPolicy::default(),
-        };
-        let prepared = build_prepared_sandbox(&ctx).expect("prepared");
-        let provider = BubblewrapProvider {
-            bwrap_path: PathBuf::from("/usr/bin/bwrap"),
-            state: parking_lot::RwLock::new(HashMap::new()),
-        };
-
-        let mut spec = CommandSpec::new("echo");
-        spec.args.push("hello".to_string());
-
-        let cmd = provider.build_command(&prepared, &spec).expect("cmd");
-        let args = cmd
-            .as_std()
-            .get_args()
-            .map(|arg| arg.to_string_lossy().to_string())
-            .collect::<Vec<_>>();
-
-        assert!(
-            args.iter()
-                .any(|arg| arg == "echo" || arg.ends_with("/echo"))
-        );
-        assert!(args.contains(&"hello".to_string()));
-        assert!(args.contains(&"--clearenv".to_string()));
+        assert!(args.windows(3).any(|window| {
+            window[0] == "--ro-bind" && window[1] == "/usr" && window[2] == "/usr"
+        }));
     }
 }

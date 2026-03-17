@@ -1,5 +1,3 @@
-//! Sandbox policy enforcement tests.
-
 use odyssey_rs_protocol::SandboxMode;
 use odyssey_rs_sandbox::{
     AccessDecision, AccessMode, LocalSandboxProvider, SandboxContext, SandboxPolicy,
@@ -8,7 +6,6 @@ use odyssey_rs_sandbox::{
 use pretty_assertions::assert_eq;
 use tempfile::tempdir;
 
-/// Workspace write mode should block paths outside the workspace.
 #[tokio::test]
 async fn workspace_mode_blocks_external_paths() {
     let temp = tempdir().expect("tempdir");
@@ -33,7 +30,6 @@ async fn workspace_mode_blocks_external_paths() {
     ));
 }
 
-/// Explicit read roots should restrict access to allowed paths.
 #[tokio::test]
 async fn read_roots_restrict_access() {
     let temp = tempdir().expect("tempdir");

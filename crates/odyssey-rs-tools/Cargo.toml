@@ -5,32 +5,23 @@ edition.workspace = true
 license.workspace = true
 description.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 readme.workspace = true
 
 [dependencies]
-odyssey-rs-config.workspace = true
 odyssey-rs-sandbox.workspace = true
-odyssey-rs-protocol.workspace = true
 autoagents-core.workspace = true
-autoagents-derive.workspace = true
-
 async-trait.workspace = true
-chrono.workspace = true
-parking_lot.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+shell-words.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
 uuid.workspace = true
-globset.workspace = true
 walkdir.workspace = true
-log.workspace = true
-rmcp.workspace = true
-which.workspace = true
-shell-words = "1.1.0"
 
 [dev-dependencies]
-pretty_assertions = "1.4.1"
+pretty_assertions.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
-tempfile = "3.10.1"

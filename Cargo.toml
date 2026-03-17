@@ -1,8 +1,15 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/*",
-    "examples/*",
+    "crates/odyssey-rs",
+    "crates/odyssey-rs-manifest",
+    "crates/odyssey-rs-bundle",
+    "crates/odyssey-rs-protocol",
+    "crates/odyssey-rs-runtime",
+    "crates/odyssey-rs-tools",
+    "crates/odyssey-rs-sandbox",
+    "crates/odyssey-rs-server",
+    "crates/odyssey-rs-tui",
 ]
 
 default-members = ["crates/odyssey-rs"]
@@ -11,67 +18,62 @@ default-members = ["crates/odyssey-rs"]
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "Agent Orchestrator for Next Gen Agentic AI"
+description = "Lean bundle-first agent runtime in Rust"
 repository = "https://github.com/liquidos-ai/odyssey"
-keywords = ["agents", "llm"]
+keywords = ["agents", "runtime", "bundles"]
 categories = []
 readme = "README.md"
 
 [workspace.dependencies]
-# Core Crates
 odyssey-rs = { path = "crates/odyssey-rs", version = "0.1.0" }
-odyssey-rs-core = { path = "crates/odyssey-rs-core", version = "0.1.0" }
-odyssey-rs-config = { path = "crates/odyssey-rs-config", version = "0.1.0" }
+odyssey-rs-manifest = { path = "crates/odyssey-rs-manifest", version = "0.1.0" }
+odyssey-rs-bundle = { path = "crates/odyssey-rs-bundle", version = "0.1.0" }
 odyssey-rs-protocol = { path = "crates/odyssey-rs-protocol", version = "0.1.0" }
-odyssey-rs-sandbox = { path = "crates/odyssey-rs-sandbox", version = "0.1.0" }
+odyssey-rs-runtime = { path = "crates/odyssey-rs-runtime", version = "0.1.0" }
 odyssey-rs-tools = { path = "crates/odyssey-rs-tools", version = "0.1.0" }
+odyssey-rs-sandbox = { path = "crates/odyssey-rs-sandbox", version = "0.1.0" }
 odyssey-rs-server = { path = "crates/odyssey-rs-server", version = "0.1.0" }
 odyssey-rs-tui = { path = "crates/odyssey-rs-tui", version = "0.1.0" }
-odyssey-rs-test-utils = { path = "crates/odyssey-rs-test-utils", version = "0.1.0" }
 
-# AutoAgents
-autoagents = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.3" }
-autoagents-core = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.3" }
-autoagents-derive = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.3" }
-autoagents-llm = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.3" }
-autoagents-llamacpp = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.3" }
-autoagents-toolkit = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.3" }
-autoagents-protocol = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.3" }
+autoagents-core = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.6" }
+autoagents-llm = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.6" }
+autoagents-protocol = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.6" }
 
 anyhow = "1.0.96"
 async-trait = "0.1.86"
 axum = { version = "0.8.1", features = ["json", "macros"] }
 chrono = { version = "0.4.39", features = ["serde", "clock"] }
 clap = { version = "4.5.31", features = ["derive"] }
-crossterm = "0.27.0"
+crossterm = "0.29.0"
 directories = "6.0.0"
 futures-util = "0.3.31"
-globset = "0.4.15"
+hex = "0.4.3"
+json5 = "1.2.1"
+log = "0.4.28"
 parking_lot = "0.12.3"
-rand = "0.9.0"
-ratatui = { version = "0.29.0", features = ["unstable-rendered-line-info"] }
+pulldown-cmark = "0.13.0"
+ratatui = "0.30.0"
 regex = "1.11.1"
-reqwest = { version = "0.12.12", features = ["json", "stream"] }
-rocket = { version = "0.5.0", features = ["json"] }
-rocket_ws = "0.1.0"
+reqwest = { version = "0.13.2", default-features = false, features = [
+    "json",
+    "stream",
+] }
 serde = { version = "1.0.226", features = ["derive"] }
 serde_json = "1.0.145"
 serde_yaml = "0.9.34"
+sha2 = "0.10.9"
+shell-words = "1.1.0"
+sysinfo = "0.38.1"
 thiserror = "2.0.11"
 tokio = { version = "1.44.0", features = ["full"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
-tokio-tungstenite = "0.23.1"
-tower = "0.5.2"
-tower-http = { version = "0.6.2", features = ["trace"] }
-tracing = "0.1.41"
-tracing-subscriber = "0.3.19"
+tower-http = { version = "0.6.2", features = ["cors", "trace"] }
 uuid = { version = "1.15.1", features = ["v4", "serde"] }
 walkdir = "2.5.0"
-rusqlite = { version = "0.32.1", features = ["bundled", "chrono"] }
-which = "6.0.1"
-libc = "0.2.170"
-log = "0.4"
-env_logger = { version = "0.11" }
-rmcp = { version = "0.15.0", features = ["client", "transport-child-process"] }
-landlock = "0.4.4"
-pulldown-cmark = "0.12"
+which = "8.0.0"
+env_logger = "0.11.8"
+pretty_assertions = "1.4.1"
+tempfile = "3.10.1"
+tera = "1.20.1"
+libc = "0.2.171"
+landlock = "0.4.3"

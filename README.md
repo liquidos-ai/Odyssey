@@ -1,151 +1,246 @@
+# Odyssey
+
 <div align="center">
-  <img src="assets/logo.png" alt="LiquidOS Logo" width="200" height="200">
+  <img src="assets/logo.png" alt="Odyssey logo" width="180" height="180">
 
-# Odyssey 
+  <p><strong>Bundle-first agent runtime and SDK in Rust</strong></p>
+  <p>Author bundles locally, build OCI-style artifacts, run them through one runtime, and ship the same system through the CLI, HTTP server, and TUI.</p>
 
-**Agent Orcehstrator SDK in Rust with Batteries included**
+  [![License](https://img.shields.io/github/license/liquidos-ai/odyssey)](https://github.com/liquidos-ai/odyssey/blob/main/APACHE_LICENSE)
+  [![CI](https://github.com/liquidos-ai/odyssey/actions/workflows/ci-chek.yml/badge.svg)](https://github.com/liquidos-ai/odyssey/actions/workflows/ci-chek.yml)
+  [![Coverage](https://github.com/liquidos-ai/odyssey/actions/workflows/coverage.yml/badge.svg)](https://github.com/liquidos-ai/odyssey/actions/workflows/coverage.yml)
+  [![Codecov](https://codecov.io/gh/liquidos-ai/odyssey/graph/badge.svg)](https://codecov.io/gh/liquidos-ai/odyssey)
+  [![Docs](https://github.com/liquidos-ai/odyssey/actions/workflows/docs.yml/badge.svg)](https://github.com/liquidos-ai/odyssey/actions/workflows/docs.yml)
+  [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/liquidos-ai/Odyssey)
 
-[![License](https://img.shields.io/crates/l/odyssey-rs.svg)](https://github.com/liquidos-ai/Odyssey#license)
-[![Documentation](https://docs.rs/odyssey/badge.svg)](https://liquidos-ai.github.io/Odyssey)
-[![Build Status](https://github.com/liquidos-ai/Odyssey/workflows/Coverage/badge.svg)](https://github.com/liquidos-ai/Odyssey/actions)
-[![codecov](https://codecov.io/gh/liquidos-ai/Odyssey/graph/badge.svg)](https://codecov.io/gh/liquidos-ai/Odyssey)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/liquidos-ai/Odyssey)
-
-[Documentation](https://liquidos-ai.github.io/Odyssey/) | [Examples](examples/) | [Contributing](CONTRIBUTING.md)
-
+  [Documentation](https://liquidos-ai.github.io/odyssey/) | [Bundles](bundles/) | [Contributing](CONTRIBUTING.md)
 </div>
 
 ---
 
-> **Active Development:** This project is still in development, and not ready for production use yet, use it with caution.
+> **Status:** Odyssey is under active development and should be treated as pre-production software.
 
-Odyssey is a Rust-based Agent Orchestrator SDK that provides a core runtime, built-in tools, memory, sandboxing, and an integrated TUI for end-to-end agent workflows. With Odyssey, you can build desktop applications, robotics, and embedded systems with powerful agentic capabilities. It is built on top of our open-source agent framework [AutoAgents](https://github.com/liquidos-ai/AutoAgents).
+Odyssey is a Rust-based agent runtime built around a bundle-first workflow. Instead of wiring agent behavior directly into each application surface, Odyssey packages an agent as a bundle defined by `odyssey.bundle.json5`, `agent.yaml`, optional skills, and resources. That bundle can then be built, installed, exported, imported, published, pulled, and executed through the same runtime engine.
 
-***We’d love to see developers use Odyssey across diverse domains — experiment, build, and push open-source AI forward together.***
+The current architecture centers on:
 
-[![Odyssey Terminal UI](./assets/screenshot.png)](https://liquidos.ai)
+- a manifest and bundle pipeline for packaging agents
+- a runtime engine for sessions, execution, approvals, and event streaming
+- built-in tools and sandbox enforcement
+- multiple operator surfaces on top of the same runtime: CLI, HTTP server, and TUI
 
-### What's in this repo
-- `crates/odyssey-rs-core`: Orchestrator runtime, permissions, sessions, prompt assembly.
-- `crates/odyssey-rs-tools`: Tool registry and built-in tools.
-- `crates/odyssey-rs-memory`: File-backed memory provider and policies.
-- `crates/odyssey-rs-sandbox`: Sandbox policies and providers.
-- `crates/odyssey-rs-protocol`: Event, request, and schema types.
-- `crates/odyssey-rs`: SDK re-exports and helpers.
-- `crates/odyssey-rs-tui`: Terminal UI client.
-- `docs/`: mdBook documentation root (sources live in `docs/src`).
+Odyssey currently uses prebuilt executors and memory providers, with AutoAgents-backed execution in the runtime layer.
 
----
+## Why Odyssey
 
-## Key Features
+- **Bundle-first delivery:** agent projects are portable artifacts rather than ad hoc app-local configs.
+- **Single runtime model:** the SDK, CLI, HTTP server, and TUI all operate on the same runtime engine.
+- **Security-oriented execution:** sandbox mode, filesystem mounts, network allowlists, and per-tool approval rules are part of the bundle contract.
+- **Operationally simple:** local installs, OCI-style blob storage, `.odybundle` export/import, and hub push/pull workflows are built in.
+- **Rust-native:** small crates, explicit types, and embeddable runtime components.
 
-- **Native:** High-performance, embeddable orchestrator written in Rust (server mode coming soon).
-- **Secure:** Secure by Deisgn and Pure Rust implementation.
-- **Sandboxing:** Secure, sandboxed tool execution for agents (Linux supported currently).
-- **Tool Permissions:** Built-in permission system and safety checks for tool usage.
-- **Memory:** Pluggable and swappable memory layers.
-- **Flexible:** Easily extend the orchestrator with custom agents, memory providers, and executors.
-- **Local Model**: Support Local Models Embedded without external server using [AutoAgents](https://github.com/liquidos-ai/AutoAgents).
+## Repository Layout
 
----
+- `crates/odyssey-rs`: CLI entrypoint and SDK facade
+- `crates/odyssey-rs-manifest`: bundle manifest parsing and validation
+- `crates/odyssey-rs-bundle`: bundle build, install, inspect, export, import, publish, and pull
+- `crates/odyssey-rs-protocol`: shared runtime, session, event, approval, and sandbox protocol types
+- `crates/odyssey-rs-runtime`: runtime engine, prompt assembly, session store, sandbox bridge, skill loading, and execution
+- `crates/odyssey-rs-tools`: built-in tool registry and tool adaptors
+- `crates/odyssey-rs-sandbox`: sandbox runtime and providers
+- `crates/odyssey-rs-server`: Axum-based HTTP API and SSE session streaming
+- `crates/odyssey-rs-tui`: Ratatui-based local operator interface
+- `bundles/hello-world`: minimal example agent
+- `bundles/odyssey-agent`: first-party general-purpose agent
 
-### Quickstart (SDK)
-Set your OpenAI API key, then run the SDK example (or use your own binary):
+## Architecture
+
+### 1. Authoring
+
+An Odyssey bundle is a directory containing:
+
+- `odyssey.bundle.json5`: bundle manifest, runtime policy, tool rules, resources, and server flags
+- `agent.yaml`: agent identity, prompt, model, and allow/deny tool lists
+- `skills/`: optional reusable prompt extensions
+- `resources/`: optional bundle-local assets
+
+### 2. Packaging
+
+Bundles are built into OCI-style layouts. You can:
+
+- install them into the local cache
+- export them into a portable `.odybundle` archive
+- import them back into a local install
+- publish or pull them through a hub-compatible registry flow
+
+### 3. Execution
+
+At runtime, Odyssey creates sessions, assembles prompts, loads skills, resolves tools, stages a bundle workspace, and executes the agent through the configured executor.
+
+### 4. Interfaces
+
+The same runtime engine is exposed through:
+
+- the `odyssey-rs` CLI
+- the embedded TUI in `odyssey-rs-tui`
+- the HTTP server in `odyssey-rs-server`
+
+## Quickstart
+
+### Initialize a new bundle project
+
+```bash
+cargo run -p odyssey-rs -- init ./hello-world
+```
+
+This creates:
+
+- `odyssey.bundle.json5`
+- `agent.yaml`
+- `README.md`
+- `skills/`
+- `resources/`
+
+### Build and install the bundle locally
+
+```bash
+cargo run -p odyssey-rs -- build ./hello-world
+```
+
+### Build to an output directory instead of the local cache
+
+```bash
+cargo run -p odyssey-rs -- build ./hello-world --output ./dist
+```
+
+### Run a bundle
 
 ```bash
 export OPENAI_API_KEY="your-key"
-cargo run -p odyssey-rs-hello-world
+cargo run -p odyssey-rs -- run hello-world@latest --prompt "Summarize this bundle"
 ```
 
-For a custom integration, see `docs/src/quickstart.md`.
-
-### Run the TUI
-```bash
-export OPENAI_API_KEY="your-key"
-cargo run -p odyssey-rs-tui
-```
-
-Optional flags:
-```bash
-cargo run -p odyssey-rs-tui -- --config ./docs/src/odyssey.json5 --model gpt-5.2
-```
-
-### Developement Setup
-
-#### Prerequisites
-
-- **Rust** (latest stable recommended)
-- **Cargo** package manager
-- **LeftHook** for Git hooks management
-- **tokei** For lines of code
-
-#### Install LeftHook
-
-**macOS (using Homebrew):**
+### Inspect installed bundle metadata
 
 ```bash
-brew install lefthook
+cargo run -p odyssey-rs -- inspect hello-world@latest
 ```
 
-**Linux/Windows:**
+## Bundle Distribution
+
+Export a portable archive:
 
 ```bash
-# Using npm
-npm install -g lefthook
+cargo run -p odyssey-rs -- export local/hello-world:0.1.0 --output ./dist
 ```
 
-#### Running Tests
+Import a portable archive:
 
 ```bash
-# Run all tests --
-cargo test --all-features
-
-# Run tests with coverage (requires cargo-tarpaulin)
-cargo install cargo-tarpaulin
-cargo tarpaulin --engine llvm --skip-clean \
-  --workspace \
-  --exclude odyssey-rs-server \
-  --exclude odyssey-rs-tui \
-  --all-features \
-  --out html
+cargo run -p odyssey-rs -- import ./dist/hello-world-0.1.0.odybundle
 ```
 
-### Docs (mdBook)
+Publish to a hub:
+
 ```bash
-mdbook serve docs
+cargo run -p odyssey-rs -- publish ./hello-world --to team/hello-world:0.1.0 --hub http://127.0.0.1:8473
 ```
+
+Pull from a hub:
+
+```bash
+cargo run -p odyssey-rs -- pull team/hello-world:0.1.0 --hub http://127.0.0.1:8473
+```
+
+## Running the System
+
+### CLI
+
+The top-level CLI supports:
+
+- `init`
+- `build`
+- `inspect`
+- `run`
+- `serve`
+- `publish`
+- `pull`
+- `export`
+- `import`
+
+### HTTP server
+
+Start the HTTP API:
+
+```bash
+cargo run -p odyssey-rs -- serve --bind 127.0.0.1:8472
+```
+
+The server exposes bundle lifecycle endpoints, session management, asynchronous run submission, approval resolution, and session event streaming over SSE.
+
+### TUI
+
+Run the terminal UI:
+
+```bash
+cargo run -p odyssey-rs-tui --
+```
+
+Install the first-party default bundle if you want the TUI to resolve `odyssey@latest` immediately:
+
+```bash
+cargo run -p odyssey-rs -- build bundles/odyssey
+```
+
+Run the TUI against a specific installed bundle:
+
+```bash
+cargo run -p odyssey-rs-tui -- --bundle hello-world@latest
+```
+
+If `--bundle` is omitted, the TUI tries `odyssey@latest` first and otherwise falls back to the first installed bundle it can resolve.
+
+Useful TUI commands:
+
+- `/bundle install .`
+- `/bundle use odyssey@latest`
+- `/agents`
+- `/agent odyssey`
+- `/sessions`
+
+## Approvals and Sandbox Model
+
+Odyssey treats execution policy as part of the runtime, not an afterthought.
+
+- Bundles declare a sandbox mode such as `read_only` or `workspace_write`.
+- Tool policies can `allow`, `deny`, or `ask`.
+- Filesystem host access is controlled through `sandbox.permissions.filesystem.mounts`.
+- Outbound network access for sandboxed commands is controlled by `sandbox.permissions.network`.
+- Approval requests suspend the active turn and resume the same turn after resolution.
+
+The runtime emits approval events, the TUI can resolve them locally, and the HTTP server exposes `POST /approvals/{id}` for remote clients.
+
+For local development and debugging, the CLI and server also support `--dangerous-sandbox-mode`, which overrides bundle sandboxing with host execution. That mode should be used sparingly.
+
+## Development
+
+### Prerequisites
+
+- Rust toolchain
+- `rg`
+- `tokei`
+
+### Quality gates
+
+```bash
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+tokei -t Rust --exclude tests
+```
+
+If you change shared runtime surfaces such as protocol, runtime, or manifest handling, run the broader test suite expected by the repository guidelines.
 
 ## License
 
-Odyssey is licensed under:
-
-- **Apache License 2.0** ([APACHE_LICENSE](APACHE_LICENSE))
-
----
-
-## Community
-
-- **GitHub Issues**: Bug reports and feature requests
-- **Discussions**: Community Q&A and ideas
-- **Discord**: Join our Discord Community using https://discord.gg/zfAF9MkEtK
-
----
-
-## Acknowledgments
-
-Built with ❤️ by the [Liquidos AI](https://liquidos.ai) team and our amazing community contributors.
-
-Special thanks to:
-
-- The Rust community for the excellent ecosystem
-- OpenAI, Anthropic, and other LLM providers for their APIs
-- All contributors who help make Odyssey better
-
----
-
-<div align="center">
-  <strong>Ready to build intelligent agents? Get started with Odyssey SDK today!</strong>
-
-**Star us on GitHub** | 🐛 **Report Issues** | 💬 **Join Discussions**
-
-</div>
+Odyssey is licensed under Apache 2.0. See `APACHE_LICENSE`.

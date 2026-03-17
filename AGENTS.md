@@ -1,4 +1,4 @@
-# Odyssey-rs Agent Framework Guidelines
+# Odyssey-rs Agent Runtime Guidelines
 
 > High-quality, concise, and actionable coding & contribution guidelines for the odyssey-rs agent framework.
 

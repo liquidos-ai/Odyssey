@@ -10,8 +10,6 @@ categories.workspace = true
 readme.workspace = true
 
 [dependencies]
-autoagents.workspace = true
-
 async-trait.workspace = true
 chrono.workspace = true
 serde.workspace = true
@@ -20,4 +18,4 @@ uuid.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-pretty_assertions = "1.4.1"
+pretty_assertions.workspace = true

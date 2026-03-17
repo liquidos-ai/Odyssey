@@ -1,4 +1,4 @@
-//! Wire protocol types for Odyssey events, Requests, and common types.
+//! Shared protocol types for Odyssey runtime surfaces.
 
 mod skill;
 mod tool;
@@ -11,164 +11,166 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
-/// Unique identifier for a session.
 pub type SessionId = Uuid;
-/// Unique identifier for a turn.
 pub type TurnId = Uuid;
-/// Unique identifier for a tool call.
 pub type ToolCallId = Uuid;
-/// Unique identifier for an exec stream.
 pub type ExecId = Uuid;
 
-/// Wrapper for client submissions into the submission queue.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    User,
+    Assistant,
+    System,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Message {
+    pub role: Role,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSummary {
+    pub id: SessionId,
+    pub agent_id: String,
+    pub message_count: usize,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Session {
+    pub id: SessionId,
+    pub agent_id: String,
+    pub bundle_ref: String,
+    pub model_id: String,
+    pub created_at: DateTime<Utc>,
+    pub messages: Vec<Message>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubmissionEnvelope {
-    /// Unique id for the submission.
     pub id: Uuid,
-    /// Session id for the submission.
     pub session_id: SessionId,
-    /// Timestamp when the submission was created.
     pub created_at: DateTime<Utc>,
-    /// Submission payload content.
     pub payload: SubmissionPayload,
 }
 
-/// All submission operations that a client can enqueue.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type", content = "payload")]
 pub enum SubmissionPayload {
-    /// Submit a user message to start a turn.
     UserMessage { content: String },
-    /// Override turn context defaults without user input.
     OverrideTurnContext { context: TurnContextOverride },
-    /// Cancel an in-flight turn.
     CancelTurn { turn_id: TurnId },
 }
 
-/// Wrapper for events emitted by the event queue.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventMsg {
-    /// Unique id for the event.
     pub id: Uuid,
-    /// Session id associated with the event.
     pub session_id: SessionId,
-    /// Timestamp when the event was created.
     pub created_at: DateTime<Utc>,
-    /// Event payload content.
     pub payload: EventPayload,
 }
 
-/// All events emitted during orchestration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type", content = "payload")]
 pub enum EventPayload {
-    /// Turn lifecycle started.
     TurnStarted {
         turn_id: TurnId,
         context: TurnContext,
     },
-    /// Turn lifecycle completed.
-    TurnCompleted { turn_id: TurnId, message: String },
-    /// Streaming response delta from the agent.
-    AgentMessageDelta { turn_id: TurnId, delta: String },
-    /// Streaming reasoning delta from the agent.
-    ReasoningDelta { turn_id: TurnId, delta: String },
-    /// Separator between reasoning sections.
-    ReasoningSectionBreak { turn_id: TurnId },
-    /// Tool call execution started.
+    TurnCompleted {
+        turn_id: TurnId,
+        message: String,
+    },
+    AgentMessageDelta {
+        turn_id: TurnId,
+        delta: String,
+    },
+    ReasoningDelta {
+        turn_id: TurnId,
+        delta: String,
+    },
+    ReasoningSectionBreak {
+        turn_id: TurnId,
+    },
     ToolCallStarted {
         turn_id: TurnId,
         tool_call_id: ToolCallId,
         tool_name: String,
         arguments: Value,
     },
-    /// Tool call output delta.
     ToolCallDelta {
         turn_id: TurnId,
         tool_call_id: ToolCallId,
         delta: Value,
     },
-    /// Tool call execution completed.
     ToolCallFinished {
         turn_id: TurnId,
         tool_call_id: ToolCallId,
         result: Value,
         success: bool,
     },
-    /// Execution command started.
     ExecCommandBegin {
         turn_id: TurnId,
         exec_id: ExecId,
         command: Vec<String>,
         cwd: Option<String>,
     },
-    /// Execution output delta.
     ExecCommandOutputDelta {
         turn_id: TurnId,
         exec_id: ExecId,
         stream: ExecStream,
         delta: String,
     },
-    /// Execution command finished.
     ExecCommandEnd {
         turn_id: TurnId,
         exec_id: ExecId,
         exit_code: i32,
     },
-    /// Permission request emitted for approval.
     PermissionRequested {
         turn_id: TurnId,
         request_id: Uuid,
         action: PermissionAction,
         request: PermissionRequest,
     },
-    /// Permission decision resolved.
     ApprovalResolved {
         turn_id: TurnId,
         request_id: Uuid,
         decision: ApprovalDecision,
     },
-    /// Plan update broadcast.
-    PlanUpdate { turn_id: TurnId, plan: Value },
-    /// Error event for the session or turn.
+    PlanUpdate {
+        turn_id: TurnId,
+        plan: Value,
+    },
     Error {
         turn_id: Option<TurnId>,
         message: String,
     },
 }
 
-/// Execution output stream selection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecStream {
-    /// Standard output stream.
     Stdout,
-    /// Standard error stream.
     Stderr,
 }
 
-/// Turn-scoped execution context.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TurnContext {
-    /// Working directory for tool execution.
     #[serde(default)]
     pub cwd: Option<String>,
-    /// Model spec used for the turn.
     #[serde(default)]
     pub model: Option<ModelSpec>,
-    /// Sandbox mode for tool execution.
     #[serde(default)]
     pub sandbox_mode: Option<SandboxMode>,
-    /// Approval policy override for tools.
     #[serde(default)]
     pub approval_policy: Option<ApprovalPolicy>,
-    /// Additional metadata for the turn.
     #[serde(default = "empty_json_object")]
     pub metadata: Value,
 }
 
 impl TurnContext {
-    /// Apply a partial override onto this context.
     pub fn apply_override(&mut self, override_ctx: &TurnContextOverride) {
         if override_ctx.cwd.is_some() {
             self.cwd = override_ctx.cwd.clone();
@@ -188,132 +190,91 @@ impl TurnContext {
         if override_map.is_empty() {
             return;
         }
-        match self.metadata.as_object_mut() {
-            Some(target) => {
-                for (key, value) in override_map {
-                    target.insert(key.clone(), value.clone());
-                }
+        if let Some(target) = self.metadata.as_object_mut() {
+            for (key, value) in override_map {
+                target.insert(key.clone(), value.clone());
             }
-            None => {
-                self.metadata = override_ctx.metadata.clone();
-            }
+        } else {
+            self.metadata = override_ctx.metadata.clone();
         }
     }
 }
 
-/// Partial override of turn context fields.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TurnContextOverride {
-    /// Override working directory.
     #[serde(default)]
     pub cwd: Option<String>,
-    /// Override model spec.
     #[serde(default)]
     pub model: Option<ModelSpec>,
-    /// Override sandbox mode.
     #[serde(default)]
     pub sandbox_mode: Option<SandboxMode>,
-    /// Override approval policy.
     #[serde(default)]
     pub approval_policy: Option<ApprovalPolicy>,
-    /// Override metadata fields.
     #[serde(default = "empty_json_object")]
     pub metadata: Value,
 }
 
-/// Model specification used for a turn.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelSpec {
-    /// Provider identifier (e.g., openai).
     pub provider: String,
-    /// Model name under the provider.
     pub name: String,
 }
 
-/// Approval policy for tool execution.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalPolicy {
-    /// Treat all tools as untrusted and require approval.
     Untrusted,
-    /// Require approval only on failure conditions.
     OnFailure,
-    /// Require approval on explicit request.
     OnRequest,
-    /// Never require approval.
     Never,
 }
 
-/// Sandbox policy presets.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxMode {
-    /// Read-only access to the workspace.
     ReadOnly,
-    /// Allow writes within the workspace root.
     WorkspaceWrite,
-    /// Full access without sandboxing guarantees.
     DangerFullAccess,
 }
 
-/// Request for a permission decision.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type", content = "payload")]
 pub enum PermissionRequest {
-    /// Tool invocation permission.
     Tool { name: String },
-    /// Workspace path access request.
     Path { path: String, mode: PathAccess },
-    /// External path access request.
     ExternalPath { path: String, mode: PathAccess },
-    /// Command execution request.
     Command { argv: Vec<String> },
 }
 
-/// Path access mode used in permission checks.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PathAccess {
-    /// Read access.
     Read,
-    /// Write access.
     Write,
-    /// Execute access.
     Execute,
 }
 
-/// Policy action resolved for a permission request.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionAction {
-    /// Allow the action.
     Allow,
-    /// Deny the action.
     Deny,
-    /// Ask for explicit approval.
     #[default]
     Ask,
 }
 
-/// Decision returned by a user or policy.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalDecision {
-    /// Allow the action once.
     AllowOnce,
-    /// Always allow the action for this session.
     AllowAlways,
-    /// Deny the action.
     Deny,
 }
 
-/// Sink interface for orchestrator and tool events.
 pub trait EventSink: Send + Sync {
-    /// Emit an event to downstream listeners.
     fn emit(&self, event: EventMsg);
 }
 
-/// Default metadata value for empty JSON objects.
 fn empty_json_object() -> Value {
     Value::Object(Map::new())
 }
