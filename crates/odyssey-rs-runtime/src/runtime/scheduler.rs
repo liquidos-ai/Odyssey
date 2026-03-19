@@ -86,7 +86,7 @@ fn spawn_dispatcher(
 ) {
     let dispatcher = async move {
         while let Some(job) = receiver.recv().await {
-            let permit = match semaphore.clone().acquire_owned().await {
+            let _permit = match semaphore.clone().acquire_owned().await {
                 Ok(permit) => permit,
                 Err(_) => break,
             };
@@ -120,7 +120,6 @@ fn spawn_dispatcher(
                     );
                 }
                 let _ = job.completion.send(result);
-                drop(permit);
             });
         }
     };

@@ -61,7 +61,7 @@ impl OdysseyRuntime {
             sessions,
             host_sandbox,
             tools: builtin_registry(),
-            approvals: ApprovalStore::new(),
+            approvals: ApprovalStore::default(),
         });
         let scheduler = ExecutionScheduler::new(inner.clone(), worker_count, queue_capacity);
         info!("OdysseyRuntime Initiated");

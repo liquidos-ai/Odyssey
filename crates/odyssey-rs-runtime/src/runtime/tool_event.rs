@@ -180,7 +180,7 @@ mod tests {
 
     #[tokio::test]
     async fn approval_handler_routes_requests_through_store() {
-        let approvals = ApprovalStore::new();
+        let approvals = ApprovalStore::default();
         let (sender, mut receiver) = broadcast::channel(8);
         let session_id = Uuid::new_v4();
         let turn_id = Uuid::new_v4();

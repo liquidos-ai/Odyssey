@@ -18,6 +18,10 @@ use crate::{
 };
 use odyssey_rs_protocol::SandboxMode;
 
+fn sandbox_tmp_dir() -> PathBuf {
+    PathBuf::from(std::path::MAIN_SEPARATOR.to_string()).join("tmp")
+}
+
 #[derive(Debug)]
 pub struct BubblewrapProvider {
     bwrap_path: PathBuf,
@@ -87,10 +91,11 @@ impl BubblewrapProvider {
 
         append_etc_mounts(&mut bwrap_args);
         append_runtime_mounts(&mut bwrap_args);
+        let sandbox_tmp = sandbox_tmp_dir();
         bwrap_args.push("--dev".to_string());
         bwrap_args.push("/dev".to_string());
         bwrap_args.push("--tmpfs".to_string());
-        bwrap_args.push("/tmp".to_string());
+        bwrap_args.push(sandbox_tmp.display().to_string());
         bwrap_args.push("--dir".to_string());
         bwrap_args.push("/runtime".to_string());
         bind_if_exists(

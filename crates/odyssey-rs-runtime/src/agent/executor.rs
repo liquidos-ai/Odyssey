@@ -267,7 +267,7 @@ impl AutoagentsEventBridge {
             .and_then(|function| function.get("arguments"))
             .and_then(Value::as_str)
             .map(parse_json_value)
-            .unwrap_or(tool_call.clone());
+            .unwrap_or_else(|| tool_call.clone());
         self.map_tool_call_started(tool_call_id.to_string(), tool_name, arguments)
     }
 

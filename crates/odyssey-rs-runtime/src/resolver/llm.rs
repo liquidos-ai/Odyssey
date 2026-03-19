@@ -169,197 +169,214 @@ impl<'a> LLMResolver<'a> {
         config: &LLMConfig,
     ) -> Result<DynLLMProvider, RuntimeError> {
         match provider {
-            CloudLLMProvider::Anthropic => {
-                let api_key = self.require_api_key(config, "anthropic", &["ANTHROPIC_API_KEY"])?;
-
-                let mut builder = LLMBuilder::<Anthropic>::new()
-                    .api_key(api_key)
-                    .model(self.model_spec.name.as_str());
-                builder = self.apply_shared_generation_config(builder, config);
-                builder = apply_option!(builder, config.reasoning, reasoning);
-                builder = apply_option!(
-                    builder,
-                    config.reasoning_budget_tokens,
-                    reasoning_budget_tokens
-                );
-
-                let llm: DynLLMProvider = builder.build().map_err(Self::map_provider_error)?;
-                Ok(llm)
-            }
-            CloudLLMProvider::AzureOpenAI => {
-                let api_key =
-                    self.require_api_key(config, "azure-openai", &["AZURE_OPENAI_API_KEY"])?;
-                let endpoint = self.require_string_setting(
-                    config.base_url.as_deref(),
-                    "azure-openai",
-                    "base_url",
-                    &["AZURE_OPENAI_ENDPOINT"],
-                )?;
-                let api_version = self.require_string_setting(
-                    config.api_version.as_deref(),
-                    "azure-openai",
-                    "api_version",
-                    &["AZURE_OPENAI_API_VERSION"],
-                )?;
-                let deployment_id = self.require_string_setting(
-                    config.deployment_id.as_deref(),
-                    "azure-openai",
-                    "deployment_id",
-                    &["AZURE_OPENAI_DEPLOYMENT_ID"],
-                )?;
-
-                let mut builder = LLMBuilder::<AzureOpenAI>::new()
-                    .api_key(api_key)
-                    .base_url(endpoint)
-                    .api_version(api_version)
-                    .deployment_id(deployment_id)
-                    .model(self.model_spec.name.as_str());
-                builder = self.apply_shared_generation_config(builder, config);
-                builder = self.apply_reasoning_effort(builder, config, "azure-openai")?;
-                builder = apply_option!(
-                    builder,
-                    config.embedding_encoding_format.as_deref(),
-                    embedding_encoding_format
-                );
-                builder = apply_option!(builder, config.embedding_dimensions, embedding_dimensions);
-
-                let llm: DynLLMProvider = builder.build().map_err(Self::map_provider_error)?;
-                Ok(llm)
-            }
-            CloudLLMProvider::DeepSeek => {
-                let api_key = self.require_api_key(config, "deepseek", &["DEEPSEEK_API_KEY"])?;
-
-                let llm: DynLLMProvider = Arc::new(DeepSeek::new_with_options(
-                    api_key,
-                    config.base_url.clone(),
-                    Some(self.model_spec.name.clone()),
-                    config.max_tokens,
-                    config.temperature,
-                    config.timeout_seconds,
-                    config.top_p,
-                    None,
-                ));
-                Ok(llm)
-            }
-            CloudLLMProvider::Google => {
-                let api_key =
-                    self.require_api_key(config, "google", &["GOOGLE_API_KEY", "GEMINI_API_KEY"])?;
-
-                let mut builder = LLMBuilder::<Google>::new()
-                    .api_key(api_key)
-                    .model(self.model_spec.name.as_str());
-                builder = self.apply_shared_generation_config(builder, config);
-
-                let llm: DynLLMProvider = builder.build().map_err(Self::map_provider_error)?;
-                Ok(llm)
-            }
-            CloudLLMProvider::Groq => {
-                let api_key = self.require_api_key(config, "groq", &["GROQ_API_KEY"])?;
-
-                let mut builder = LLMBuilder::<Groq>::new()
-                    .api_key(api_key)
-                    .model(self.model_spec.name.as_str());
-                builder = self.apply_shared_generation_config(builder, config);
-                builder = self.apply_reasoning_effort(builder, config, "groq")?;
-                builder = apply_option!(
-                    builder,
-                    config.enable_parallel_tool_use,
-                    enable_parallel_tool_use
-                );
-                builder = apply_option!(builder, config.normalize_response, normalize_response);
-                builder = apply_option!(builder, config.extra_body.as_ref(), extra_body);
-
-                let llm: DynLLMProvider = builder.build().map_err(Self::map_provider_error)?;
-                Ok(llm)
-            }
-            CloudLLMProvider::MiniMax => {
-                let api_key = self.require_api_key(config, "minimax", &["MINIMAX_API_KEY"])?;
-
-                let mut builder = LLMBuilder::<MiniMax>::new()
-                    .api_key(api_key)
-                    .model(self.model_spec.name.as_str());
-                builder = self.apply_shared_generation_config(builder, config);
-                builder = self.apply_reasoning_effort(builder, config, "minimax")?;
-                builder = apply_option!(
-                    builder,
-                    config.enable_parallel_tool_use,
-                    enable_parallel_tool_use
-                );
-                builder = apply_option!(builder, config.normalize_response, normalize_response);
-                builder = apply_option!(builder, config.extra_body.as_ref(), extra_body);
-
-                let llm: DynLLMProvider = builder.build().map_err(Self::map_provider_error)?;
-                Ok(llm)
-            }
-            CloudLLMProvider::OpenAI => {
-                let api_key = self.require_api_key(config, "openai", &["OPENAI_API_KEY"])?;
-
-                let mut builder = LLMBuilder::<OpenAI>::new()
-                    .api_key(api_key)
-                    .model(self.model_spec.name.as_str());
-                builder = self.apply_shared_generation_config(builder, config);
-                builder = self.apply_reasoning_effort(builder, config, "openai")?;
-                builder = apply_option!(
-                    builder,
-                    config.embedding_encoding_format.as_deref(),
-                    embedding_encoding_format
-                );
-                builder = apply_option!(builder, config.embedding_dimensions, embedding_dimensions);
-                builder = apply_option!(builder, config.normalize_response, normalize_response);
-                builder = apply_option!(builder, config.extra_body.as_ref(), extra_body);
-
-                let llm: DynLLMProvider = builder.build().map_err(Self::map_provider_error)?;
-                Ok(llm)
-            }
-            CloudLLMProvider::OpenRouter => {
-                let api_key =
-                    self.require_api_key(config, "openrouter", &["OPENROUTER_API_KEY"])?;
-
-                let mut builder = LLMBuilder::<OpenRouter>::new()
-                    .api_key(api_key)
-                    .model(self.model_spec.name.as_str());
-                builder = self.apply_shared_generation_config(builder, config);
-                builder = self.apply_reasoning_effort(builder, config, "openrouter")?;
-                builder = apply_option!(
-                    builder,
-                    config.enable_parallel_tool_use,
-                    enable_parallel_tool_use
-                );
-                builder = apply_option!(builder, config.normalize_response, normalize_response);
-                builder = apply_option!(builder, config.extra_body.as_ref(), extra_body);
-
-                let llm: DynLLMProvider = builder.build().map_err(Self::map_provider_error)?;
-                Ok(llm)
-            }
-            CloudLLMProvider::Phind => {
-                let mut builder = LLMBuilder::<Phind>::new().model(self.model_spec.name.as_str());
-                builder = self.apply_shared_generation_config(builder, config);
-
-                let llm: DynLLMProvider = builder.build().map_err(Self::map_provider_error)?;
-                Ok(llm)
-            }
-            CloudLLMProvider::Xai => {
-                let api_key = self.require_api_key(config, "xai", &["XAI_API_KEY"])?;
-
-                let mut builder = LLMBuilder::<XAI>::new()
-                    .api_key(api_key)
-                    .model(self.model_spec.name.as_str());
-                builder = self.apply_shared_generation_config(builder, config);
-                builder = apply_option!(
-                    builder,
-                    config.embedding_encoding_format.as_deref(),
-                    embedding_encoding_format
-                );
-                builder = apply_option!(builder, config.embedding_dimensions, embedding_dimensions);
-
-                let llm: DynLLMProvider = builder.build().map_err(Self::map_provider_error)?;
-                Ok(llm)
-            }
+            CloudLLMProvider::Anthropic => self.build_anthropic_llm(config),
+            CloudLLMProvider::AzureOpenAI => self.build_azure_openai_llm(config),
+            CloudLLMProvider::DeepSeek => self.build_deepseek_llm(config),
+            CloudLLMProvider::Google => self.build_google_llm(config),
+            CloudLLMProvider::Groq => self.build_groq_llm(config),
+            CloudLLMProvider::MiniMax => self.build_minimax_llm(config),
+            CloudLLMProvider::OpenAI => self.build_openai_llm(config),
+            CloudLLMProvider::OpenRouter => self.build_openrouter_llm(config),
+            CloudLLMProvider::Phind => self.build_phind_llm(config),
+            CloudLLMProvider::Xai => self.build_xai_llm(config),
             CloudLLMProvider::Unknown => Err(RuntimeError::Unsupported(format!(
                 "unsupported model provider: {}",
                 self.model_spec.provider
             ))),
         }
+    }
+
+    fn build_anthropic_llm(&self, config: &LLMConfig) -> Result<DynLLMProvider, RuntimeError> {
+        let api_key = self.require_api_key(config, "anthropic", &["ANTHROPIC_API_KEY"])?;
+
+        let mut builder = LLMBuilder::<Anthropic>::new()
+            .api_key(api_key)
+            .model(self.model_spec.name.as_str());
+        builder = self.apply_shared_generation_config(builder, config);
+        builder = apply_option!(builder, config.reasoning, reasoning);
+        builder = apply_option!(
+            builder,
+            config.reasoning_budget_tokens,
+            reasoning_budget_tokens
+        );
+
+        let llm: DynLLMProvider = builder.build().map_err(Self::map_provider_error)?;
+        Ok(llm)
+    }
+
+    fn build_azure_openai_llm(&self, config: &LLMConfig) -> Result<DynLLMProvider, RuntimeError> {
+        let api_key = self.require_api_key(config, "azure-openai", &["AZURE_OPENAI_API_KEY"])?;
+        let endpoint = self.require_string_setting(
+            config.base_url.as_deref(),
+            "azure-openai",
+            "base_url",
+            &["AZURE_OPENAI_ENDPOINT"],
+        )?;
+        let api_version = self.require_string_setting(
+            config.api_version.as_deref(),
+            "azure-openai",
+            "api_version",
+            &["AZURE_OPENAI_API_VERSION"],
+        )?;
+        let deployment_id = self.require_string_setting(
+            config.deployment_id.as_deref(),
+            "azure-openai",
+            "deployment_id",
+            &["AZURE_OPENAI_DEPLOYMENT_ID"],
+        )?;
+
+        let mut builder = LLMBuilder::<AzureOpenAI>::new()
+            .api_key(api_key)
+            .base_url(endpoint)
+            .api_version(api_version)
+            .deployment_id(deployment_id)
+            .model(self.model_spec.name.as_str());
+        builder = self.apply_shared_generation_config(builder, config);
+        builder = self.apply_reasoning_effort(builder, config, "azure-openai")?;
+        builder = apply_option!(
+            builder,
+            config.embedding_encoding_format.as_deref(),
+            embedding_encoding_format
+        );
+        builder = apply_option!(builder, config.embedding_dimensions, embedding_dimensions);
+
+        let llm: DynLLMProvider = builder.build().map_err(Self::map_provider_error)?;
+        Ok(llm)
+    }
+
+    fn build_deepseek_llm(&self, config: &LLMConfig) -> Result<DynLLMProvider, RuntimeError> {
+        let api_key = self.require_api_key(config, "deepseek", &["DEEPSEEK_API_KEY"])?;
+
+        Ok(Arc::new(DeepSeek::new_with_options(
+            api_key,
+            config.base_url.clone(),
+            Some(self.model_spec.name.clone()),
+            config.max_tokens,
+            config.temperature,
+            config.timeout_seconds,
+            config.top_p,
+            None,
+        )))
+    }
+
+    fn build_google_llm(&self, config: &LLMConfig) -> Result<DynLLMProvider, RuntimeError> {
+        let api_key =
+            self.require_api_key(config, "google", &["GOOGLE_API_KEY", "GEMINI_API_KEY"])?;
+
+        let mut builder = LLMBuilder::<Google>::new()
+            .api_key(api_key)
+            .model(self.model_spec.name.as_str());
+        builder = self.apply_shared_generation_config(builder, config);
+
+        let llm: DynLLMProvider = builder.build().map_err(Self::map_provider_error)?;
+        Ok(llm)
+    }
+
+    fn build_groq_llm(&self, config: &LLMConfig) -> Result<DynLLMProvider, RuntimeError> {
+        let api_key = self.require_api_key(config, "groq", &["GROQ_API_KEY"])?;
+
+        let mut builder = LLMBuilder::<Groq>::new()
+            .api_key(api_key)
+            .model(self.model_spec.name.as_str());
+        builder = self.apply_shared_generation_config(builder, config);
+        builder = self.apply_reasoning_effort(builder, config, "groq")?;
+        builder = apply_option!(
+            builder,
+            config.enable_parallel_tool_use,
+            enable_parallel_tool_use
+        );
+        builder = apply_option!(builder, config.normalize_response, normalize_response);
+        builder = apply_option!(builder, config.extra_body.as_ref(), extra_body);
+
+        let llm: DynLLMProvider = builder.build().map_err(Self::map_provider_error)?;
+        Ok(llm)
+    }
+
+    fn build_minimax_llm(&self, config: &LLMConfig) -> Result<DynLLMProvider, RuntimeError> {
+        let api_key = self.require_api_key(config, "minimax", &["MINIMAX_API_KEY"])?;
+
+        let mut builder = LLMBuilder::<MiniMax>::new()
+            .api_key(api_key)
+            .model(self.model_spec.name.as_str());
+        builder = self.apply_shared_generation_config(builder, config);
+        builder = self.apply_reasoning_effort(builder, config, "minimax")?;
+        builder = apply_option!(
+            builder,
+            config.enable_parallel_tool_use,
+            enable_parallel_tool_use
+        );
+        builder = apply_option!(builder, config.normalize_response, normalize_response);
+        builder = apply_option!(builder, config.extra_body.as_ref(), extra_body);
+
+        let llm: DynLLMProvider = builder.build().map_err(Self::map_provider_error)?;
+        Ok(llm)
+    }
+
+    fn build_openai_llm(&self, config: &LLMConfig) -> Result<DynLLMProvider, RuntimeError> {
+        let api_key = self.require_api_key(config, "openai", &["OPENAI_API_KEY"])?;
+
+        let mut builder = LLMBuilder::<OpenAI>::new()
+            .api_key(api_key)
+            .model(self.model_spec.name.as_str());
+        builder = self.apply_shared_generation_config(builder, config);
+        builder = self.apply_reasoning_effort(builder, config, "openai")?;
+        builder = apply_option!(
+            builder,
+            config.embedding_encoding_format.as_deref(),
+            embedding_encoding_format
+        );
+        builder = apply_option!(builder, config.embedding_dimensions, embedding_dimensions);
+        builder = apply_option!(builder, config.normalize_response, normalize_response);
+        builder = apply_option!(builder, config.extra_body.as_ref(), extra_body);
+
+        let llm: DynLLMProvider = builder.build().map_err(Self::map_provider_error)?;
+        Ok(llm)
+    }
+
+    fn build_openrouter_llm(&self, config: &LLMConfig) -> Result<DynLLMProvider, RuntimeError> {
+        let api_key = self.require_api_key(config, "openrouter", &["OPENROUTER_API_KEY"])?;
+
+        let mut builder = LLMBuilder::<OpenRouter>::new()
+            .api_key(api_key)
+            .model(self.model_spec.name.as_str());
+        builder = self.apply_shared_generation_config(builder, config);
+        builder = self.apply_reasoning_effort(builder, config, "openrouter")?;
+        builder = apply_option!(
+            builder,
+            config.enable_parallel_tool_use,
+            enable_parallel_tool_use
+        );
+        builder = apply_option!(builder, config.normalize_response, normalize_response);
+        builder = apply_option!(builder, config.extra_body.as_ref(), extra_body);
+
+        let llm: DynLLMProvider = builder.build().map_err(Self::map_provider_error)?;
+        Ok(llm)
+    }
+
+    fn build_phind_llm(&self, config: &LLMConfig) -> Result<DynLLMProvider, RuntimeError> {
+        let mut builder = LLMBuilder::<Phind>::new().model(self.model_spec.name.as_str());
+        builder = self.apply_shared_generation_config(builder, config);
+
+        let llm: DynLLMProvider = builder.build().map_err(Self::map_provider_error)?;
+        Ok(llm)
+    }
+
+    fn build_xai_llm(&self, config: &LLMConfig) -> Result<DynLLMProvider, RuntimeError> {
+        let api_key = self.require_api_key(config, "xai", &["XAI_API_KEY"])?;
+
+        let mut builder = LLMBuilder::<XAI>::new()
+            .api_key(api_key)
+            .model(self.model_spec.name.as_str());
+        builder = self.apply_shared_generation_config(builder, config);
+        builder = apply_option!(
+            builder,
+            config.embedding_encoding_format.as_deref(),
+            embedding_encoding_format
+        );
+        builder = apply_option!(builder, config.embedding_dimensions, embedding_dimensions);
+
+        let llm: DynLLMProvider = builder.build().map_err(Self::map_provider_error)?;
+        Ok(llm)
     }
 
     fn apply_shared_generation_config<L: AutoAgentsLLMProvider + HasConfig>(

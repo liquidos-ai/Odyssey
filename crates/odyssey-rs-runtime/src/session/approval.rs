@@ -27,10 +27,6 @@ struct PendingApproval {
 }
 
 impl ApprovalStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub async fn request_tool(
         &self,
         session_id: Uuid,
@@ -143,7 +139,7 @@ mod tests {
 
     #[tokio::test]
     async fn stores_allow_always_for_future_requests() {
-        let approvals = ApprovalStore::new();
+        let approvals = ApprovalStore::default();
         let (sender, _) = broadcast::channel(8);
         let session_id = Uuid::new_v4();
         let turn_id = Uuid::new_v4();
