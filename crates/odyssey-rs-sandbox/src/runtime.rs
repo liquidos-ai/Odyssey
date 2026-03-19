@@ -221,7 +221,7 @@ impl SandboxRuntime {
         let name = provider_name.unwrap_or_else(|| default_provider_name(mode));
         match name {
             "host" | "local" | "none" | "nosandbox" => {
-                Self::new("host", Arc::new(HostExecProvider::new()), storage_root)
+                Self::new("host", Arc::new(HostExecProvider::default()), storage_root)
             }
             #[cfg(target_os = "linux")]
             "bubblewrap" | "bwrap" => Self::new(
@@ -332,8 +332,7 @@ impl SandboxRuntime {
     fn materialize_cell_root(&self, key: &SandboxCellKey) -> Result<PathBuf, SandboxError> {
         let session = key
             .session_id
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "shared".to_string());
+            .map_or_else(|| "shared".to_string(), |value| value.to_string());
         let root = self
             .storage_root
             .join("cells")
@@ -393,7 +392,7 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let runtime = SandboxRuntime::new(
             "host",
-            Arc::new(LocalSandboxProvider::new()),
+            Arc::new(LocalSandboxProvider::default()),
             temp.path().join("sandbox"),
         )
         .expect("runtime");
@@ -429,7 +428,7 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let runtime = SandboxRuntime::new(
             "host",
-            Arc::new(LocalSandboxProvider::new()),
+            Arc::new(LocalSandboxProvider::default()),
             temp.path().join("sandbox"),
         )
         .expect("runtime");
@@ -463,7 +462,7 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let runtime = SandboxRuntime::new(
             "host",
-            Arc::new(LocalSandboxProvider::new()),
+            Arc::new(LocalSandboxProvider::default()),
             temp.path().join("sandbox"),
         )
         .expect("runtime");
@@ -546,7 +545,7 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let runtime = SandboxRuntime::new(
             "host",
-            Arc::new(LocalSandboxProvider::new()),
+            Arc::new(LocalSandboxProvider::default()),
             temp.path().join("sandbox"),
         )
         .expect("runtime");

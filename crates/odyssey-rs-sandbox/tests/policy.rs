@@ -14,7 +14,7 @@ async fn workspace_mode_blocks_external_paths() {
         mode: SandboxMode::WorkspaceWrite,
         policy: SandboxPolicy::default(),
     };
-    let provider = LocalSandboxProvider::new();
+    let provider = LocalSandboxProvider::default();
     let handle = provider.prepare(&ctx).await.expect("prepare");
 
     let inside = temp.path().join("file.txt");
@@ -47,7 +47,7 @@ async fn read_roots_restrict_access() {
         mode: SandboxMode::ReadOnly,
         policy,
     };
-    let provider = LocalSandboxProvider::new();
+    let provider = LocalSandboxProvider::default();
     let handle = provider.prepare(&ctx).await.expect("prepare");
 
     let allowed = allow_path.join("file.txt");

@@ -225,7 +225,7 @@ For local debugging, the CLI and server support `--dangerous-sandbox-mode`, whic
 - `crates/odyssey-rs-server`: Axum-based HTTP API
 - `crates/odyssey-rs-tui`: Ratatui-based terminal UI
 - `bundles/hello-world`: minimal example bundle
-- `bundles/odyssey-agent`: first-party general-purpose bundle
+- `bundles/odyssey-agent`: Odyssey general purpose agent
 
 ## Development
 

@@ -31,33 +31,29 @@ impl App {
 
             lines.push(Line::from(vec![Span::styled(prefix, prefix_style)]));
 
-            match entry.role {
-                ChatRole::Assistant => {
-                    // Render assistant content as Markdown.
-                    let md_lines = render_markdown(&entry.content, &self.theme, content_style);
-                    lines.extend(md_lines);
-                    // Ensure a blank separator between messages.
-                    if idx + 1 < self.messages.len()
-                        && lines.last().map(|l| !l.spans.is_empty()) == Some(true)
-                    {
-                        lines.push(Line::from(Span::raw("")));
+            if matches!(entry.role, ChatRole::Assistant) {
+                // Render assistant content as Markdown.
+                let md_lines = render_markdown(&entry.content, &self.theme, content_style);
+                lines.extend(md_lines);
+                // Ensure a blank separator between messages.
+                if idx + 1 < self.messages.len()
+                    && lines.last().is_some_and(|line| !line.spans.is_empty())
+                {
+                    lines.push(Line::from(Span::raw("")));
+                }
+            } else {
+                // Plain text for user / system / permission messages.
+                let mut content_iter = entry.content.lines();
+                if let Some(first) = content_iter.next() {
+                    if !first.is_empty() {
+                        lines.push(Line::from(Span::styled(format!(" {first}"), content_style)));
+                    }
+                    for line in content_iter {
+                        lines.push(Line::from(Span::styled(format!(" {line}"), content_style)));
                     }
                 }
-                _ => {
-                    // Plain text for user / system / permission messages.
-                    let mut content_iter = entry.content.lines();
-                    if let Some(first) = content_iter.next() {
-                        if !first.is_empty() {
-                            lines
-                                .push(Line::from(Span::styled(format!(" {first}"), content_style)));
-                        }
-                        for line in content_iter {
-                            lines.push(Line::from(Span::styled(format!(" {line}"), content_style)));
-                        }
-                    }
-                    if idx + 1 < self.messages.len() {
-                        lines.push(Line::from(Span::raw("")));
-                    }
+                if idx + 1 < self.messages.len() {
+                    lines.push(Line::from(Span::raw("")));
                 }
             }
         }

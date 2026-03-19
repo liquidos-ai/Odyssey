@@ -17,12 +17,6 @@ pub struct HostExecProvider {
 
 pub type LocalSandboxProvider = HostExecProvider;
 
-impl HostExecProvider {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
 #[async_trait]
 impl SandboxProvider for HostExecProvider {
     async fn prepare(&self, ctx: &SandboxContext) -> Result<SandboxHandle, SandboxError> {
@@ -114,7 +108,7 @@ mod tests {
     #[tokio::test]
     async fn host_provider_runs_commands() {
         let workspace = tempdir().expect("workspace");
-        let provider = HostExecProvider::new();
+        let provider = HostExecProvider::default();
         let ctx = SandboxContext {
             workspace_root: workspace.path().to_path_buf(),
             mode: SandboxMode::WorkspaceWrite,
@@ -134,7 +128,7 @@ mod tests {
     #[tokio::test]
     async fn host_provider_check_access_and_shutdown() {
         let workspace = tempdir().expect("workspace");
-        let provider = HostExecProvider::new();
+        let provider = HostExecProvider::default();
         let ctx = SandboxContext {
             workspace_root: workspace.path().to_path_buf(),
             mode: SandboxMode::WorkspaceWrite,

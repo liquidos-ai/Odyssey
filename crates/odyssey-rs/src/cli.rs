@@ -86,46 +86,8 @@ pub enum Command {
 
 pub async fn run_cli(cli: Cli) -> Result<()> {
     info!("Running Odyssey CLI");
-    let mut config = RuntimeConfig::default();
-    if let Some(remote) = &cli.remote {
-        config.bind_addr = remote.clone();
-    }
-    if let Command::Serve {
-        bind: Some(bind), ..
-    } = &cli.command
-    {
-        config.bind_addr = bind.clone();
-    }
-    if matches!(
-        &cli.command,
-        Command::Run {
-            dangerous_sandbox_mode: true,
-            ..
-        } | Command::Serve {
-            dangerous_sandbox_mode: true,
-            ..
-        }
-    ) {
-        config.sandbox_mode_override = Some(SandboxMode::DangerFullAccess);
-        info!("Registered DangerFullAccess Sandbox mode")
-    }
-    if let Some(hub_url) = hub_override(&cli.command) {
-        config.hub_url = hub_url;
-    }
-    let use_remote = cli.remote.is_some();
-    if use_remote
-        && matches!(
-            cli.command,
-            Command::Build { .. }
-                | Command::Serve { .. }
-                | Command::Init { .. }
-                | Command::Push { .. }
-                | Command::Export { .. }
-                | Command::Import { .. }
-        )
-    {
-        return Err(anyhow!("--remote is not supported with this command"));
-    }
+    validate_remote_usage(&cli)?;
+    let config = build_runtime_config(&cli);
     let start_time = Instant::now();
     let runtime = OdysseyRuntime::new(config.clone())?;
     let bundles = BundleStore::new(config.cache_root.clone());
@@ -136,170 +98,295 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
         .as_deref()
         .map(RemoteRuntimeClient::new)
         .transpose()?;
-    match cli.command {
-        Command::Init { path } => {
-            runtime.init(&path)?;
-            print_init_summary(&path);
+    execute_command(cli.command, &config, &runtime, &bundles, remote.as_ref()).await?;
+    Ok(())
+}
+
+fn build_runtime_config(cli: &Cli) -> RuntimeConfig {
+    let mut config = RuntimeConfig::default();
+    if let Some(remote) = &cli.remote {
+        config.bind_addr.clone_from(remote);
+    }
+    if let Command::Serve {
+        bind: Some(bind), ..
+    } = &cli.command
+    {
+        config.bind_addr.clone_from(bind);
+    }
+    if dangerous_sandbox_mode_enabled(&cli.command) {
+        config.sandbox_mode_override = Some(SandboxMode::DangerFullAccess);
+        info!("Registered DangerFullAccess Sandbox mode");
+    }
+    if let Some(hub_url) = hub_override(&cli.command) {
+        config.hub_url = hub_url;
+    }
+    config
+}
+
+fn dangerous_sandbox_mode_enabled(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Run {
+            dangerous_sandbox_mode: true,
+            ..
+        } | Command::Serve {
+            dangerous_sandbox_mode: true,
+            ..
         }
-        Command::Build { path, output } => {
-            if let Some(output) = output {
-                let project = BundleProject::load(&path)?;
-                let artifact = BundleBuilder::new(project).build(&output)?;
-                println!(
-                    "{} {}@{} {} {}",
-                    "built".green().bold(),
-                    artifact.metadata.id,
-                    artifact.metadata.version,
-                    artifact.metadata.digest,
-                    artifact.path.display()
-                );
-            } else {
-                let install = bundles.build_and_install(path)?;
-                println!(
-                    "{} {}@{} {} {}",
-                    "installed".green().bold(),
-                    install.metadata.id,
-                    install.metadata.version,
-                    install.metadata.digest,
-                    install.path.display()
-                );
-            }
-        }
-        Command::Inspect { reference } => {
-            let metadata = if let Some(remote) = &remote {
-                remote.inspect(&reference).await?
-            } else {
-                bundles.resolve(&reference)?.metadata
-            };
-            println!("{}", "bundle metadata".cyan().bold());
-            println!("{}", serde_json::to_string_pretty(&metadata)?);
-        }
+    )
+}
+
+fn validate_remote_usage(cli: &Cli) -> Result<()> {
+    if cli.remote.is_some() && !remote_command_supported(&cli.command) {
+        return Err(anyhow!("--remote is not supported with this command"));
+    }
+    Ok(())
+}
+
+fn remote_command_supported(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Inspect { .. }
+            | Command::Run { .. }
+            | Command::Pull { .. }
+            | Command::Bundles
+            | Command::Sessions
+            | Command::Session { .. }
+    )
+}
+
+async fn execute_command(
+    command: Command,
+    config: &RuntimeConfig,
+    runtime: &OdysseyRuntime,
+    bundles: &BundleStore,
+    remote: Option<&RemoteRuntimeClient>,
+) -> Result<()> {
+    match command {
+        Command::Init { path } => handle_init(runtime, &path),
+        Command::Build { path, output } => handle_build(bundles, &path, output),
+        Command::Inspect { reference } => handle_inspect(bundles, remote, &reference).await,
         Command::Run {
             reference, prompt, ..
-        } => {
-            let result = if let Some(remote) = &remote {
-                remote.run(reference, prompt).await?
-            } else {
-                let session = runtime.create_session(SessionSpec::from(reference))?;
-                let task = Task::new(prompt);
-                let request_id = Uuid::new_v4();
-                runtime
-                    .run(ExecutionRequest {
-                        request_id,
-                        session_id: session.id,
-                        input: task,
-                        turn_context: None,
-                    })
-                    .await?
-            };
-            println!("{}", "assistant".cyan().bold());
-            println!("{}", result.response);
-        }
-        Command::Serve { .. } => {
+        } => handle_run(runtime, remote, reference, prompt).await,
+        Command::Serve { .. } => handle_serve(config.clone()).await,
+        Command::Push { source, to, .. } => handle_push(bundles, config, &source, &to).await,
+        Command::Pull { reference, .. } => handle_pull(bundles, remote, config, &reference).await,
+        Command::Export { reference, output } => handle_export(bundles, &reference, output),
+        Command::Import { path } => handle_import(bundles, path),
+        Command::Bundles => handle_bundles(bundles, remote).await,
+        Command::Sessions => handle_sessions(runtime, remote).await,
+        Command::Session { id, delete } => handle_session(runtime, remote, id, delete).await,
+    }
+}
+
+fn handle_init(runtime: &OdysseyRuntime, path: &str) -> Result<()> {
+    runtime.init(path)?;
+    print_init_summary(path);
+    Ok(())
+}
+
+fn handle_build(bundles: &BundleStore, path: &str, output: Option<PathBuf>) -> Result<()> {
+    if let Some(output) = output {
+        let project = BundleProject::load(path)?;
+        let artifact = BundleBuilder::new(project).build(&output)?;
+        println!(
+            "{} {}@{} {} {}",
+            "built".green().bold(),
+            artifact.metadata.id,
+            artifact.metadata.version,
+            artifact.metadata.digest,
+            artifact.path.display()
+        );
+    } else {
+        let install = bundles.build_and_install(path)?;
+        println!(
+            "{} {}@{} {} {}",
+            "installed".green().bold(),
+            install.metadata.id,
+            install.metadata.version,
+            install.metadata.digest,
+            install.path.display()
+        );
+    }
+    Ok(())
+}
+
+async fn handle_inspect(
+    bundles: &BundleStore,
+    remote: Option<&RemoteRuntimeClient>,
+    reference: &str,
+) -> Result<()> {
+    let metadata = if let Some(remote) = remote {
+        remote.inspect(reference).await?
+    } else {
+        bundles.resolve(reference)?.metadata
+    };
+    println!("{}", "bundle metadata".cyan().bold());
+    println!("{}", serde_json::to_string_pretty(&metadata)?);
+    Ok(())
+}
+
+async fn handle_run(
+    runtime: &OdysseyRuntime,
+    remote: Option<&RemoteRuntimeClient>,
+    reference: String,
+    prompt: String,
+) -> Result<()> {
+    let result = if let Some(remote) = remote {
+        remote.run(reference, prompt).await?
+    } else {
+        let session = runtime.create_session(SessionSpec::from(reference))?;
+        let request_id = Uuid::new_v4();
+        runtime
+            .run(ExecutionRequest {
+                request_id,
+                session_id: session.id,
+                input: Task::new(prompt),
+                turn_context: None,
+            })
+            .await?
+    };
+    println!("{}", "assistant".cyan().bold());
+    println!("{}", result.response);
+    Ok(())
+}
+
+async fn handle_serve(config: RuntimeConfig) -> Result<()> {
+    println!(
+        "{} {}",
+        "serving".green().bold(),
+        config.bind_addr.as_str().cyan()
+    );
+    odyssey_rs_server::serve(config).await?;
+    Ok(())
+}
+
+async fn handle_push(
+    bundles: &BundleStore,
+    config: &RuntimeConfig,
+    source: &str,
+    to: &str,
+) -> Result<()> {
+    let published = bundles.publish(source, to, &config.hub_url).await?;
+    println!(
+        "{} {} {}",
+        "published".green().bold(),
+        format!("{}@{}", published.id, published.version).cyan(),
+        published.digest.cyan()
+    );
+    Ok(())
+}
+
+async fn handle_pull(
+    bundles: &BundleStore,
+    remote: Option<&RemoteRuntimeClient>,
+    config: &RuntimeConfig,
+    reference: &str,
+) -> Result<()> {
+    let install = if let Some(remote) = remote {
+        remote.pull(reference, &config.hub_url).await?
+    } else {
+        bundles.pull(reference, &config.hub_url).await?
+    };
+    println!(
+        "{} {} {}",
+        "pulled".green().bold(),
+        format!(
+            "{}/{}@{}",
+            install.metadata.namespace, install.metadata.id, install.metadata.version
+        )
+        .cyan(),
+        install.path.display()
+    );
+    Ok(())
+}
+
+fn handle_export(bundles: &BundleStore, reference: &str, output: Option<PathBuf>) -> Result<()> {
+    let output = output.unwrap_or_else(|| PathBuf::from("."));
+    let path = bundles.export(reference, output)?;
+    println!("{} {}", "exported".green().bold(), path.display());
+    Ok(())
+}
+
+fn handle_import(bundles: &BundleStore, path: PathBuf) -> Result<()> {
+    let install = bundles.import(path)?;
+    println!(
+        "{} {}/{}@{}",
+        "imported".green().bold(),
+        install.metadata.namespace,
+        install.metadata.id,
+        install.metadata.version
+    );
+    Ok(())
+}
+
+async fn handle_bundles(bundles: &BundleStore, remote: Option<&RemoteRuntimeClient>) -> Result<()> {
+    let bundles = if let Some(remote) = remote {
+        remote.list_bundles().await?
+    } else {
+        bundles.list_installed()?
+    };
+    if bundles.is_empty() {
+        println!("{}", "no bundles installed".dark_grey());
+    } else {
+        for bundle in bundles {
             println!(
                 "{} {}",
-                "serving".green().bold(),
-                config.bind_addr.as_str().cyan()
+                format!("{}/{}@{}", bundle.namespace, bundle.id, bundle.version)
+                    .cyan()
+                    .bold(),
+                bundle.path.display()
             );
-            odyssey_rs_server::serve(config).await?;
         }
-        Command::Push { source, to, .. } => {
-            let published = bundles.publish(&source, &to, &config.hub_url).await?;
+    }
+    Ok(())
+}
+
+async fn handle_sessions(
+    runtime: &OdysseyRuntime,
+    remote: Option<&RemoteRuntimeClient>,
+) -> Result<()> {
+    let sessions = if let Some(remote) = remote {
+        remote.list_sessions().await?
+    } else {
+        runtime.list_sessions(None)
+    };
+    if sessions.is_empty() {
+        println!("{}", "no sessions".dark_grey());
+    } else {
+        for session in sessions {
             println!(
                 "{} {} {}",
-                "published".green().bold(),
-                format!("{}@{}", published.id, published.version).cyan(),
-                published.digest.cyan()
+                session.id.to_string().cyan().bold(),
+                session.agent_id,
+                session.created_at
             );
         }
-        Command::Pull { reference, .. } => {
-            let install = if let Some(remote) = &remote {
-                remote.pull(&reference, &config.hub_url).await?
-            } else {
-                bundles.pull(&reference, &config.hub_url).await?
-            };
-            println!(
-                "{} {} {}",
-                "pulled".green().bold(),
-                format!(
-                    "{}/{}@{}",
-                    install.metadata.namespace, install.metadata.id, install.metadata.version
-                )
-                .cyan(),
-                install.path.display()
-            );
+    }
+    Ok(())
+}
+
+async fn handle_session(
+    runtime: &OdysseyRuntime,
+    remote: Option<&RemoteRuntimeClient>,
+    id: Uuid,
+    delete: bool,
+) -> Result<()> {
+    if delete {
+        if let Some(remote) = remote {
+            remote.delete_session(id).await?;
+        } else {
+            runtime.delete_session(id)?;
         }
-        Command::Export { reference, output } => {
-            let output = output.unwrap_or_else(|| PathBuf::from("."));
-            let path = bundles.export(&reference, output)?;
-            println!("{} {}", "exported".green().bold(), path.display());
-        }
-        Command::Import { path } => {
-            let install = bundles.import(path)?;
-            println!(
-                "{} {}/{}@{}",
-                "imported".green().bold(),
-                install.metadata.namespace,
-                install.metadata.id,
-                install.metadata.version
-            );
-        }
-        Command::Bundles => {
-            let bundles = if let Some(remote) = &remote {
-                remote.list_bundles().await?
-            } else {
-                bundles.list_installed()?
-            };
-            if bundles.is_empty() {
-                println!("{}", "no bundles installed".dark_grey());
-            } else {
-                for bundle in bundles {
-                    println!(
-                        "{} {}",
-                        format!("{}/{}@{}", bundle.namespace, bundle.id, bundle.version)
-                            .cyan()
-                            .bold(),
-                        bundle.path.display()
-                    );
-                }
-            }
-        }
-        Command::Sessions => {
-            let sessions = if let Some(remote) = &remote {
-                remote.list_sessions().await?
-            } else {
-                runtime.list_sessions(None)
-            };
-            if sessions.is_empty() {
-                println!("{}", "no sessions".dark_grey());
-            } else {
-                for session in sessions {
-                    println!(
-                        "{} {} {}",
-                        session.id.to_string().cyan().bold(),
-                        session.agent_id,
-                        session.created_at
-                    );
-                }
-            }
-        }
-        Command::Session { id, delete } => {
-            if delete {
-                if let Some(remote) = &remote {
-                    remote.delete_session(id).await?;
-                } else {
-                    runtime.delete_session(id)?;
-                }
-                println!("{} {}", "deleted".green().bold(), id);
-            } else {
-                let session = if let Some(remote) = &remote {
-                    remote.get_session(id).await?
-                } else {
-                    runtime.get_session(id)?
-                };
-                println!("{}", serde_json::to_string_pretty(&session)?);
-            }
-        }
+        println!("{} {}", "deleted".green().bold(), id);
+    } else {
+        let session = if let Some(remote) = remote {
+            remote.get_session(id).await?
+        } else {
+            runtime.get_session(id)?
+        };
+        println!("{}", serde_json::to_string_pretty(&session)?);
     }
     Ok(())
 }

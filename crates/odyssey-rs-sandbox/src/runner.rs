@@ -27,7 +27,7 @@ impl SandboxRunner {
         let name = provider_name.unwrap_or_else(|| default_provider_name(mode));
         match name {
             "host" | "local" | "none" | "nosandbox" => {
-                Ok(Self::new("host", Arc::new(HostExecProvider::new())))
+                Ok(Self::new("host", Arc::new(HostExecProvider::default())))
             }
             #[cfg(target_os = "linux")]
             "bubblewrap" | "bwrap" => Ok(Self::new(

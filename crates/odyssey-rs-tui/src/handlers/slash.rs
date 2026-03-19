@@ -113,11 +113,17 @@ pub fn parse_slash_command(input: &str) -> Result<Option<SlashCommand>, String> 
         return Ok(None);
     }
 
-    let mut parts = trimmed.trim_start_matches('/').split_whitespace();
-    let Some(command) = parts.next() else {
+    let parts = trimmed
+        .trim_start_matches('/')
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    let Some((command, args)) = parts.split_first() else {
         return Ok(None);
     };
+    dispatch_slash_command(command, args)
+}
 
+fn dispatch_slash_command(command: &str, args: &[&str]) -> Result<Option<SlashCommand>, String> {
     match command.to_lowercase().as_str() {
         "new" => Ok(Some(SlashCommand::New)),
         "bundles" => Ok(Some(SlashCommand::Bundles)),
@@ -125,58 +131,76 @@ pub fn parse_slash_command(input: &str) -> Result<Option<SlashCommand>, String> 
         "skills" => Ok(Some(SlashCommand::Skills)),
         "sessions" => Ok(Some(SlashCommand::Sessions)),
         "models" => Ok(Some(SlashCommand::Models)),
-        "agent" => match parts.next() {
-            None | Some("list") => Ok(Some(SlashCommand::Agents)),
-            Some(id) => Ok(Some(SlashCommand::Agent(id.to_string()))),
-        },
-        "bundle" => match parts.next() {
-            Some("install") => Ok(Some(SlashCommand::BundleInstall(
-                parts.next().unwrap_or(".").to_string(),
-            ))),
-            Some("use") => {
-                let Some(reference) = parts.next() else {
-                    return Err("usage: /bundle use <bundle_ref>".to_string());
-                };
-                Ok(Some(SlashCommand::BundleUse(reference.to_string())))
-            }
-            Some(other) => Ok(Some(SlashCommand::BundleUse(other.to_string()))),
-            None => Err("usage: /bundle install [path] | /bundle use <bundle_ref>".to_string()),
-        },
-        "model" => match parts.next() {
-            None | Some("list") => Ok(Some(SlashCommand::Models)),
-            Some(id) => Ok(Some(SlashCommand::Model(id.to_string()))),
-        },
-        "theme" => match parts.next() {
-            None | Some("list") => Ok(Some(SlashCommand::Themes)),
-            Some(name) => Ok(Some(SlashCommand::Theme(name.to_string()))),
-        },
-        "join" => {
-            let Some(id) = parts.next() else {
-                return Err("usage: /join <session_id>".to_string());
-            };
-            Uuid::parse_str(id)
-                .map(|uuid| Some(SlashCommand::Join(uuid)))
-                .map_err(|_| "invalid session id".to_string())
-        }
-        "session" => match parts.next() {
-            Some("new") => Ok(Some(SlashCommand::New)),
-            Some("list") => Ok(Some(SlashCommand::Sessions)),
-            Some("skills") => Ok(Some(SlashCommand::Skills)),
-            Some("join") => {
-                let Some(id) = parts.next() else {
-                    return Err("usage: /session join <session_id>".to_string());
-                };
-                Uuid::parse_str(id)
-                    .map(|uuid| Some(SlashCommand::Join(uuid)))
-                    .map_err(|_| "invalid session id".to_string())
-            }
-            Some(id) => Uuid::parse_str(id)
-                .map(|uuid| Some(SlashCommand::Join(uuid)))
-                .map_err(|_| "invalid session id".to_string()),
-            None => Err("usage: /session <id>|new|join <id>".to_string()),
-        },
+        "agent" => Ok(Some(parse_named_item(
+            args,
+            SlashCommand::Agents,
+            SlashCommand::Agent,
+        ))),
+        "bundle" => parse_bundle_command(args),
+        "model" => Ok(Some(parse_named_item(
+            args,
+            SlashCommand::Models,
+            SlashCommand::Model,
+        ))),
+        "theme" => Ok(Some(parse_named_item(
+            args,
+            SlashCommand::Themes,
+            SlashCommand::Theme,
+        ))),
+        "join" => parse_join_command(args, "usage: /join <session_id>"),
+        "session" => parse_session_command(args),
         _ => Err(format!("unknown command: {command}")),
     }
+}
+
+fn parse_named_item<F>(args: &[&str], list_command: SlashCommand, item_command: F) -> SlashCommand
+where
+    F: FnOnce(String) -> SlashCommand,
+{
+    match args.first().copied() {
+        None | Some("list") => list_command,
+        Some(id) => item_command(id.to_string()),
+    }
+}
+
+fn parse_bundle_command(args: &[&str]) -> Result<Option<SlashCommand>, String> {
+    match args.first().copied() {
+        Some("install") => Ok(Some(SlashCommand::BundleInstall(
+            args.get(1).copied().unwrap_or(".").to_string(),
+        ))),
+        Some("use") => {
+            let Some(reference) = args.get(1) else {
+                return Err("usage: /bundle use <bundle_ref>".to_string());
+            };
+            Ok(Some(SlashCommand::BundleUse((*reference).to_string())))
+        }
+        Some(other) => Ok(Some(SlashCommand::BundleUse(other.to_string()))),
+        None => Err("usage: /bundle install [path] | /bundle use <bundle_ref>".to_string()),
+    }
+}
+
+fn parse_join_command(args: &[&str], usage: &str) -> Result<Option<SlashCommand>, String> {
+    let Some(id) = args.first().copied() else {
+        return Err(usage.to_string());
+    };
+    parse_uuid_join(id)
+}
+
+fn parse_session_command(args: &[&str]) -> Result<Option<SlashCommand>, String> {
+    match args.first().copied() {
+        Some("new") => Ok(Some(SlashCommand::New)),
+        Some("list") => Ok(Some(SlashCommand::Sessions)),
+        Some("skills") => Ok(Some(SlashCommand::Skills)),
+        Some("join") => parse_join_command(&args[1..], "usage: /session join <session_id>"),
+        Some(id) => parse_uuid_join(id),
+        None => Err("usage: /session <id>|new|join <id>".to_string()),
+    }
+}
+
+fn parse_uuid_join(id: &str) -> Result<Option<SlashCommand>, String> {
+    Uuid::parse_str(id)
+        .map(|uuid| Some(SlashCommand::Join(uuid)))
+        .map_err(|_| "invalid session id".to_string())
 }
 
 /// Execute a slash command entered in the input box.
