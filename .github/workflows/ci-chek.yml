@@ -52,7 +52,7 @@ jobs:
         run: cargo test --workspace --all-features --all-targets 
 
       - name: Run cargo check
-        run: cargo check --all-targets --all-features --all-targets
+        run: cargo check --all-targets --all-features
 
   multi_os:
     name: Multi-OS build
