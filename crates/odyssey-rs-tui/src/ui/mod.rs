@@ -87,45 +87,44 @@ mod tests {
     use chrono::Utc;
     use odyssey_rs_bundle::BundleInstallSummary;
     use odyssey_rs_protocol::{SessionSummary, SkillSummary};
-    use pretty_assertions::assert_eq;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use std::path::PathBuf;
     use uuid::Uuid;
 
     fn base_app() -> App {
         let session_id = Uuid::new_v4();
-        let mut app = App::new();
-        app.user_name = "Ada".to_string();
-        app.model = "gpt-4.1-mini".to_string();
-        app.model_id = app.model.clone();
-        app.cwd = "/workspace/demo".to_string();
-        app.bundle_ref = "local/demo@0.1.0".to_string();
-        app.status = "running".to_string();
-        app.cpu_usage = 72.5;
-        app.gpu_temp = Some(64.0);
-        app.active_agent = Some("planner".to_string());
-        app.active_session = Some(session_id);
-        app.agents = vec!["planner".to_string(), "reviewer".to_string()];
-        app.models = vec!["gpt-4.1-mini".to_string(), "gpt-4.1".to_string()];
-        app.bundles = vec![BundleInstallSummary {
-            namespace: "local".to_string(),
-            id: "demo".to_string(),
-            version: "0.1.0".to_string(),
-            path: PathBuf::from("/tmp/demo"),
-        }];
-        app.sessions = vec![SessionSummary {
-            id: session_id,
-            agent_id: "planner".to_string(),
-            message_count: 2,
-            created_at: Utc::now(),
-        }];
-        app.skills = vec![SkillSummary {
-            name: "repo-hygiene".to_string(),
-            description: "Keep repositories clean".to_string(),
-            path: PathBuf::from("/tmp/skills/repo-hygiene/SKILL.md"),
-        }];
-        app
+        App {
+            user_name: "Ada".to_string(),
+            model_id: "gpt-4.1-mini".to_string(),
+            model: "gpt-4.1-mini".to_string(),
+            cwd: "/workspace/demo".to_string(),
+            bundle_ref: "local/demo@0.1.0".to_string(),
+            status: "running".to_string(),
+            cpu_usage: 72.5,
+            gpu_temp: Some(64.0),
+            active_agent: Some("planner".to_string()),
+            active_session: Some(session_id),
+            agents: vec!["planner".to_string(), "reviewer".to_string()],
+            models: vec!["gpt-4.1-mini".to_string(), "gpt-4.1".to_string()],
+            bundles: vec![BundleInstallSummary {
+                namespace: "local".to_string(),
+                id: "demo".to_string(),
+                version: "0.1.0".to_string(),
+                path: "fixtures/demo".into(),
+            }],
+            sessions: vec![SessionSummary {
+                id: session_id,
+                agent_id: "planner".to_string(),
+                message_count: 2,
+                created_at: Utc::now(),
+            }],
+            skills: vec![SkillSummary {
+                name: "repo-hygiene".to_string(),
+                description: "Keep repositories clean".to_string(),
+                path: "fixtures/skills/repo-hygiene/SKILL.md".into(),
+            }],
+            ..App::default()
+        }
     }
 
     fn render(app: &mut App, width: u16, height: u16) -> String {
@@ -146,10 +145,10 @@ mod tests {
 
         let rendered = render(&mut app, 100, 30);
 
-        assert_eq!(rendered.contains("gpt-4.1-mini"), true);
-        assert_eq!(rendered.contains("Commands"), true);
-        assert_eq!(rendered.contains("se"), true);
-        assert_eq!(rendered.contains("Ctrl+C"), true);
+        assert!(rendered.contains("gpt-4.1-mini"));
+        assert!(rendered.contains("Commands"));
+        assert!(rendered.contains("se"));
+        assert!(rendered.contains("Ctrl+C"));
     }
 
     #[test]
@@ -175,12 +174,12 @@ mod tests {
 
         let rendered = render(&mut app, 110, 32);
 
-        assert_eq!(rendered.contains("Welcome back, Ada!"), true);
-        assert_eq!(rendered.contains("Chat"), true);
-        assert_eq!(rendered.contains("filesystem write"), true);
-        assert_eq!(rendered.contains("Permission Pending"), true);
-        assert_eq!(rendered.contains("hello odyssey"), true);
-        assert_eq!(rendered.contains("working on it"), true);
+        assert!(rendered.contains("Welcome back, Ada!"));
+        assert!(rendered.contains("Chat"));
+        assert!(rendered.contains("filesystem write"));
+        assert!(rendered.contains("Permission Pending"));
+        assert!(rendered.contains("hello odyssey"));
+        assert!(rendered.contains("working on it"));
     }
 
     #[test]
@@ -198,9 +197,9 @@ mod tests {
         for (viewer, needle) in cases {
             app.viewer = Some(viewer);
             let rendered = render(&mut app, 110, 34);
-            assert_eq!(rendered.contains("Actions"), true);
-            assert_eq!(rendered.contains("Esc to close"), true);
-            assert_eq!(rendered.contains(needle), true);
+            assert!(rendered.contains("Actions"));
+            assert!(rendered.contains("Esc to close"));
+            assert!(rendered.contains(needle));
         }
     }
 }

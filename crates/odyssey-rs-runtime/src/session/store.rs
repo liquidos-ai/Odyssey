@@ -131,7 +131,7 @@ impl TurnChatMessageRecord {
     ) -> Self {
         Self {
             role: role.to_string(),
-            content: String::new(),
+            content: String::default(),
             kind,
             tool_calls: calls
                 .into_iter()
@@ -172,7 +172,7 @@ impl TurnChatMessageRecord {
         let content = if matches!(message_type, MessageType::Text) {
             self.content
         } else {
-            String::new()
+            String::default()
         };
         ChatMessage {
             role,

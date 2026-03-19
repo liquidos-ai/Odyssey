@@ -116,9 +116,9 @@ cargo run -p odyssey-rs -- build ./hello-world --output ./dist
 
 ```bash
 export OPENAI_API_KEY="your-key"
-cargo run -p odyssey-rs -- run hello-world@latest --prompt "Summarize this bundle"
+cargo run -p odyssey-rs -- run hello-world@latest --prompt "Hey, What are your capabilities?"
 ```
-Run the agent in the TUI - The TUI Automatically loads the installed bundles
+Run the agent in the TUI - The TUI Automatically loads the installed bundles, TUI Gives ability to run tools with "ASK" policy
 
 ```bash
 export OPENAI_API_KEY="your-key"

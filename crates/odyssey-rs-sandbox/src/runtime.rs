@@ -449,13 +449,13 @@ mod tests {
             .await
             .expect("lease");
 
-        assert_eq!(lease.cell_root().ends_with("writer"), true);
-        assert_eq!(lease.data_dir().exists(), true);
+        assert!(lease.cell_root().ends_with("writer"));
+        assert!(lease.data_dir().exists());
         let execution = lease.begin_execution().expect("execution dirs");
-        assert_eq!(execution.inbox.exists(), true);
-        assert_eq!(execution.outbox.exists(), true);
-        assert_eq!(execution.work.exists(), true);
-        assert_eq!(execution.tmp.exists(), true);
+        assert!(execution.inbox.exists());
+        assert!(execution.outbox.exists());
+        assert!(execution.work.exists());
+        assert!(execution.tmp.exists());
     }
 
     #[tokio::test]
@@ -497,11 +497,10 @@ mod tests {
             Err(error) => error,
         };
 
-        assert_eq!(
+        assert!(
             error
                 .to_string()
-                .contains("already exists with a different root, mode, or policy"),
-            true
+                .contains("already exists with a different root, mode, or policy")
         );
     }
 
@@ -523,8 +522,8 @@ mod tests {
         .expect("runtime");
 
         assert_eq!(runtime.provider_name(), "host");
-        assert_eq!(runtime.storage_root().ends_with("sandbox"), true);
-        assert_eq!(runtime.support().available, true);
+        assert!(runtime.storage_root().ends_with("sandbox"));
+        assert!(runtime.support().available);
 
         let error = match SandboxRuntime::from_provider_name(
             Some("invalid"),
@@ -560,11 +559,11 @@ mod tests {
 
         let root = runtime.managed_cell_root(&key).expect("managed root");
 
-        assert_eq!(root.ends_with("comp_id"), true);
-        assert_eq!(root.join("app").exists(), true);
-        assert_eq!(root.join("data").exists(), true);
-        assert_eq!(root.join("cache").exists(), true);
-        assert_eq!(root.join("runs").exists(), true);
-        assert_eq!(root.join("logs").exists(), true);
+        assert!(root.ends_with("comp_id"));
+        assert!(root.join("app").exists());
+        assert!(root.join("data").exists());
+        assert!(root.join("cache").exists());
+        assert!(root.join("runs").exists());
+        assert!(root.join("logs").exists());
     }
 }

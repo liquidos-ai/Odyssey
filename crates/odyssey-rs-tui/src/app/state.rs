@@ -84,48 +84,6 @@ pub struct App {
 }
 
 impl App {
-    /// Create a new application state with defaults.
-    pub fn new() -> Self {
-        Self {
-            agents: Vec::new(),
-            bundle_ref: String::new(),
-            bundles: Vec::new(),
-            sessions: Vec::new(),
-            skills: Vec::new(),
-            models: Vec::new(),
-            selected_session: 0,
-            selected_bundle: 0,
-            selected_agent: 0,
-            selected_model: 0,
-            active_session: None,
-            active_agent: None,
-            user_name: "user".to_string(),
-            model_id: String::new(),
-            model: String::new(),
-            cwd: String::new(),
-            messages: Vec::new(),
-            input: String::new(),
-            show_slash_commands: false,
-            slash_selected: 0,
-            theme: ODYSSEY,
-            selected_theme: 0,
-            tui_config: TuiConfig::default(),
-            status: "idle".to_string(),
-            pending_permissions: VecDeque::new(),
-            viewer: None,
-            viewer_scroll: 0,
-            viewer_max_scroll: 0,
-            scroll: 0,
-            auto_scroll: true,
-            chat_max_scroll: 0,
-            cpu_usage: 0.0,
-            gpu_temp: None,
-            sys: System::new(),
-            components: Components::new_with_refreshed_list(),
-            streamed_turns: HashSet::new(),
-        }
-    }
-
     // ── List setters ─────────────────────────────────────────────────────────
 
     /// Update the list of available agents.
@@ -211,8 +169,8 @@ impl App {
             self.selected_model = idx;
         } else {
             self.selected_model = 0;
-            self.model_id = self.models[0].clone();
-            self.model = self.model_id.clone();
+            self.model_id.clone_from(&self.models[0]);
+            self.model.clone_from(&self.model_id);
         }
     }
 
@@ -282,13 +240,58 @@ impl App {
 
     /// Set the active model id used for future requests.
     pub fn set_active_model(&mut self, model_id: String) {
-        self.model_id = model_id.clone();
-        self.model = model_id;
+        self.model.clone_from(&model_id);
+        self.model_id = model_id;
         if let Some(idx) = self.models.iter().position(|id| id == &self.model_id) {
             self.selected_model = idx;
         }
     }
+}
 
+impl Default for App {
+    fn default() -> Self {
+        Self {
+            agents: Vec::new(),
+            bundle_ref: String::default(),
+            bundles: Vec::new(),
+            sessions: Vec::new(),
+            skills: Vec::new(),
+            models: Vec::new(),
+            selected_session: 0,
+            selected_bundle: 0,
+            selected_agent: 0,
+            selected_model: 0,
+            active_session: None,
+            active_agent: None,
+            user_name: "user".to_string(),
+            model_id: String::default(),
+            model: String::default(),
+            cwd: String::default(),
+            messages: Vec::new(),
+            input: String::default(),
+            show_slash_commands: false,
+            slash_selected: 0,
+            theme: ODYSSEY,
+            selected_theme: 0,
+            tui_config: TuiConfig::default(),
+            status: "idle".to_string(),
+            pending_permissions: VecDeque::new(),
+            viewer: None,
+            viewer_scroll: 0,
+            viewer_max_scroll: 0,
+            scroll: 0,
+            auto_scroll: true,
+            chat_max_scroll: 0,
+            cpu_usage: 0.0,
+            gpu_temp: None,
+            sys: System::new(),
+            components: Components::new_with_refreshed_list(),
+            streamed_turns: HashSet::new(),
+        }
+    }
+}
+
+impl App {
     // ── Theme ─────────────────────────────────────────────────────────────────
 
     /// Apply the theme at `index` in `AVAILABLE_THEMES` and persist the choice.
@@ -438,12 +441,6 @@ impl App {
         if self.auto_scroll {
             self.scroll = self.chat_max_scroll;
         }
-    }
-}
-
-impl Default for App {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

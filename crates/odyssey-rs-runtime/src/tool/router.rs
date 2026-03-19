@@ -92,7 +92,7 @@ mod tests {
     fn agent(allow: Vec<&str>, deny: Vec<&str>) -> AgentSpec {
         AgentSpec {
             id: "demo".to_string(),
-            description: String::new(),
+            description: String::default(),
             prompt: "test".to_string(),
             model: ModelSpec {
                 provider: "openai".to_string(),

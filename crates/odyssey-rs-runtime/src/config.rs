@@ -33,7 +33,18 @@ impl RuntimeConfig {
 
 impl Default for RuntimeConfig {
     fn default() -> Self {
-        Self::from_default_dirs()
+        let dirs = BaseDirs::new().expect("base dirs");
+        let root = dirs.home_dir().join(".odyssey");
+        Self {
+            cache_root: root.join("bundles"),
+            session_root: root.join("sessions"),
+            sandbox_root: root.join("sandbox"),
+            bind_addr: "127.0.0.1:8472".to_string(),
+            sandbox_mode_override: None,
+            hub_url: "http://127.0.0.1:8473".to_string(),
+            worker_count: 4,
+            queue_capacity: 128,
+        }
     }
 }
 
@@ -46,14 +57,14 @@ mod tests {
     fn default_dirs_point_into_odyssey_home() {
         let config = RuntimeConfig::from_default_dirs();
 
-        assert_eq!(config.cache_root.ends_with(".odyssey/bundles"), true);
-        assert_eq!(config.session_root.ends_with(".odyssey/sessions"), true);
-        assert_eq!(config.sandbox_root.ends_with(".odyssey/sandbox"), true);
+        assert!(config.cache_root.ends_with(".odyssey/bundles"));
+        assert!(config.session_root.ends_with(".odyssey/sessions"));
+        assert!(config.sandbox_root.ends_with(".odyssey/sandbox"));
         assert_eq!(config.bind_addr, "127.0.0.1:8472");
         assert_eq!(config.hub_url, "http://127.0.0.1:8473");
         assert_eq!(config.worker_count, 4);
         assert_eq!(config.queue_capacity, 128);
-        assert_eq!(config.sandbox_mode_override.is_none(), true);
+        assert!(config.sandbox_mode_override.is_none());
     }
 
     #[test]

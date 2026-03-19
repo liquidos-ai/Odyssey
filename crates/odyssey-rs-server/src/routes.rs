@@ -417,7 +417,7 @@ tools:
         )
         .await;
         let archive_path = exported["path"].as_str().expect("archive path");
-        assert_eq!(archive_path.ends_with(".odyssey"), true);
+        assert!(archive_path.ends_with(".odyssey"));
 
         let imported = json_response(
             app.clone(),
@@ -486,7 +486,7 @@ tools:
             StatusCode::OK,
         )
         .await;
-        assert_eq!(resolved["resolved"], false);
+        assert_eq!(resolved["resolved"], serde_json::json!(false));
 
         let deleted = app
             .clone()

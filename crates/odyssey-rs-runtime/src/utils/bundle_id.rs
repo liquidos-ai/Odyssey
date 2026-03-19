@@ -37,7 +37,7 @@ mod tests {
 
     #[test]
     fn derives_slug_from_root_directory_name() {
-        let path = Path::new("/tmp/My Cool Bundle");
+        let path = Path::new("/workspace/My Cool Bundle");
         assert_eq!(default_bundle_id(path), "my-cool-bundle");
     }
 }

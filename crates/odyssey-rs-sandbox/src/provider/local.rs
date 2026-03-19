@@ -151,13 +151,13 @@ mod tests {
 
         let outside = tempdir().expect("outside");
         match provider.check_access(&handle, outside.path(), AccessMode::Write) {
-            AccessDecision::Deny(message) => assert_eq!(message.is_empty(), false),
+            AccessDecision::Deny(message) => assert!(!message.is_empty()),
             other => panic!("unexpected decision: {other:?}"),
         }
 
         provider.shutdown(handle).await;
         match provider.check_access(&handle_clone, &inside, AccessMode::Read) {
-            AccessDecision::Deny(message) => assert_eq!(message.contains("unknown"), true),
+            AccessDecision::Deny(message) => assert!(message.contains("unknown")),
             other => panic!("unexpected decision: {other:?}"),
         }
     }

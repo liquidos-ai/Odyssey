@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn append_assistant_delta_accumulates_into_last_entry() {
-        let mut app = App::new();
+        let mut app = App::default();
         app.append_assistant_delta("Hello".into());
         app.append_assistant_delta(", world".into());
         assert_eq!(app.messages.len(), 1);
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn append_assistant_delta_creates_new_entry_after_user() {
-        let mut app = App::new();
+        let mut app = App::default();
         app.push_user_message("hi".into());
         app.append_assistant_delta("hey".into());
         assert_eq!(app.messages.len(), 2);
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn append_assistant_message_always_creates_new_entry() {
-        let mut app = App::new();
+        let mut app = App::default();
         app.append_assistant_message("first".into());
         app.append_assistant_message("second".into());
         assert_eq!(app.messages.len(), 2);
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn discard_streamed_assistant_message_removes_draft() {
-        let mut app = App::new();
+        let mut app = App::default();
         let turn_id = uuid::Uuid::new_v4();
         app.streamed_turns.insert(turn_id);
         app.append_assistant_delta("draft".into());
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn finalize_streamed_assistant_message_replaces_draft() {
-        let mut app = App::new();
+        let mut app = App::default();
         app.append_assistant_delta("draft".into());
 
         app.finalize_streamed_assistant_message("final".into());

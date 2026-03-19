@@ -64,7 +64,7 @@ async fn run_react(run: ExecutorRun) -> Result<String, RuntimeError> {
             return Err(RuntimeError::Executor(err.to_string()));
         }
     };
-    let mut response = String::new();
+    let mut response = String::default();
     tokio::pin!(stream);
     while let Some(output) = stream.next().await {
         match output {
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn reasoning_content_emits_section_break_before_text() {
         let turn_id = Uuid::new_v4();
-        let mut bridge = AutoagentsEventBridge::new(turn_id, Default::default());
+        let mut bridge = AutoagentsEventBridge::new(turn_id, TurnContext::default());
 
         let reasoning = bridge.map_event(AutoAgentsEvent::StreamChunk {
             sub_id: Uuid::new_v4(),
@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn tool_call_events_keep_a_stable_runtime_id() {
         let turn_id = Uuid::new_v4();
-        let mut bridge = AutoagentsEventBridge::new(turn_id, Default::default());
+        let mut bridge = AutoagentsEventBridge::new(turn_id, TurnContext::default());
 
         let started = bridge.map_event(AutoAgentsEvent::StreamChunk {
             sub_id: Uuid::new_v4(),
@@ -453,7 +453,7 @@ mod tests {
         let turn_id = Uuid::new_v4();
         let context = TurnContext {
             cwd: Some("/workspace".to_string()),
-            ..Default::default()
+            ..TurnContext::default()
         };
         let mut bridge = AutoagentsEventBridge::new(turn_id, context.clone());
 
@@ -475,7 +475,7 @@ mod tests {
     #[test]
     fn stream_tool_call_without_id_is_ignored() {
         let turn_id = Uuid::new_v4();
-        let mut bridge = AutoagentsEventBridge::new(turn_id, Default::default());
+        let mut bridge = AutoagentsEventBridge::new(turn_id, TurnContext::default());
 
         let payloads = bridge.map_event(AutoAgentsEvent::StreamToolCall {
             sub_id: Uuid::new_v4(),
@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn stream_tool_call_delta_uses_partial_json_and_stable_id() {
         let turn_id = Uuid::new_v4();
-        let mut bridge = AutoagentsEventBridge::new(turn_id, Default::default());
+        let mut bridge = AutoagentsEventBridge::new(turn_id, TurnContext::default());
 
         let _ = bridge.map_event(AutoAgentsEvent::StreamChunk {
             sub_id: Uuid::new_v4(),
@@ -550,7 +550,7 @@ mod tests {
     #[test]
     fn tool_call_failed_marks_unsuccessful_completion() {
         let turn_id = Uuid::new_v4();
-        let mut bridge = AutoagentsEventBridge::new(turn_id, Default::default());
+        let mut bridge = AutoagentsEventBridge::new(turn_id, TurnContext::default());
 
         let failed = bridge.map_event(AutoAgentsEvent::ToolCallFailed {
             sub_id: Uuid::new_v4(),
@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn task_error_closes_reasoning_and_terminates_bridge() {
         let turn_id = Uuid::new_v4();
-        let mut bridge = AutoagentsEventBridge::new(turn_id, Default::default());
+        let mut bridge = AutoagentsEventBridge::new(turn_id, TurnContext::default());
         let _ = bridge.map_event(AutoAgentsEvent::StreamChunk {
             sub_id: Uuid::new_v4(),
             chunk: AutoAgentsStreamChunk::ReasoningContent("plan".to_string()),

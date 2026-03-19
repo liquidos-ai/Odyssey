@@ -21,7 +21,7 @@ impl TurnHistoryCollector {
                 ChatRole::User,
                 task.prompt.clone(),
             )],
-            assistant_text: String::new(),
+            assistant_text: String::default(),
             pending_calls: HashMap::new(),
         }
     }

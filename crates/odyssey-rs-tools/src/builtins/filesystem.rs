@@ -153,6 +153,7 @@ impl Tool for GlobTool {
                 }
             }
         }
+        matches.sort();
         Ok(json!({"matches": matches}))
     }
 }
@@ -202,6 +203,13 @@ impl Tool for GrepTool {
                 }
             }
         }
+        matches.sort_by(|left, right| {
+            let left_path = left["path"].as_str().unwrap_or_default();
+            let right_path = right["path"].as_str().unwrap_or_default();
+            let left_line = left["line"].as_u64().unwrap_or_default();
+            let right_line = right["line"].as_u64().unwrap_or_default();
+            left_path.cmp(right_path).then(left_line.cmp(&right_line))
+        });
         Ok(json!({"matches": matches}))
     }
 }

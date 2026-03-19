@@ -37,18 +37,21 @@ pub const DEFAULT_BUNDLE_REF: &str = "odyssey@latest";
 
 /// Launch the Odyssey TUI against a pre-configured [`RuntimeEngine`].
 pub async fn run(runtime: Arc<OdysseyRuntime>, config: TuiRunConfig) -> anyhow::Result<()> {
-    let cwd = config
-        .cwd
+    let TuiRunConfig {
+        bundle_ref,
+        user_name,
+        cwd,
+    } = config;
+    let cwd = cwd
         .clone()
         .or_else(|| std::env::current_dir().ok())
         .ok_or_else(|| anyhow!("cannot determine working directory"))?;
-    let client = Arc::new(AgentRuntimeClient::new(
-        runtime.clone(),
-        config.bundle_ref.clone(),
-    ));
+    let client = Arc::new(AgentRuntimeClient::new(runtime.clone(), bundle_ref.clone()));
     let bundle_store = BundleStore::new(runtime.config().cache_root.clone());
-    let mut app = App::new();
-    app.bundle_ref = config.bundle_ref.clone();
+    let mut app = App {
+        bundle_ref,
+        ..App::default()
+    };
 
     let persisted_tui_config = tui_config::TuiConfig::load();
     app.init_theme(&persisted_tui_config.theme);
@@ -58,7 +61,7 @@ pub async fn run(runtime: Arc<OdysseyRuntime>, config: TuiRunConfig) -> anyhow::
         app.set_bundles(bundles);
     }
 
-    app.set_user_name(config.user_name.unwrap_or_else(terminal::resolve_user_name));
+    app.set_user_name(user_name.unwrap_or_else(terminal::resolve_user_name));
     app.cwd = cwd.display().to_string();
     if app.bundle_ref.is_empty() {
         app.open_viewer(app::ViewerKind::Bundles);
@@ -69,9 +72,8 @@ pub async fn run(runtime: Arc<OdysseyRuntime>, config: TuiRunConfig) -> anyhow::
         app.push_status("install a local bundle to get started");
     } else {
         let bundle = bundle_store.resolve(&app.bundle_ref)?.metadata;
-        app.model_id = bundle.agent_spec.model.name.clone();
-        app.model = app.model_id.clone();
-        app.active_agent = Some(bundle.agent_spec.id.clone());
+        app.set_active_model(bundle.agent_spec.model.name.clone());
+        app.set_active_agent(bundle.agent_spec.id.clone());
 
         let agents = client.list_agents().await?;
         if agents.is_empty() {
@@ -271,7 +273,7 @@ tools:
                 namespace: "team".to_string(),
                 id: "demo".to_string(),
                 version: "1.2.3".to_string(),
-                path: "/tmp/team-demo".into(),
+                path: "/workspace/team-demo".into(),
             }),
             "team/demo@1.2.3"
         );

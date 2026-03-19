@@ -78,9 +78,10 @@ mod tests {
     use super::*;
 
     fn make_app() -> App {
-        let mut app = App::new();
-        app.chat_max_scroll = 100;
-        app
+        App {
+            chat_max_scroll: 100,
+            ..App::default()
+        }
     }
 
     #[test]
@@ -155,16 +156,20 @@ mod tests {
 
     #[test]
     fn viewer_scroll_up_clamped_at_zero() {
-        let mut app = App::new();
-        app.viewer_scroll = 3;
+        let mut app = App {
+            viewer_scroll: 3,
+            ..App::default()
+        };
         app.viewer_scroll_up(10);
         assert_eq!(app.viewer_scroll, 0);
     }
 
     #[test]
     fn viewer_scroll_down_clamped_at_max() {
-        let mut app = App::new();
-        app.viewer_max_scroll = 20;
+        let mut app = App {
+            viewer_max_scroll: 20,
+            ..App::default()
+        };
         app.viewer_scroll_down(50);
         assert_eq!(app.viewer_scroll, 20);
     }

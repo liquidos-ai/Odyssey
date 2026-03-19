@@ -37,7 +37,7 @@ impl SandboxProvider for FakeProvider {
         Ok(CommandResult {
             status_code: Some(0),
             stdout: format!("ran:{}:{}", spec.command.display(), spec.args.join(" ")),
-            stderr: String::new(),
+            stderr: String::default(),
             stdout_truncated: false,
             stderr_truncated: false,
         })
@@ -358,5 +358,5 @@ async fn skill_tool_and_invalid_grep_are_handled() {
         .call(&ctx, json!({ "pattern": "[" }))
         .await
         .expect_err("invalid regex should fail");
-    assert_eq!(matches!(grep_error, ToolError::InvalidArguments(_)), true);
+    assert!(matches!(grep_error, ToolError::InvalidArguments(_)));
 }

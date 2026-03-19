@@ -373,7 +373,9 @@ fn resolve_user_path(
             return Ok(normalize_lexical(&resolved));
         }
 
-        if cursor == workspace_root.parent().unwrap_or(Path::new("/")) && !workspace_root.exists() {
+        if cursor == workspace_root.parent().unwrap_or_else(|| Path::new("/"))
+            && !workspace_root.exists()
+        {
             return Err(SandboxError::AccessDenied(format!(
                 "workspace root does not exist: {}",
                 workspace_root.display()
@@ -446,10 +448,11 @@ fn build_env(
         }
     }
 
+    let tmp_dir = workspace_root.join(".tmp");
     allowed.insert("HOME".to_string());
     env.insert("HOME".to_string(), workspace_root.display().to_string());
     allowed.insert("TMPDIR".to_string());
-    env.insert("TMPDIR".to_string(), "/tmp".to_string());
+    env.insert("TMPDIR".to_string(), tmp_dir.display().to_string());
     allowed.insert("ODYSSEY_SANDBOX".to_string());
     env.insert("ODYSSEY_SANDBOX".to_string(), "1".to_string());
 
@@ -517,8 +520,8 @@ async fn stream_child_output(
     sink: &mut dyn CommandOutputSink,
     limits: &SandboxLimits,
 ) -> Result<(String, String, bool, bool), SandboxError> {
-    let mut stdout_buf = String::new();
-    let mut stderr_buf = String::new();
+    let mut stdout_buf = String::default();
+    let mut stderr_buf = String::default();
     let stdout_limit = effective_output_limit(limits.stdout_bytes);
     let stderr_limit = effective_output_limit(limits.stderr_bytes);
     let mut stdout_truncated = false;
@@ -759,6 +762,7 @@ fn build_mounts_from_access(access: &AccessPolicy, mode: SandboxMode) -> Vec<Mou
 
 pub fn build_prepared_sandbox(ctx: &SandboxContext) -> Result<PreparedSandbox, SandboxError> {
     let workspace_root = canonicalize_existing_path(&ctx.workspace_root)?;
+    std::fs::create_dir_all(workspace_root.join(".tmp")).map_err(SandboxError::Io)?;
     let access = AccessPolicy::new(ctx.mode, &ctx.policy, &workspace_root)?;
     let (env, allowed_env_keys) = build_env(&ctx.policy, &workspace_root);
     let mounts = build_mounts_from_access(&access, ctx.mode);
@@ -887,10 +891,10 @@ mod tests {
 
     #[test]
     fn reject_glob_blocks_patterns() {
-        let err = reject_glob("/tmp/*.txt").expect_err("glob rejected");
+        let err = reject_glob("/sandbox-root/*.txt").expect_err("glob rejected");
         assert_eq!(
             err.to_string(),
-            "invalid configuration: glob patterns are not supported in sandbox paths: /tmp/*.txt"
+            "invalid configuration: glob patterns are not supported in sandbox paths: /sandbox-root/*.txt"
         );
     }
 
@@ -904,8 +908,11 @@ mod tests {
 
     #[test]
     fn normalize_lexical_resolves_components() {
-        let path = Path::new("/tmp/dir/../file.txt");
-        assert_eq!(normalize_lexical(path), PathBuf::from("/tmp/file.txt"));
+        let path = Path::new("/sandbox-root/dir/../file.txt");
+        assert_eq!(
+            normalize_lexical(path),
+            PathBuf::from("/sandbox-root/file.txt")
+        );
     }
 
     #[test]
@@ -940,8 +947,8 @@ mod tests {
     #[test]
     fn command_display_returns_absolute_path() {
         assert_eq!(
-            command_display(Path::new("/tmp/bin/run")),
-            "/tmp/bin/run".to_string()
+            command_display(Path::new("/sandbox-root/bin/run")),
+            "/sandbox-root/bin/run".to_string()
         );
     }
 
@@ -968,7 +975,7 @@ mod tests {
         let prepared = build_prepared_sandbox(&ctx).expect("prepared");
         assert_eq!(prepared.network, SandboxNetworkMode::Disabled);
         assert_eq!(prepared.env.get("FOO"), Some(&"BAR".to_string()));
-        assert_eq!(prepared.env.contains_key("PATH"), true);
+        assert!(prepared.env.contains_key("PATH"));
     }
 
     #[test]
@@ -1101,14 +1108,14 @@ mod tests {
         }
 
         let mut sink = RecordingSink {
-            stdout: String::new(),
-            stderr: String::new(),
+            stdout: String::default(),
+            stderr: String::default(),
         };
         let result = run_host_process(spec, &prepared, &mut sink)
             .await
             .expect("run");
-        assert_eq!(result.stdout_truncated, true);
-        assert_eq!(result.stderr_truncated, true);
+        assert!(result.stdout_truncated);
+        assert!(result.stderr_truncated);
         assert!(result.stdout.contains("truncated"));
         assert!(result.stderr.contains("truncated"));
         assert_eq!(result.status_code, Some(0));
@@ -1193,7 +1200,7 @@ mod tests {
         let prepared = build_prepared_sandbox(&ctx).expect("prepared");
         let resolved =
             resolve_command_path(Path::new("sh"), temp.path(), &prepared).expect("resolve");
-        assert_eq!(resolved.exists(), true);
+        assert!(resolved.exists());
         assert!(resolved.file_name().is_some());
     }
 }

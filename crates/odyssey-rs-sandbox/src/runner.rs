@@ -118,7 +118,7 @@ mod tests {
             .expect("runner");
         let support = runner.support();
         assert_eq!(support.provider, "host");
-        assert_eq!(support.available, true);
+        assert!(support.available);
     }
 
     #[test]

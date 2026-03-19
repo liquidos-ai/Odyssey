@@ -30,7 +30,6 @@ mod tests {
     use futures_util::StreamExt;
     use odyssey_rs_protocol::EventMsg as RuntimeEvent;
     use odyssey_rs_protocol::EventPayload;
-    use pretty_assertions::assert_eq;
     use tokio::sync::broadcast;
     use uuid::Uuid;
 
@@ -49,6 +48,6 @@ mod tests {
 
         let mut stream = Box::pin(event_stream(receiver));
         let rendered = stream.next().await.expect("sse item");
-        assert_eq!(rendered.is_ok(), true);
+        assert!(rendered.is_ok());
     }
 }

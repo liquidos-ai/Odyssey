@@ -251,15 +251,15 @@ mod tests {
                     filesystem: BundleSandboxFilesystem {
                         exec: Vec::new(),
                         mounts: BundleSandboxMounts {
-                            read: vec!["/tmp/host-read".to_string()],
-                            write: vec!["/tmp/host-write".to_string()],
+                            read: vec!["/sandbox-test/host-read".to_string()],
+                            write: vec!["/sandbox-test/host-write".to_string()],
                         },
                     },
                     network: Vec::new(),
                     tools: BundleSandboxTools::default(),
                 },
                 system_tools: Vec::new(),
-                resources: Default::default(),
+                resources: BundleSandboxLimits::default(),
             },
         };
 
@@ -269,13 +269,13 @@ mod tests {
             policy
                 .filesystem
                 .read_roots
-                .contains(&"/tmp/host-read".into())
+                .contains(&"/sandbox-test/host-read".into())
         );
         assert!(
             policy
                 .filesystem
                 .write_roots
-                .contains(&"/tmp/host-write".into())
+                .contains(&"/sandbox-test/host-write".into())
         );
         assert_eq!(policy.network.mode, SandboxNetworkMode::Disabled);
     }
@@ -300,7 +300,7 @@ mod tests {
                 mode: SandboxMode::ReadOnly,
                 permissions: BundleSandboxPermissions::default(),
                 system_tools: Vec::new(),
-                resources: Default::default(),
+                resources: BundleSandboxLimits::default(),
             },
         };
 
@@ -327,15 +327,15 @@ mod tests {
     #[test]
     fn read_only_mode_does_not_add_managed_cell_write_root() {
         let policy = SandboxPolicy::default();
-        let cell_root = Path::new("/tmp/cell");
+        let cell_root = Path::new("/sandbox-test/cell");
 
         let (_, read_only_writes, _) =
             extend_cell_filesystem_policy(&policy, cell_root, SandboxMode::ReadOnly);
         let (_, workspace_writes, _) =
             extend_cell_filesystem_policy(&policy, cell_root, SandboxMode::WorkspaceWrite);
 
-        assert!(!read_only_writes.contains(&"/tmp/cell".to_string()));
-        assert!(workspace_writes.contains(&"/tmp/cell".to_string()));
+        assert!(!read_only_writes.contains(&"/sandbox-test/cell".to_string()));
+        assert!(workspace_writes.contains(&"/sandbox-test/cell".to_string()));
     }
 
     #[test]
@@ -424,7 +424,7 @@ mod tests {
                     },
                 },
                 system_tools: Vec::new(),
-                resources: Default::default(),
+                resources: BundleSandboxLimits::default(),
             },
         };
 

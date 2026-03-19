@@ -344,7 +344,7 @@ mod tests {
     #[test]
     fn build_turn_context_applies_overrides() {
         let context = build_turn_context(
-            "/tmp/demo".to_string(),
+            "/workspace/demo".to_string(),
             ModelSpec {
                 provider: "openai".to_string(),
                 name: "gpt-4.1-mini".to_string(),
@@ -357,7 +357,7 @@ mod tests {
             }),
         );
 
-        assert_eq!(context.cwd.as_deref(), Some("/tmp/demo"));
+        assert_eq!(context.cwd.as_deref(), Some("/workspace/demo"));
         assert_eq!(
             context.metadata,
             json!({
@@ -379,11 +379,11 @@ mod tests {
             turns: Vec::new(),
         };
         let resolved = ResolvedAgentSpec {
-            install_path: std::path::PathBuf::from("/tmp/demo"),
+            install_path: std::path::PathBuf::from("/workspace/demo"),
             manifest: manifest(SandboxMode::WorkspaceWrite),
             agent: odyssey_rs_manifest::AgentSpec {
                 id: "demo".to_string(),
-                description: String::new(),
+                description: String::default(),
                 prompt: "You are demo".to_string(),
                 model: ModelSpec {
                     provider: "openai".to_string(),
@@ -417,11 +417,11 @@ mod tests {
             turns: Vec::new(),
         };
         let resolved = ResolvedAgentSpec {
-            install_path: std::path::PathBuf::from("/tmp/demo"),
+            install_path: std::path::PathBuf::from("/workspace/demo"),
             manifest: manifest(SandboxMode::WorkspaceWrite),
             agent: odyssey_rs_manifest::AgentSpec {
                 id: "demo".to_string(),
-                description: String::new(),
+                description: String::default(),
                 prompt: "You are demo".to_string(),
                 model: ModelSpec {
                     provider: "openai".to_string(),

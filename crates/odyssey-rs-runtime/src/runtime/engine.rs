@@ -304,7 +304,7 @@ fn session_from_record(record: SessionRecord) -> Session {
                     .collect::<Vec<_>>()
                     .join("\n")
             } else {
-                String::new()
+                String::default()
             };
             messages.push(Message { role, content });
         }

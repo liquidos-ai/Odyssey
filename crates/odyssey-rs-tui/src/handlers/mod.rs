@@ -183,8 +183,10 @@ tools:
             runtime,
             "local/alpha@0.1.0".to_string(),
         ));
-        let mut app = App::new();
-        app.bundle_ref = "local/alpha@0.1.0".to_string();
+        let mut app = App {
+            bundle_ref: "local/alpha@0.1.0".to_string(),
+            ..App::default()
+        };
 
         bundle::refresh_bundles(&client, &mut app)
             .await
@@ -262,8 +264,10 @@ tools:
             runtime.clone(),
             "local/alpha@0.1.0".to_string(),
         ));
-        let mut app = App::new();
-        app.cwd = temp.path().display().to_string();
+        let mut app = App {
+            cwd: temp.path().display().to_string(),
+            ..App::default()
+        };
         let (sender, _receiver) = mpsc::channel(16);
         let mut stream_handle = None;
 
@@ -332,8 +336,10 @@ tools:
         assert_eq!(app.active_session, Some(joined_session_id));
         assert_eq!(app.status, "session selected");
 
-        let mut no_session_app = App::new();
-        no_session_app.input = "hello".to_string();
+        let mut no_session_app = App {
+            input: "hello".to_string(),
+            ..App::default()
+        };
         session::send_message(&client, &mut no_session_app, sender)
             .await
             .expect("send message without session");
@@ -345,10 +351,10 @@ tools:
     async fn handle_app_event_updates_matching_sessions_and_ui_state() {
         let temp = tempdir().expect("tempdir");
         let runtime = Arc::new(RuntimeEngine::new(runtime_config(temp.path())).expect("runtime"));
-        let client = Arc::new(AgentRuntimeClient::new(runtime, String::new()));
+        let client = Arc::new(AgentRuntimeClient::new(runtime, String::default()));
         let (sender, _receiver) = mpsc::channel(8);
         let mut stream_handle = None;
-        let mut app = App::new();
+        let mut app = App::default();
         let active_session = Uuid::new_v4();
         app.active_session = Some(active_session);
         app.chat_max_scroll = 10;

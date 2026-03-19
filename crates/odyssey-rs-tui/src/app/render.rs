@@ -119,14 +119,14 @@ mod tests {
 
     #[test]
     fn empty_messages_returns_placeholder() {
-        let app = App::new();
+        let app = App::default();
         let lines = app.render_lines();
         assert_eq!(lines.len(), 1);
     }
 
     #[test]
     fn single_message_produces_badge_and_content() {
-        let mut app = App::new();
+        let mut app = App::default();
         app.push_user_message("hello".into());
         let lines = app.render_lines();
         assert_eq!(lines.len(), 3); // badge + content + trailing blank
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn multiline_message_produces_one_line_per_content_line() {
-        let mut app = App::new();
+        let mut app = App::default();
         app.push_user_message("line1\nline2\nline3".into());
         let lines = app.render_lines();
         assert_eq!(lines.len(), 5); // badge(1) + 3 lines + trailing(1)
@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn two_messages_have_separator_between_them() {
-        let mut app = App::new();
+        let mut app = App::default();
         app.push_user_message("hi".into());
         app.push_system_message("sys".into());
         let lines = app.render_lines();
