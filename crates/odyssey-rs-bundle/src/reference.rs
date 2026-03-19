@@ -10,13 +10,13 @@ use odyssey_rs_manifest::{BundleRef, BundleRefKind};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BundleInstall {
     pub path: PathBuf,
     pub metadata: BundleMetadata,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BundleInstallSummary {
     pub namespace: String,
     pub id: String,
@@ -198,7 +198,7 @@ impl BundleStore {
         let output = output.as_ref();
         let output_path = if output.is_dir() {
             output.join(format!(
-                "{}-{}.odybundle",
+                "{}-{}.odyssey",
                 install.metadata.id, install.metadata.version
             ))
         } else {
@@ -731,7 +731,7 @@ tools:
         assert_eq!(imported.metadata.digest, install.metadata.digest);
         assert_eq!(
             export_path.extension().and_then(|value| value.to_str()),
-            Some("odybundle")
+            Some("odyssey")
         );
     }
 
@@ -739,7 +739,7 @@ tools:
     fn resolve_rejects_bundle_archives_before_import() {
         let temp = tempdir().expect("tempdir");
         let store = BundleStore::new(temp.path().join("store"));
-        let archive_path = temp.path().join("demo.odybundle");
+        let archive_path = temp.path().join("demo.odyssey");
         fs::write(&archive_path, "archive").expect("write archive placeholder");
 
         let error = store.resolve(archive_path.to_str().expect("archive path"));
@@ -748,9 +748,9 @@ tools:
             error
                 .expect_err("archive path should be rejected")
                 .to_string(),
-            "invalid bundle: bundle archives must be imported before use: /tmp/demo.odybundle"
+            "invalid bundle: bundle archives must be imported before use: /tmp/demo.odyssey"
                 .replace(
-                    "/tmp/demo.odybundle",
+                    "/tmp/demo.odyssey",
                     archive_path.to_str().expect("archive path")
                 )
         );

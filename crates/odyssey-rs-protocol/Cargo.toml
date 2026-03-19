@@ -10,6 +10,8 @@ categories.workspace = true
 readme.workspace = true
 
 [dependencies]
+autoagents-protocol.workspace = true
+
 async-trait.workspace = true
 chrono.workspace = true
 serde.workspace = true

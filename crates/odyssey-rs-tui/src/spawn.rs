@@ -4,6 +4,7 @@ use crate::client::AgentRuntimeClient;
 use crate::event::AppEvent;
 use crossterm::event::{Event as CrosstermEvent, KeyModifiers, MouseEventKind};
 use log::debug;
+use odyssey_rs_protocol::Task;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -45,8 +46,9 @@ pub fn spawn_send_message(
             "dispatching send message (session_id={}, prompt_len={}, agent_set={})",
             session_id, prompt_len, agent_set
         );
+        let task = Task::new(prompt);
         if let Err(err) = client
-            .send_message(session_id, prompt, agent_id, llm_id)
+            .send_message(session_id, task, agent_id, llm_id)
             .await
         {
             let _ = sender

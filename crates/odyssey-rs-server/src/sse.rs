@@ -1,6 +1,6 @@
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures_util::StreamExt;
-use odyssey_rs_runtime::RuntimeEvent;
+use odyssey_rs_protocol::EventMsg as RuntimeEvent;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 
@@ -28,8 +28,8 @@ pub fn stream_events(
 mod tests {
     use super::event_stream;
     use futures_util::StreamExt;
+    use odyssey_rs_protocol::EventMsg as RuntimeEvent;
     use odyssey_rs_protocol::EventPayload;
-    use odyssey_rs_runtime::RuntimeEvent;
     use pretty_assertions::assert_eq;
     use tokio::sync::broadcast;
     use uuid::Uuid;

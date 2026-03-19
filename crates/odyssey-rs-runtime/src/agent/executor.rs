@@ -4,10 +4,10 @@ use autoagents_core::agent::prebuilt::executor::ReActAgent;
 use autoagents_core::agent::{AgentBuilder, DirectAgent, task::Task};
 use autoagents_core::tool::ToolT;
 use autoagents_llm::LLMProvider;
-use autoagents_protocol::{Event as AutoagentsEvent, StreamChunk as AutoagentsStreamChunk};
 use chrono::Utc;
 use futures_util::StreamExt;
-use odyssey_rs_protocol::{EventMsg, EventPayload, ModelSpec, SandboxMode, TurnContext};
+use odyssey_rs_protocol::{AutoAgentsEvent, AutoAgentsStreamChunk};
+use odyssey_rs_protocol::{EventMsg, EventPayload, TurnContext};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -18,14 +18,13 @@ pub struct ExecutorRun {
     pub executor_id: String,
     pub llm: Arc<dyn LLMProvider>,
     pub system_prompt: String,
-    pub prompt: String,
+    pub task: Task,
     pub memory: Option<Box<dyn autoagents_core::agent::memory::MemoryProvider>>,
     pub tools: Vec<Arc<dyn ToolT>>,
     pub session_id: Uuid,
     pub turn_id: Uuid,
     pub sender: broadcast::Sender<EventMsg>,
-    pub working_dir: Option<String>,
-    pub model: ModelSpec,
+    pub turn_context: TurnContext,
 }
 
 pub async fn run_executor(run: ExecutorRun) -> Result<String, RuntimeError> {
@@ -38,13 +37,6 @@ pub async fn run_executor(run: ExecutorRun) -> Result<String, RuntimeError> {
 }
 
 async fn run_react(run: ExecutorRun) -> Result<String, RuntimeError> {
-    let turn_context = TurnContext {
-        cwd: run.working_dir,
-        model: Some(run.model),
-        sandbox_mode: Some(SandboxMode::WorkspaceWrite),
-        approval_policy: None,
-        metadata: Value::Null,
-    };
     let agent = ReActAgent::new(OdysseyAgent::new(run.system_prompt.clone(), run.tools));
     let mut builder = AgentBuilder::<ReActAgent<OdysseyAgent>, DirectAgent>::new(agent)
         .llm(run.llm)
@@ -62,9 +54,9 @@ async fn run_react(run: ExecutorRun) -> Result<String, RuntimeError> {
         run.sender.clone(),
         run.session_id,
         run.turn_id,
-        turn_context.clone(),
+        run.turn_context.clone(),
     ));
-    let task = Task::new(run.prompt).with_system_prompt(run.system_prompt);
+    let task = run.task.with_system_prompt(run.system_prompt);
     let stream = match handle.agent.run_stream(task).await {
         Ok(stream) => stream,
         Err(err) => {
@@ -103,7 +95,7 @@ async fn run_react(run: ExecutorRun) -> Result<String, RuntimeError> {
 }
 
 async fn forward_autoagents_events(
-    mut events: autoagents_core::utils::BoxEventStream<AutoagentsEvent>,
+    mut events: autoagents_core::utils::BoxEventStream<AutoAgentsEvent>,
     sender: broadcast::Sender<EventMsg>,
     session_id: Uuid,
     turn_id: Uuid,
@@ -147,24 +139,24 @@ impl AutoagentsEventBridge {
         }
     }
 
-    fn map_event(&mut self, event: AutoagentsEvent) -> MappedEvent {
+    fn map_event(&mut self, event: AutoAgentsEvent) -> MappedEvent {
         match event {
-            AutoagentsEvent::TurnStarted { .. } => MappedEvent {
+            AutoAgentsEvent::TurnStarted { .. } => MappedEvent {
                 payloads: vec![EventPayload::TurnStarted {
                     turn_id: self.turn_id,
                     context: self.turn_context.clone(),
                 }],
                 terminal: false,
             },
-            AutoagentsEvent::StreamChunk { chunk, .. } => MappedEvent {
+            AutoAgentsEvent::StreamChunk { chunk, .. } => MappedEvent {
                 payloads: self.map_stream_chunk(chunk),
                 terminal: false,
             },
-            AutoagentsEvent::StreamToolCall { tool_call, .. } => MappedEvent {
+            AutoAgentsEvent::StreamToolCall { tool_call, .. } => MappedEvent {
                 payloads: self.map_stream_tool_call(tool_call),
                 terminal: false,
             },
-            AutoagentsEvent::ToolCallRequested {
+            AutoAgentsEvent::ToolCallRequested {
                 id,
                 tool_name,
                 arguments,
@@ -173,15 +165,15 @@ impl AutoagentsEventBridge {
                 payloads: self.map_tool_call_requested(id, tool_name, arguments),
                 terminal: false,
             },
-            AutoagentsEvent::ToolCallCompleted { id, result, .. } => MappedEvent {
+            AutoAgentsEvent::ToolCallCompleted { id, result, .. } => MappedEvent {
                 payloads: self.map_tool_call_finished(id, result, true),
                 terminal: false,
             },
-            AutoagentsEvent::ToolCallFailed { id, error, .. } => MappedEvent {
+            AutoAgentsEvent::ToolCallFailed { id, error, .. } => MappedEvent {
                 payloads: self.map_tool_call_finished(id, json!({ "error": error }), false),
                 terminal: false,
             },
-            AutoagentsEvent::TaskError { error, .. } => {
+            AutoAgentsEvent::TaskError { error, .. } => {
                 let mut payloads = self.close_reasoning_section();
                 payloads.push(EventPayload::Error {
                     turn_id: Some(self.turn_id),
@@ -192,26 +184,26 @@ impl AutoagentsEventBridge {
                     terminal: true,
                 }
             }
-            AutoagentsEvent::TaskComplete { .. } | AutoagentsEvent::StreamComplete { .. } => {
+            AutoAgentsEvent::TaskComplete { .. } | AutoAgentsEvent::StreamComplete { .. } => {
                 MappedEvent {
                     payloads: self.close_reasoning_section(),
                     terminal: true,
                 }
             }
-            AutoagentsEvent::TurnCompleted { .. }
-            | AutoagentsEvent::NewTask { .. }
-            | AutoagentsEvent::PublishMessage { .. }
-            | AutoagentsEvent::SendMessage { .. }
-            | AutoagentsEvent::TaskStarted { .. } => MappedEvent {
+            AutoAgentsEvent::TurnCompleted { .. }
+            | AutoAgentsEvent::NewTask { .. }
+            | AutoAgentsEvent::PublishMessage { .. }
+            | AutoAgentsEvent::SendMessage { .. }
+            | AutoAgentsEvent::TaskStarted { .. } => MappedEvent {
                 payloads: Vec::new(),
                 terminal: false,
             },
         }
     }
 
-    fn map_stream_chunk(&mut self, chunk: AutoagentsStreamChunk) -> Vec<EventPayload> {
+    fn map_stream_chunk(&mut self, chunk: AutoAgentsStreamChunk) -> Vec<EventPayload> {
         match chunk {
-            AutoagentsStreamChunk::Text(delta) => {
+            AutoAgentsStreamChunk::Text(delta) => {
                 let mut payloads = self.close_reasoning_section();
                 payloads.push(EventPayload::AgentMessageDelta {
                     turn_id: self.turn_id,
@@ -219,18 +211,18 @@ impl AutoagentsEventBridge {
                 });
                 payloads
             }
-            AutoagentsStreamChunk::ReasoningContent(delta) => {
+            AutoAgentsStreamChunk::ReasoningContent(delta) => {
                 self.reasoning_open = true;
                 vec![EventPayload::ReasoningDelta {
                     turn_id: self.turn_id,
                     delta,
                 }]
             }
-            AutoagentsStreamChunk::ToolUseStart { index, id, .. } => {
+            AutoAgentsStreamChunk::ToolUseStart { index, id, .. } => {
                 self.tool_index_ids.insert(index, id.clone());
                 self.close_reasoning_section()
             }
-            AutoagentsStreamChunk::ToolUseInputDelta {
+            AutoAgentsStreamChunk::ToolUseInputDelta {
                 index,
                 partial_json,
             } => {
@@ -248,13 +240,13 @@ impl AutoagentsEventBridge {
                 });
                 payloads
             }
-            AutoagentsStreamChunk::ToolUseComplete { tool_call, .. } => self
+            AutoAgentsStreamChunk::ToolUseComplete { tool_call, .. } => self
                 .map_tool_call_requested(
                     tool_call.id,
                     tool_call.function.name,
                     tool_call.function.arguments,
                 ),
-            AutoagentsStreamChunk::Done { .. } | AutoagentsStreamChunk::Usage(_) => {
+            AutoAgentsStreamChunk::Done { .. } | AutoAgentsStreamChunk::Usage(_) => {
                 self.close_reasoning_section()
             }
         }
@@ -365,7 +357,7 @@ pub fn emit(sender: &broadcast::Sender<EventMsg>, session_id: Uuid, payload: Eve
 #[cfg(test)]
 mod tests {
     use super::{AutoagentsEventBridge, emit, parse_json_value};
-    use autoagents_protocol::{Event as AutoagentsEvent, StreamChunk as AutoagentsStreamChunk};
+    use odyssey_rs_protocol::{AutoAgentsEvent, AutoAgentsStreamChunk};
     use odyssey_rs_protocol::{EventPayload, TurnContext};
     use pretty_assertions::assert_eq;
     use serde_json::{Value, json};
@@ -386,9 +378,9 @@ mod tests {
         let turn_id = Uuid::new_v4();
         let mut bridge = AutoagentsEventBridge::new(turn_id, Default::default());
 
-        let reasoning = bridge.map_event(AutoagentsEvent::StreamChunk {
+        let reasoning = bridge.map_event(AutoAgentsEvent::StreamChunk {
             sub_id: Uuid::new_v4(),
-            chunk: AutoagentsStreamChunk::ReasoningContent("plan".to_string()),
+            chunk: AutoAgentsStreamChunk::ReasoningContent("plan".to_string()),
         });
         assert!(!reasoning.terminal);
         assert_eq!(reasoning.payloads.len(), 1);
@@ -398,9 +390,9 @@ mod tests {
                 if *id == turn_id && delta == "plan"
         ));
 
-        let text = bridge.map_event(AutoagentsEvent::StreamChunk {
+        let text = bridge.map_event(AutoAgentsEvent::StreamChunk {
             sub_id: Uuid::new_v4(),
-            chunk: AutoagentsStreamChunk::Text("done".to_string()),
+            chunk: AutoAgentsStreamChunk::Text("done".to_string()),
         });
         assert_eq!(text.payloads.len(), 2);
         assert!(matches!(
@@ -419,22 +411,22 @@ mod tests {
         let turn_id = Uuid::new_v4();
         let mut bridge = AutoagentsEventBridge::new(turn_id, Default::default());
 
-        let started = bridge.map_event(AutoagentsEvent::StreamChunk {
+        let started = bridge.map_event(AutoAgentsEvent::StreamChunk {
             sub_id: Uuid::new_v4(),
-            chunk: AutoagentsStreamChunk::ToolUseStart {
+            chunk: AutoAgentsStreamChunk::ToolUseStart {
                 index: 0,
                 id: "call_1".to_string(),
                 name: "search".to_string(),
             },
         });
-        let requested = bridge.map_event(AutoagentsEvent::ToolCallRequested {
+        let requested = bridge.map_event(AutoAgentsEvent::ToolCallRequested {
             sub_id: Uuid::new_v4(),
             actor_id: Uuid::new_v4(),
             id: "call_1".to_string(),
             tool_name: "search".to_string(),
             arguments: "{\"q\":\"rust\"}".to_string(),
         });
-        let finished = bridge.map_event(AutoagentsEvent::ToolCallCompleted {
+        let finished = bridge.map_event(AutoAgentsEvent::ToolCallCompleted {
             sub_id: Uuid::new_v4(),
             actor_id: Uuid::new_v4(),
             id: "call_1".to_string(),
@@ -465,7 +457,7 @@ mod tests {
         };
         let mut bridge = AutoagentsEventBridge::new(turn_id, context.clone());
 
-        let started = bridge.map_event(AutoagentsEvent::TurnStarted {
+        let started = bridge.map_event(AutoAgentsEvent::TurnStarted {
             sub_id: Uuid::new_v4(),
             actor_id: Uuid::new_v4(),
             turn_number: 1,
@@ -485,7 +477,7 @@ mod tests {
         let turn_id = Uuid::new_v4();
         let mut bridge = AutoagentsEventBridge::new(turn_id, Default::default());
 
-        let payloads = bridge.map_event(AutoagentsEvent::StreamToolCall {
+        let payloads = bridge.map_event(AutoAgentsEvent::StreamToolCall {
             sub_id: Uuid::new_v4(),
             tool_call: json!({
                 "function": {
@@ -503,22 +495,22 @@ mod tests {
         let turn_id = Uuid::new_v4();
         let mut bridge = AutoagentsEventBridge::new(turn_id, Default::default());
 
-        let _ = bridge.map_event(AutoagentsEvent::StreamChunk {
+        let _ = bridge.map_event(AutoAgentsEvent::StreamChunk {
             sub_id: Uuid::new_v4(),
-            chunk: AutoagentsStreamChunk::ToolUseStart {
+            chunk: AutoAgentsStreamChunk::ToolUseStart {
                 index: 2,
                 id: "call_2".to_string(),
                 name: "search".to_string(),
             },
         });
-        let delta = bridge.map_event(AutoagentsEvent::StreamChunk {
+        let delta = bridge.map_event(AutoAgentsEvent::StreamChunk {
             sub_id: Uuid::new_v4(),
-            chunk: AutoagentsStreamChunk::ToolUseInputDelta {
+            chunk: AutoAgentsStreamChunk::ToolUseInputDelta {
                 index: 2,
                 partial_json: "{\"q\":\"rus".to_string(),
             },
         });
-        let started = bridge.map_event(AutoagentsEvent::StreamToolCall {
+        let started = bridge.map_event(AutoAgentsEvent::StreamToolCall {
             sub_id: Uuid::new_v4(),
             tool_call: json!({
                 "id": "call_2",
@@ -560,7 +552,7 @@ mod tests {
         let turn_id = Uuid::new_v4();
         let mut bridge = AutoagentsEventBridge::new(turn_id, Default::default());
 
-        let failed = bridge.map_event(AutoagentsEvent::ToolCallFailed {
+        let failed = bridge.map_event(AutoAgentsEvent::ToolCallFailed {
             sub_id: Uuid::new_v4(),
             actor_id: Uuid::new_v4(),
             id: "call_3".to_string(),
@@ -579,12 +571,12 @@ mod tests {
     fn task_error_closes_reasoning_and_terminates_bridge() {
         let turn_id = Uuid::new_v4();
         let mut bridge = AutoagentsEventBridge::new(turn_id, Default::default());
-        let _ = bridge.map_event(AutoagentsEvent::StreamChunk {
+        let _ = bridge.map_event(AutoAgentsEvent::StreamChunk {
             sub_id: Uuid::new_v4(),
-            chunk: AutoagentsStreamChunk::ReasoningContent("plan".to_string()),
+            chunk: AutoAgentsStreamChunk::ReasoningContent("plan".to_string()),
         });
 
-        let errored = bridge.map_event(AutoagentsEvent::TaskError {
+        let errored = bridge.map_event(AutoAgentsEvent::TaskError {
             sub_id: Uuid::new_v4(),
             actor_id: Uuid::new_v4(),
             error: "failed".to_string(),

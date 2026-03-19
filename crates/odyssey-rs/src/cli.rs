@@ -1,30 +1,38 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use crossterm::style::Stylize;
-use odyssey_rs_protocol::SandboxMode;
-use odyssey_rs_runtime::{RuntimeConfig, RuntimeEngine};
+use log::info;
+use odyssey_rs_bundle::{BundleBuilder, BundleProject, BundleStore};
+use odyssey_rs_protocol::{ExecutionRequest, SandboxMode, SessionSpec, Task};
+use odyssey_rs_runtime::{OdysseyRuntime, RuntimeConfig};
 use std::path::{Path, PathBuf};
+use tokio::time::Instant;
+use uuid::Uuid;
+
+use crate::remote::RemoteRuntimeClient;
 
 #[derive(Parser)]
 #[command(name = "odyssey-rs", version)]
 pub struct Cli {
+    #[arg(long, global = true)]
+    pub remote: Option<String>,
     #[command(subcommand)]
     pub command: Command,
 }
 
 #[derive(Subcommand)]
 pub enum Command {
-    Init {
-        path: String,
-    },
+    #[command(about = "Initialize a new Odyssey project")]
+    Init { path: String },
+    #[command(about = "Build Odyssey agent bundle")]
     Build {
         path: String,
         #[arg(long)]
         output: Option<PathBuf>,
     },
-    Inspect {
-        reference: String,
-    },
+    #[command(about = "Inspect Odyssey agent bundle")]
+    Inspect { reference: String },
+    #[command(about = "Run an Odyssey agent bundle")]
     Run {
         reference: String,
         #[arg(long)]
@@ -32,36 +40,56 @@ pub enum Command {
         #[arg(long)]
         dangerous_sandbox_mode: bool,
     },
+    #[command(
+        about = "Start a local runtimer server",
+        long_about = "Starts a runtime server and listens for incoming requests. Useful when running multiple agent instancecs on a shared resources."
+    )]
     Serve {
         #[arg(long)]
         bind: Option<String>,
         #[arg(long)]
         dangerous_sandbox_mode: bool,
     },
-    Publish {
+    #[command(about = "Publish Odyssey agent bundle to Hub")]
+    Push {
         source: String,
         #[arg(long)]
         to: String,
         #[arg(long = "hub", visible_alias = "registry")]
         hub: Option<String>,
     },
+    #[command(about = "Pull Odyssey agent bundle to Hub")]
     Pull {
         reference: String,
         #[arg(long = "hub", visible_alias = "registry")]
         hub: Option<String>,
     },
+    #[command(about = "Export Odyssey to a .odyssey file")]
     Export {
         reference: String,
         #[arg(long)]
         output: Option<PathBuf>,
     },
-    Import {
-        path: PathBuf,
+    #[command(about = "Import and Install from .odyssey file")]
+    Import { path: PathBuf },
+    #[command(about = "List Installed bundles")]
+    Bundles,
+    #[command(about = "List sessions")]
+    Sessions,
+    #[command(about = "Get or Delete Session")]
+    Session {
+        id: Uuid,
+        #[arg(long)]
+        delete: bool,
     },
 }
 
 pub async fn run_cli(cli: Cli) -> Result<()> {
+    info!("Running Odyssey CLI");
     let mut config = RuntimeConfig::default();
+    if let Some(remote) = &cli.remote {
+        config.bind_addr = remote.clone();
+    }
     if let Command::Serve {
         bind: Some(bind), ..
     } = &cli.command
@@ -79,11 +107,35 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
         }
     ) {
         config.sandbox_mode_override = Some(SandboxMode::DangerFullAccess);
+        info!("Registered DangerFullAccess Sandbox mode")
     }
     if let Some(hub_url) = hub_override(&cli.command) {
         config.hub_url = hub_url;
     }
-    let runtime = RuntimeEngine::new(config.clone())?;
+    let use_remote = cli.remote.is_some();
+    if use_remote
+        && matches!(
+            cli.command,
+            Command::Build { .. }
+                | Command::Serve { .. }
+                | Command::Init { .. }
+                | Command::Push { .. }
+                | Command::Export { .. }
+                | Command::Import { .. }
+        )
+    {
+        return Err(anyhow!("--remote is not supported with this command"));
+    }
+    let start_time = Instant::now();
+    let runtime = OdysseyRuntime::new(config.clone())?;
+    let bundles = BundleStore::new(config.cache_root.clone());
+    let end_time = start_time.elapsed();
+    info!("Initiated Runtime and Bundle in {:?}", end_time);
+    let remote = cli
+        .remote
+        .as_deref()
+        .map(RemoteRuntimeClient::new)
+        .transpose()?;
     match cli.command {
         Command::Init { path } => {
             runtime.init(&path)?;
@@ -91,7 +143,8 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
         }
         Command::Build { path, output } => {
             if let Some(output) = output {
-                let artifact = runtime.build_to(&path, &output)?;
+                let project = BundleProject::load(&path)?;
+                let artifact = BundleBuilder::new(project).build(&output)?;
                 println!(
                     "{} {}@{} {} {}",
                     "built".green().bold(),
@@ -101,7 +154,7 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
                     artifact.path.display()
                 );
             } else {
-                let install = runtime.build_and_install(path)?;
+                let install = bundles.build_and_install(path)?;
                 println!(
                     "{} {}@{} {} {}",
                     "installed".green().bold(),
@@ -113,15 +166,32 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
             }
         }
         Command::Inspect { reference } => {
-            let metadata = runtime.inspect_bundle(&reference)?;
+            let metadata = if let Some(remote) = &remote {
+                remote.inspect(&reference).await?
+            } else {
+                bundles.resolve(&reference)?.metadata
+            };
             println!("{}", "bundle metadata".cyan().bold());
             println!("{}", serde_json::to_string_pretty(&metadata)?);
         }
         Command::Run {
             reference, prompt, ..
         } => {
-            let session = runtime.create_session(&reference)?;
-            let result = runtime.run(session.id, prompt).await?;
+            let result = if let Some(remote) = &remote {
+                remote.run(reference, prompt).await?
+            } else {
+                let session = runtime.create_session(SessionSpec::from(reference))?;
+                let task = Task::new(prompt);
+                let request_id = Uuid::new_v4();
+                runtime
+                    .run(ExecutionRequest {
+                        request_id,
+                        session_id: session.id,
+                        input: task,
+                        turn_context: None,
+                    })
+                    .await?
+            };
             println!("{}", "assistant".cyan().bold());
             println!("{}", result.response);
         }
@@ -133,8 +203,8 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
             );
             odyssey_rs_server::serve(config).await?;
         }
-        Command::Publish { source, to, .. } => {
-            let published = runtime.publish(&source, &to).await?;
+        Command::Push { source, to, .. } => {
+            let published = bundles.publish(&source, &to, &config.hub_url).await?;
             println!(
                 "{} {} {}",
                 "published".green().bold(),
@@ -143,7 +213,11 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
             );
         }
         Command::Pull { reference, .. } => {
-            let install = runtime.pull(&reference).await?;
+            let install = if let Some(remote) = &remote {
+                remote.pull(&reference, &config.hub_url).await?
+            } else {
+                bundles.pull(&reference, &config.hub_url).await?
+            };
             println!(
                 "{} {} {}",
                 "pulled".green().bold(),
@@ -157,11 +231,11 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
         }
         Command::Export { reference, output } => {
             let output = output.unwrap_or_else(|| PathBuf::from("."));
-            let path = runtime.export_bundle(&reference, output)?;
+            let path = bundles.export(&reference, output)?;
             println!("{} {}", "exported".green().bold(), path.display());
         }
         Command::Import { path } => {
-            let install = runtime.import_bundle(path)?;
+            let install = bundles.import(path)?;
             println!(
                 "{} {}/{}@{}",
                 "imported".green().bold(),
@@ -170,13 +244,69 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
                 install.metadata.version
             );
         }
+        Command::Bundles => {
+            let bundles = if let Some(remote) = &remote {
+                remote.list_bundles().await?
+            } else {
+                bundles.list_installed()?
+            };
+            if bundles.is_empty() {
+                println!("{}", "no bundles installed".dark_grey());
+            } else {
+                for bundle in bundles {
+                    println!(
+                        "{} {}",
+                        format!("{}/{}@{}", bundle.namespace, bundle.id, bundle.version)
+                            .cyan()
+                            .bold(),
+                        bundle.path.display()
+                    );
+                }
+            }
+        }
+        Command::Sessions => {
+            let sessions = if let Some(remote) = &remote {
+                remote.list_sessions().await?
+            } else {
+                runtime.list_sessions(None)
+            };
+            if sessions.is_empty() {
+                println!("{}", "no sessions".dark_grey());
+            } else {
+                for session in sessions {
+                    println!(
+                        "{} {} {}",
+                        session.id.to_string().cyan().bold(),
+                        session.agent_id,
+                        session.created_at
+                    );
+                }
+            }
+        }
+        Command::Session { id, delete } => {
+            if delete {
+                if let Some(remote) = &remote {
+                    remote.delete_session(id).await?;
+                } else {
+                    runtime.delete_session(id)?;
+                }
+                println!("{} {}", "deleted".green().bold(), id);
+            } else {
+                let session = if let Some(remote) = &remote {
+                    remote.get_session(id).await?
+                } else {
+                    runtime.get_session(id)?
+                };
+                println!("{}", serde_json::to_string_pretty(&session)?);
+            }
+        }
     }
     Ok(())
 }
 
 fn hub_override(command: &Command) -> Option<String> {
     match command {
-        Command::Publish { hub: Some(hub), .. } | Command::Pull { hub: Some(hub), .. } => {
+        Command::Push { hub: Some(hub), .. } | Command::Pull { hub: Some(hub), .. } => {
             Some(hub.clone())
         }
         _ => None,
@@ -199,11 +329,6 @@ fn print_init_summary(path: &str) {
         "{} {}",
         "build:".dark_grey().bold(),
         format!("odyssey-rs -- build {path}").cyan()
-    );
-    println!(
-        "{} {}",
-        "set key:".dark_grey().bold(),
-        "export OPENAI_API_KEY=\"your-key\"".cyan()
     );
     println!(
         "{} {}",

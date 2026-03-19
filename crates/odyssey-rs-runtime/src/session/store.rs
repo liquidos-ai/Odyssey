@@ -3,6 +3,7 @@ use autoagents_llm::chat::{ChatMessage, ChatRole, MessageType};
 use autoagents_llm::{FunctionCall, ToolCall};
 use chrono::{DateTime, Utc};
 use odyssey_rs_protocol::EventMsg;
+use odyssey_rs_protocol::Task;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -21,11 +22,18 @@ pub struct SessionStore {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct SessionRecord {
     pub id: Uuid,
-    pub bundle_ref: String,
+    #[serde(alias = "bundle_ref")]
+    pub agent_ref: String,
     pub agent_id: String,
+    #[serde(default = "default_model_provider")]
+    pub model_provider: String,
     pub model_id: String,
     pub created_at: DateTime<Utc>,
     pub turns: Vec<TurnRecord>,
+}
+
+fn default_model_provider() -> String {
+    "openai".to_string()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -43,14 +51,14 @@ pub(crate) struct TurnRecord {
 impl TurnRecord {
     pub(crate) fn from_history(
         turn_id: Uuid,
-        prompt: impl Into<String>,
+        task: &Task,
         response: impl Into<String>,
         chat_history: Vec<TurnChatMessageRecord>,
         created_at: DateTime<Utc>,
     ) -> Self {
         let mut record = Self {
             turn_id,
-            prompt: prompt.into(),
+            prompt: task.prompt.clone(),
             response: response.into(),
             chat_history,
             created_at,
@@ -193,15 +201,17 @@ impl SessionStore {
 
     pub fn create(
         &self,
-        bundle_ref: String,
+        agent_ref: String,
         agent_id: String,
+        model_provider: String,
         model_id: String,
     ) -> Result<SessionRecord, RuntimeError> {
         let id = Uuid::new_v4();
         let record = SessionRecord {
             id,
-            bundle_ref,
+            agent_ref,
             agent_id,
+            model_provider,
             model_id,
             created_at: Utc::now(),
             turns: Vec::new(),
@@ -341,6 +351,7 @@ mod tests {
     use super::{SessionRecord, SessionStore, TurnChatMessageRecord, TurnRecord};
     use autoagents_llm::chat::ChatRole;
     use chrono::Utc;
+    use odyssey_rs_protocol::Task;
     use pretty_assertions::assert_eq;
     use serde_json::Value;
     use std::fs;
@@ -352,8 +363,9 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let record = SessionRecord {
             id: Uuid::new_v4(),
-            bundle_ref: "odyssey-cowork@latest".to_string(),
+            agent_ref: "odyssey-cowork@latest".to_string(),
             agent_id: "odyssey-cowork".to_string(),
+            model_provider: "openai".to_string(),
             model_id: "gpt-4.1-mini".to_string(),
             created_at: Utc::now(),
             turns: vec![TurnRecord {
@@ -377,7 +389,7 @@ mod tests {
         let loaded = store.get(record.id).expect("load session");
 
         assert_eq!(loaded.id, record.id);
-        assert_eq!(loaded.bundle_ref, record.bundle_ref);
+        assert_eq!(loaded.agent_ref, record.agent_ref);
         assert_eq!(loaded.turns.len(), 1);
         assert_eq!(loaded.turns[0].prompt, "");
         assert_eq!(loaded.turns[0].response, "");
@@ -399,12 +411,13 @@ mod tests {
             .create(
                 "odyssey-cowork@latest".to_string(),
                 "odyssey-cowork".to_string(),
+                "openai".to_string(),
                 "gpt-4.1-mini".to_string(),
             )
             .expect("session");
         let turn = TurnRecord::from_history(
             Uuid::new_v4(),
-            "hello",
+            &Task::new("hello"),
             "world",
             vec![
                 TurnChatMessageRecord::from_text(ChatRole::User, "hello"),

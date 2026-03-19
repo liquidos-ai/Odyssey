@@ -21,7 +21,7 @@ pub struct BundleRef {
 
 impl BundleRef {
     pub fn parse(value: &str) -> Self {
-        if value.ends_with(".odybundle") {
+        if value.ends_with(".odyssey") {
             return Self {
                 raw: value.to_string(),
                 kind: BundleRefKind::File,
@@ -126,7 +126,7 @@ mod tests {
         assert_eq!(path_ref.kind, BundleRefKind::Path);
         assert_eq!(path_ref.repository(), None);
 
-        let file_ref = BundleRef::parse("/tmp/demo.odybundle");
+        let file_ref = BundleRef::parse("/tmp/demo.odyssey");
         assert_eq!(file_ref.kind, BundleRefKind::File);
         assert_eq!(file_ref.repository(), None);
     }

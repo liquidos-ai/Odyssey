@@ -8,24 +8,36 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use odyssey_rs_protocol::{AgentRef, ExecutionRequest, SessionSpec};
 use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/bundles", get(list_bundles))
         .route("/bundles/build", post(build_bundle))
         .route("/bundles/inspect", get(inspect_bundle))
         .route("/bundles/export", post(export_bundle))
         .route("/bundles/import", post(import_bundle))
         .route("/bundles/publish", post(publish_bundle))
         .route("/bundles/pull", post(pull_bundle))
-        .route("/sessions", post(create_session))
+        .route("/sessions", get(list_sessions).post(create_session))
         .route("/sessions/{id}", get(get_session).delete(delete_session))
         .route("/sessions/{id}/run", post(run_session))
+        .route("/sessions/{id}/run-sync", post(run_session_sync))
         .route("/sessions/{id}/events", get(session_events))
         .route("/approvals/{id}", post(resolve_approval))
         .with_state(state)
+}
+
+async fn list_bundles(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let bundles = state.bundles.list_installed().map_err(internal)?;
+    Ok(Json(
+        serde_json::to_value(bundles).map_err(|err| internal(err.to_string()))?,
+    ))
 }
 
 async fn build_bundle(
@@ -33,7 +45,7 @@ async fn build_bundle(
     Json(request): Json<BuildRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let install = state
-        .runtime
+        .bundles
         .build_and_install(&request.project_path)
         .map_err(internal)?;
     Ok(Json(json!({
@@ -54,8 +66,9 @@ async fn inspect_bundle(
     Query(query): Query<InspectQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let metadata = state
-        .runtime
-        .inspect_bundle(&query.reference)
+        .bundles
+        .resolve(&query.reference)
+        .map(|install| install.metadata)
         .map_err(internal)?;
     Ok(Json(
         serde_json::to_value(metadata).map_err(|err| internal(err.to_string()))?,
@@ -67,8 +80,8 @@ async fn publish_bundle(
     Json(request): Json<PublishRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     match state
-        .runtime
-        .publish(&request.source, &request.target)
+        .bundles
+        .publish(&request.source, &request.target, &state.hub_url)
         .await
     {
         Ok(metadata) => Ok(Json(json!({
@@ -85,7 +98,7 @@ async fn pull_bundle(
     State(state): State<AppState>,
     Json(request): Json<PlaceholderRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    match state.runtime.pull(&request.reference).await {
+    match state.bundles.pull(&request.reference, &state.hub_url).await {
         Ok(install) => Ok(Json(json!({
             "status": "ok",
             "namespace": install.metadata.namespace,
@@ -103,8 +116,8 @@ async fn export_bundle(
     Json(request): Json<ExportRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let path = state
-        .runtime
-        .export_bundle(&request.reference, &request.output_path)
+        .bundles
+        .export(&request.reference, &request.output_path)
         .map_err(internal)?;
     Ok(Json(json!({
         "status": "ok",
@@ -117,8 +130,8 @@ async fn import_bundle(
     Json(request): Json<ImportRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let install = state
-        .runtime
-        .import_bundle(&request.archive_path)
+        .bundles
+        .import(&request.archive_path)
         .map_err(internal)?;
     Ok(Json(json!({
         "status": "ok",
@@ -136,10 +149,23 @@ async fn create_session(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let session = state
         .runtime
-        .create_session(&request.bundle_ref)
+        .create_session(SessionSpec {
+            agent_ref: AgentRef::from(request.agent_ref),
+            model: request.model,
+            metadata: json!({}),
+        })
         .map_err(internal)?;
     Ok(Json(
         serde_json::to_value(session).map_err(|err| internal(err.to_string()))?,
+    ))
+}
+
+async fn list_sessions(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let sessions = state.runtime.list_sessions(None);
+    Ok(Json(
+        serde_json::to_value(sessions).map_err(|err| internal(err.to_string()))?,
     ))
 }
 
@@ -168,13 +194,38 @@ async fn run_session(
 ) -> Result<Json<TurnAccepted>, (StatusCode, String)> {
     let turn_id = state
         .runtime
-        .submit_run(id, request.prompt)
+        .submit(ExecutionRequest {
+            request_id: Uuid::new_v4(),
+            session_id: id,
+            input: request.input,
+            turn_context: request.turn_context,
+        })
         .await
         .map_err(internal)?;
     Ok(Json(TurnAccepted {
         session_id: id,
-        turn_id,
+        turn_id: turn_id.turn_id,
     }))
+}
+
+async fn run_session_sync(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(request): Json<RunRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let result = state
+        .runtime
+        .run(ExecutionRequest {
+            request_id: Uuid::new_v4(),
+            session_id: id,
+            input: request.input,
+            turn_context: request.turn_context,
+        })
+        .await
+        .map_err(internal)?;
+    Ok(Json(
+        serde_json::to_value(result).map_err(|err| internal(err.to_string()))?,
+    ))
 }
 
 async fn session_events(
@@ -186,7 +237,7 @@ async fn session_events(
     >,
     (StatusCode, String),
 > {
-    let receiver = state.runtime.subscribe(id).map_err(internal)?;
+    let receiver = state.runtime.subscribe_session(id).map_err(internal)?;
     Ok(stream_events(receiver))
 }
 
@@ -280,6 +331,8 @@ tools:
             bind_addr: "127.0.0.1:0".to_string(),
             sandbox_mode_override: Some(SandboxMode::DangerFullAccess),
             hub_url: "http://127.0.0.1:8473".to_string(),
+            worker_count: 2,
+            queue_capacity: 32,
         }
     }
 
@@ -308,6 +361,8 @@ tools:
         let runtime = Arc::new(RuntimeEngine::new(runtime_config(temp.path())).expect("runtime"));
         let app = router(AppState {
             runtime: runtime.clone(),
+            bundles: runtime.bundle_store(),
+            hub_url: runtime.config().hub_url.clone(),
         });
 
         let built = json_response(
@@ -362,7 +417,7 @@ tools:
         )
         .await;
         let archive_path = exported["path"].as_str().expect("archive path");
-        assert_eq!(archive_path.ends_with(".odybundle"), true);
+        assert_eq!(archive_path.ends_with(".odyssey"), true);
 
         let imported = json_response(
             app.clone(),
@@ -391,7 +446,7 @@ tools:
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "bundle_ref": "demo@0.1.0"
+                        "agent_ref": "demo@0.1.0"
                     }))
                     .expect("serialize session request"),
                 ))
@@ -413,7 +468,7 @@ tools:
         )
         .await;
         assert_eq!(fetched["id"], session_id);
-        assert_eq!(fetched["bundle_ref"], "demo@0.1.0");
+        assert_eq!(fetched["agent_ref"], "demo@0.1.0");
 
         let resolved = json_response(
             app.clone(),

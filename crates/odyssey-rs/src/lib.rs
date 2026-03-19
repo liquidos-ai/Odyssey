@@ -1,4 +1,5 @@
 pub mod cli;
+mod remote;
 
 pub use odyssey_rs_bundle as bundle;
 pub use odyssey_rs_manifest as manifest;

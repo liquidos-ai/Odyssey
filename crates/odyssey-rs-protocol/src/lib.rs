@@ -16,6 +16,44 @@ pub type TurnId = Uuid;
 pub type ToolCallId = Uuid;
 pub type ExecId = Uuid;
 
+pub use autoagents_protocol::Task;
+pub use autoagents_protocol::{Event as AutoAgentsEvent, StreamChunk as AutoAgentsStreamChunk};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct AgentRef {
+    pub reference: String,
+}
+
+impl AgentRef {
+    pub fn new(reference: impl Into<String>) -> Self {
+        Self {
+            reference: reference.into(),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.reference
+    }
+}
+
+impl From<String> for AgentRef {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<&str> for AgentRef {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl std::fmt::Display for AgentRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.reference)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
@@ -42,10 +80,67 @@ pub struct SessionSummary {
 pub struct Session {
     pub id: SessionId,
     pub agent_id: String,
-    pub bundle_ref: String,
+    #[serde(alias = "bundle_ref")]
+    pub agent_ref: String,
     pub model_id: String,
     pub created_at: DateTime<Utc>,
     pub messages: Vec<Message>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSpec {
+    pub agent_ref: AgentRef,
+    #[serde(default)]
+    pub model: Option<ModelSpec>,
+    #[serde(default = "empty_json_object")]
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionFilter {
+    #[serde(default)]
+    pub agent_ref: Option<AgentRef>,
+}
+
+impl From<&str> for SessionSpec {
+    fn from(value: &str) -> Self {
+        Self {
+            agent_ref: AgentRef::from(value),
+            model: None,
+            metadata: empty_json_object(),
+        }
+    }
+}
+
+impl From<String> for SessionSpec {
+    fn from(value: String) -> Self {
+        Self::from(value.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionRequest {
+    pub request_id: Uuid,
+    pub session_id: SessionId,
+    pub input: Task,
+    #[serde(default)]
+    pub turn_context: Option<TurnContextOverride>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionHandle {
+    pub session_id: SessionId,
+    pub turn_id: TurnId,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

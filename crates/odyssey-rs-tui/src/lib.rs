@@ -15,7 +15,8 @@ use app::App;
 use client::AgentRuntimeClient;
 use event::AppEvent;
 use log::debug;
-use odyssey_rs_runtime::{BundleInstallSummary, RuntimeEngine};
+use odyssey_rs_bundle::{BundleInstallSummary, BundleStore};
+use odyssey_rs_runtime::OdysseyRuntime;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -35,7 +36,7 @@ pub struct TuiRunConfig {
 pub const DEFAULT_BUNDLE_REF: &str = "odyssey@latest";
 
 /// Launch the Odyssey TUI against a pre-configured [`RuntimeEngine`].
-pub async fn run(runtime: Arc<RuntimeEngine>, config: TuiRunConfig) -> anyhow::Result<()> {
+pub async fn run(runtime: Arc<OdysseyRuntime>, config: TuiRunConfig) -> anyhow::Result<()> {
     let cwd = config
         .cwd
         .clone()
@@ -45,12 +46,14 @@ pub async fn run(runtime: Arc<RuntimeEngine>, config: TuiRunConfig) -> anyhow::R
         runtime.clone(),
         config.bundle_ref.clone(),
     ));
+    let bundle_store = BundleStore::new(runtime.config().cache_root.clone());
     let mut app = App::new();
     app.bundle_ref = config.bundle_ref.clone();
 
     let persisted_tui_config = tui_config::TuiConfig::load();
     app.init_theme(&persisted_tui_config.theme);
     app.tui_config = persisted_tui_config;
+
     if let Ok(bundles) = client.list_bundles().await {
         app.set_bundles(bundles);
     }
@@ -65,7 +68,7 @@ pub async fn run(runtime: Arc<RuntimeEngine>, config: TuiRunConfig) -> anyhow::R
         );
         app.push_status("install a local bundle to get started");
     } else {
-        let bundle = runtime.inspect_bundle(&app.bundle_ref)?;
+        let bundle = bundle_store.resolve(&app.bundle_ref)?.metadata;
         app.model_id = bundle.agent_spec.model.name.clone();
         app.model = app.model_id.clone();
         app.active_agent = Some(bundle.agent_spec.id.clone());
@@ -120,18 +123,19 @@ pub async fn run(runtime: Arc<RuntimeEngine>, config: TuiRunConfig) -> anyhow::R
 }
 
 pub fn resolve_bundle_ref(
-    runtime: &RuntimeEngine,
+    runtime: &OdysseyRuntime,
     requested: Option<String>,
 ) -> anyhow::Result<String> {
+    let bundles = BundleStore::new(runtime.config().cache_root.clone());
     if let Some(bundle_ref) = requested.filter(|bundle| !bundle.trim().is_empty()) {
         return Ok(bundle_ref);
     }
-    if runtime.inspect_bundle(DEFAULT_BUNDLE_REF).is_ok() {
+    if bundles.resolve(DEFAULT_BUNDLE_REF).is_ok() {
         return Ok(DEFAULT_BUNDLE_REF.to_string());
     }
 
-    Ok(runtime
-        .list_bundles()?
+    Ok(bundles
+        .list_installed()?
         .into_iter()
         .next()
         .map(bundle_summary_ref)
@@ -145,7 +149,8 @@ fn bundle_summary_ref(bundle: BundleInstallSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::{DEFAULT_BUNDLE_REF, TuiRunConfig, bundle_summary_ref, resolve_bundle_ref};
-    use odyssey_rs_runtime::{BundleInstallSummary, RuntimeConfig, RuntimeEngine};
+    use odyssey_rs_bundle::BundleInstallSummary;
+    use odyssey_rs_runtime::{RuntimeConfig, RuntimeEngine};
     use pretty_assertions::assert_eq;
     use std::fs;
     use std::path::Path;
@@ -159,6 +164,8 @@ mod tests {
             bind_addr: "127.0.0.1:0".to_string(),
             sandbox_mode_override: None,
             hub_url: "http://127.0.0.1:8473".to_string(),
+            worker_count: 2,
+            queue_capacity: 32,
         }
     }
 

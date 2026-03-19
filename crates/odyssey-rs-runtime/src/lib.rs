@@ -10,9 +10,7 @@ mod tool;
 mod utils;
 
 pub use error::RuntimeError;
-pub use odyssey_rs_bundle::BundleInstallSummary;
-pub use odyssey_rs_protocol::{
-    EventMsg as RuntimeEvent, Message, Role, Session, SessionSummary, SkillSummary,
-};
-pub use runtime::{RunOutput, RuntimeEngine};
+
+pub use runtime::{OdysseyRuntime, RunOutput};
+pub type RuntimeEngine = OdysseyRuntime;
 pub use runtime_config::RuntimeConfig;

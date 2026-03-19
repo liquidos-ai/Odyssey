@@ -10,6 +10,8 @@ pub struct RuntimeConfig {
     pub bind_addr: String,
     pub sandbox_mode_override: Option<SandboxMode>,
     pub hub_url: String,
+    pub worker_count: usize,
+    pub queue_capacity: usize,
 }
 
 impl RuntimeConfig {
@@ -23,6 +25,8 @@ impl RuntimeConfig {
             bind_addr: "127.0.0.1:8472".to_string(),
             sandbox_mode_override: None,
             hub_url: "http://127.0.0.1:8473".to_string(),
+            worker_count: 4,
+            queue_capacity: 128,
         }
     }
 }
@@ -47,6 +51,8 @@ mod tests {
         assert_eq!(config.sandbox_root.ends_with(".odyssey/sandbox"), true);
         assert_eq!(config.bind_addr, "127.0.0.1:8472");
         assert_eq!(config.hub_url, "http://127.0.0.1:8473");
+        assert_eq!(config.worker_count, 4);
+        assert_eq!(config.queue_capacity, 128);
         assert_eq!(config.sandbox_mode_override.is_none(), true);
     }
 
@@ -60,5 +66,7 @@ mod tests {
         assert_eq!(config.sandbox_root, from_dirs.sandbox_root);
         assert_eq!(config.bind_addr, from_dirs.bind_addr);
         assert_eq!(config.hub_url, from_dirs.hub_url);
+        assert_eq!(config.worker_count, from_dirs.worker_count);
+        assert_eq!(config.queue_capacity, from_dirs.queue_capacity);
     }
 }

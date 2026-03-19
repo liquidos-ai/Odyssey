@@ -10,8 +10,10 @@ categories.workspace = true
 readme.workspace = true
 
 [dependencies]
+odyssey-rs-bundle.workspace = true
 odyssey-rs-protocol.workspace = true
 odyssey-rs-runtime.workspace = true
+
 axum.workspace = true
 chrono.workspace = true
 futures-util.workspace = true

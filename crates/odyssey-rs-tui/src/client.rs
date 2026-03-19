@@ -3,9 +3,12 @@
 use crate::event::AppEvent;
 use anyhow::Result;
 use log::info;
-use odyssey_rs_bundle::BundleMetadata;
-use odyssey_rs_protocol::{ApprovalDecision, Session, SessionSummary, SkillSummary};
-use odyssey_rs_runtime::{BundleInstallSummary, RunOutput, RuntimeEngine};
+use odyssey_rs_bundle::{BundleInstallSummary, BundleMetadata, BundleStore};
+use odyssey_rs_protocol::{
+    AgentRef, ApprovalDecision, ExecutionRequest, Session, SessionFilter, SessionSpec,
+    SessionSummary, SkillSummary, Task,
+};
+use odyssey_rs_runtime::{OdysseyRuntime, RunOutput};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
@@ -14,14 +17,16 @@ use uuid::Uuid;
 /// Local client that wraps an embedded runtime engine.
 #[derive(Clone)]
 pub struct AgentRuntimeClient {
-    runtime: Arc<RuntimeEngine>,
+    runtime: Arc<OdysseyRuntime>,
+    store: BundleStore,
     bundle_ref: Arc<std::sync::RwLock<String>>,
 }
 
 impl AgentRuntimeClient {
     /// Create a new local client.
-    pub fn new(runtime: Arc<RuntimeEngine>, bundle_ref: String) -> Self {
+    pub fn new(runtime: Arc<OdysseyRuntime>, bundle_ref: String) -> Self {
         Self {
+            store: runtime.bundle_store(),
             runtime,
             bundle_ref: Arc::new(std::sync::RwLock::new(bundle_ref)),
         }
@@ -37,7 +42,7 @@ impl AgentRuntimeClient {
 
     /// Validate and switch the active bundle reference.
     pub async fn select_bundle(&self, bundle_ref: String) -> Result<BundleMetadata> {
-        let metadata = self.runtime.inspect_bundle(&bundle_ref)?;
+        let metadata = self.store.resolve(&bundle_ref)?.metadata;
         *self.bundle_ref.write().expect("bundle ref lock poisoned") = bundle_ref;
         Ok(metadata)
     }
@@ -45,7 +50,7 @@ impl AgentRuntimeClient {
     /// Build and install a bundle project, returning the installed bundle reference.
     pub async fn install_bundle(&self, path: impl AsRef<Path>) -> Result<String> {
         let path = path.as_ref();
-        let install = self.runtime.build_and_install(path)?;
+        let install = self.store.build_and_install(path)?;
         Ok(format!(
             "{}/{}@{}",
             install.metadata.namespace, install.metadata.id, install.metadata.version
@@ -55,30 +60,28 @@ impl AgentRuntimeClient {
     /// List available agent ids for the configured bundle.
     pub async fn list_agents(&self) -> Result<Vec<String>> {
         self.runtime
-            .list_agents(&self.bundle_ref())
+            .list_agents(self.bundle_ref())
             .map_err(Into::into)
     }
 
     /// List available sessions.
     pub async fn list_sessions(&self) -> Result<Vec<SessionSummary>> {
-        let mut sessions = Vec::new();
-        for summary in self.runtime.list_sessions() {
-            let session = self.runtime.get_session(summary.id)?;
-            if session.bundle_ref == self.bundle_ref() {
-                sessions.push(summary);
-            }
-        }
-        Ok(sessions)
+        Ok(self.runtime.list_sessions(Some(&SessionFilter {
+            agent_ref: Some(AgentRef::from(self.bundle_ref())),
+        })))
     }
 
     /// List installed bundles from the default bundle store.
     pub async fn list_bundles(&self) -> Result<Vec<BundleInstallSummary>> {
-        self.runtime.list_bundles().map_err(Into::into)
+        self.store.list_installed().map_err(Into::into)
     }
 
     /// Create a session for the configured bundle.
     pub async fn create_session(&self, _agent_id: Option<String>) -> Result<Uuid> {
-        Ok(self.runtime.create_session(&self.bundle_ref())?.id)
+        Ok(self
+            .runtime
+            .create_session(SessionSpec::from(self.bundle_ref()))?
+            .id)
     }
 
     /// Fetch a session by id.
@@ -90,15 +93,22 @@ impl AgentRuntimeClient {
     pub async fn send_message(
         &self,
         session_id: Uuid,
-        prompt: String,
+        task: Task,
         _agent_id: Option<String>,
         _llm_id: String,
     ) -> Result<RunOutput> {
+        let prompt = &task.prompt;
         if prompt.trim().is_empty() {
             anyhow::bail!("prompt cannot be empty");
         }
+        let request_id = Uuid::new_v4();
         self.runtime
-            .run(session_id, prompt)
+            .run(ExecutionRequest {
+                request_id,
+                session_id,
+                input: task,
+                turn_context: None,
+            })
             .await
             .map_err(Into::into)
     }
@@ -117,14 +127,14 @@ impl AgentRuntimeClient {
     /// List skill summaries.
     pub async fn list_skills(&self) -> Result<Vec<SkillSummary>> {
         self.runtime
-            .list_skills(&self.bundle_ref())
+            .list_skills(self.bundle_ref())
             .map_err(Into::into)
     }
 
     /// List configured model ids for the bundle.
     pub async fn list_models(&self) -> Result<Vec<String>> {
         self.runtime
-            .list_models(&self.bundle_ref())
+            .list_models(self.bundle_ref())
             .map_err(Into::into)
     }
 
@@ -134,7 +144,7 @@ impl AgentRuntimeClient {
         session_id: Uuid,
         sender: mpsc::Sender<AppEvent>,
     ) -> Result<()> {
-        let mut receiver = self.runtime.subscribe(session_id)?;
+        let mut receiver = self.runtime.subscribe_session(session_id)?;
         info!("subscribing to runtime event stream (session_id={session_id})");
         loop {
             match receiver.recv().await {
@@ -154,7 +164,8 @@ mod tests {
     use super::AgentRuntimeClient;
     use odyssey_rs_protocol::ApprovalDecision;
     use odyssey_rs_protocol::SandboxMode;
-    use odyssey_rs_runtime::{RuntimeConfig, RuntimeEngine};
+    use odyssey_rs_protocol::Task;
+    use odyssey_rs_runtime::{OdysseyRuntime, RuntimeConfig, RuntimeEngine};
     use pretty_assertions::assert_eq;
     use std::fs;
     use std::path::Path;
@@ -170,6 +181,8 @@ mod tests {
             bind_addr: "127.0.0.1:0".to_string(),
             sandbox_mode_override: Some(SandboxMode::DangerFullAccess),
             hub_url: "http://127.0.0.1:8473".to_string(),
+            worker_count: 2,
+            queue_capacity: 32,
         }
     }
 
@@ -236,7 +249,7 @@ tools:
     #[tokio::test]
     async fn client_installs_switches_and_lists_bundle_metadata() {
         let temp = tempdir().expect("tempdir");
-        let runtime = Arc::new(RuntimeEngine::new(runtime_config(temp.path())).expect("runtime"));
+        let runtime = Arc::new(OdysseyRuntime::new(runtime_config(temp.path())).expect("runtime"));
 
         let first_project = temp.path().join("alpha-project");
         let second_project = temp.path().join("beta-project");
@@ -348,14 +361,14 @@ tools:
         assert_eq!(sessions[0].agent_id, "alpha-agent");
 
         let session = client.get_session(session_id).await.expect("get session");
-        assert_eq!(session.bundle_ref, "local/alpha@0.1.0");
+        assert_eq!(session.agent_ref, "local/alpha@0.1.0");
         assert_eq!(session.agent_id, "alpha-agent");
         assert!(session.messages.is_empty());
 
         let error = client
             .send_message(
                 session_id,
-                "   ".to_string(),
+                Task::new("   ".to_string()),
                 None,
                 "gpt-4.1-mini".to_string(),
             )

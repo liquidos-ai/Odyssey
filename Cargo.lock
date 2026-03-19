@@ -141,7 +141,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 [[package]]
 name = "autoagents-core"
 version = "0.3.6"
-source = "git+https://github.com/liquidos-ai/AutoAgents#d5d4e0bc028171a9ee40faa7a5e71576c24460cc"
+source = "git+https://github.com/liquidos-ai/AutoAgents#74bdad04cba979fc5807bbd905effc0c6942c0ac"
 dependencies = [
  "async-trait",
  "autoagents-llm",
@@ -167,7 +167,7 @@ dependencies = [
 [[package]]
 name = "autoagents-llm"
 version = "0.3.6"
-source = "git+https://github.com/liquidos-ai/AutoAgents#d5d4e0bc028171a9ee40faa7a5e71576c24460cc"
+source = "git+https://github.com/liquidos-ai/AutoAgents#74bdad04cba979fc5807bbd905effc0c6942c0ac"
 dependencies = [
  "async-trait",
  "autoagents-protocol",
@@ -195,7 +195,7 @@ dependencies = [
 [[package]]
 name = "autoagents-protocol"
 version = "0.3.6"
-source = "git+https://github.com/liquidos-ai/AutoAgents#d5d4e0bc028171a9ee40faa7a5e71576c24460cc"
+source = "git+https://github.com/liquidos-ai/AutoAgents#74bdad04cba979fc5807bbd905effc0c6942c0ac"
 dependencies = [
  "serde",
  "serde_json",
@@ -972,9 +972,9 @@ dependencies = [
 
 [[package]]
 name = "euclid"
-version = "0.22.13"
+version = "0.22.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df61bf483e837f88d5c2291dcf55c67be7e676b3a51acc48db3a7b163b91ed63"
+checksum = "f1a05365e3b1c6d1650318537c7460c6923f1abdd272ad6842baa2b509957a06"
 dependencies = [
  "num-traits",
 ]
@@ -1999,14 +1999,18 @@ dependencies = [
  "clap",
  "crossterm",
  "env_logger",
+ "log",
  "odyssey-rs-bundle",
  "odyssey-rs-manifest",
  "odyssey-rs-protocol",
  "odyssey-rs-runtime",
  "odyssey-rs-server",
  "pretty_assertions",
+ "reqwest",
+ "serde",
  "serde_json",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -2048,6 +2052,7 @@ name = "odyssey-rs-protocol"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "autoagents-protocol",
  "chrono",
  "pretty_assertions",
  "serde",
@@ -2063,10 +2068,10 @@ dependencies = [
  "async-trait",
  "autoagents-core",
  "autoagents-llm",
- "autoagents-protocol",
  "chrono",
  "directories",
  "futures-util",
+ "log",
  "odyssey-rs-bundle",
  "odyssey-rs-manifest",
  "odyssey-rs-protocol",
@@ -2112,6 +2117,7 @@ dependencies = [
  "axum",
  "chrono",
  "futures-util",
+ "odyssey-rs-bundle",
  "odyssey-rs-protocol",
  "odyssey-rs-runtime",
  "pretty_assertions",

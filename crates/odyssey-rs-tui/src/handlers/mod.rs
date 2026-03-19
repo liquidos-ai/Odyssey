@@ -92,6 +92,8 @@ mod tests {
             bind_addr: "127.0.0.1:0".to_string(),
             sandbox_mode_override: Some(SandboxMode::DangerFullAccess),
             hub_url: "http://127.0.0.1:8473".to_string(),
+            worker_count: 2,
+            queue_capacity: 32,
         }
     }
 

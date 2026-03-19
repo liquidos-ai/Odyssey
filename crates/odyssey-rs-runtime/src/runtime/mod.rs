@@ -1,7 +1,11 @@
 mod bundle_loader;
 mod engine;
+mod executor;
+mod history;
 mod prompt;
+mod resolver;
+mod scheduler;
 mod templates;
 mod tool_event;
 
-pub use engine::{RunOutput, RuntimeEngine};
+pub use engine::{OdysseyRuntime, RunOutput};

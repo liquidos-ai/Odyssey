@@ -15,9 +15,10 @@ odyssey-rs-manifest.workspace = true
 odyssey-rs-protocol.workspace = true
 odyssey-rs-tools.workspace = true
 odyssey-rs-sandbox.workspace = true
+
 autoagents-core = { workspace = true }
 autoagents-llm = { workspace = true, features = ["openai"] }
-autoagents-protocol.workspace = true
+
 async-trait.workspace = true
 chrono.workspace = true
 directories.workspace = true
@@ -32,6 +33,7 @@ uuid.workspace = true
 walkdir.workspace = true
 tera.workspace = true
 which.workspace = true
+log.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true

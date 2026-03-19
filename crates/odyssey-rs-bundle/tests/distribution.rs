@@ -109,7 +109,7 @@ fn export_to_directory_uses_bundle_identity_in_filename() {
 
     assert_eq!(
         export_path.file_name().and_then(|value| value.to_str()),
-        Some("demo-0.1.0.odybundle")
+        Some("demo-0.1.0.odyssey")
     );
 }
 

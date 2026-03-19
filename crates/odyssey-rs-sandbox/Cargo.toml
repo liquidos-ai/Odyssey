@@ -11,6 +11,7 @@ readme.workspace = true
 
 [dependencies]
 odyssey-rs-protocol.workspace = true
+
 async-trait.workspace = true
 log.workspace = true
 parking_lot.workspace = true

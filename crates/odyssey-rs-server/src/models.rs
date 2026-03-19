@@ -1,3 +1,4 @@
+use odyssey_rs_protocol::{ModelSpec, Task, TurnContextOverride};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -8,12 +9,16 @@ pub struct BuildRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSessionRequest {
-    pub bundle_ref: String,
+    pub agent_ref: String,
+    #[serde(default)]
+    pub model: Option<ModelSpec>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct RunRequest {
-    pub prompt: String,
+    pub input: Task,
+    #[serde(default)]
+    pub turn_context: Option<TurnContextOverride>,
 }
 
 #[derive(Debug, Deserialize)]
