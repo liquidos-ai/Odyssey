@@ -1,3 +1,4 @@
+use odyssey_rs_protocol::ModelSpec;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -7,16 +8,9 @@ pub struct AgentSpec {
     #[serde(default)]
     pub description: String,
     pub prompt: String,
-    pub model: AgentModel,
+    pub model: ModelSpec,
     #[serde(default)]
     pub tools: AgentToolPolicy,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentModel {
-    pub provider: String,
-    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

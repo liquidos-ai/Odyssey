@@ -1,6 +1,8 @@
 mod agent;
+pub(crate) mod bundle;
 mod error;
 mod memory;
+mod resolver;
 mod runtime;
 mod runtime_config;
 mod sandbox;

@@ -14,6 +14,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin)'] }
 
 [dependencies]
 odyssey-rs-manifest.workspace = true
+odyssey-rs-protocol.workspace = true
 
 reqwest.workspace = true
 serde.workspace = true

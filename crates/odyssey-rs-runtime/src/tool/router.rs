@@ -33,9 +33,10 @@ mod tests {
     use super::select_tools;
     use async_trait::async_trait;
     use odyssey_rs_manifest::{
-        AgentModel, AgentSpec, AgentToolPolicy, BundleExecutor, BundleManifest, BundleMemory,
-        BundleSandbox, BundleServer, BundleTool,
+        AgentSpec, AgentToolPolicy, BundleExecutor, BundleManifest, BundleMemory, BundleSandbox,
+        BundleServer, BundleTool,
     };
+    use odyssey_rs_protocol::ModelSpec;
     use odyssey_rs_tools::{Tool, ToolContext, ToolError, ToolRegistry};
     use pretty_assertions::assert_eq;
     use serde_json::{Value, json};
@@ -93,9 +94,10 @@ mod tests {
             id: "demo".to_string(),
             description: String::new(),
             prompt: "test".to_string(),
-            model: AgentModel {
+            model: ModelSpec {
                 provider: "openai".to_string(),
                 name: "gpt-4.1-mini".to_string(),
+                config: None,
             },
             tools: AgentToolPolicy {
                 allow: allow.into_iter().map(ToString::to_string).collect(),

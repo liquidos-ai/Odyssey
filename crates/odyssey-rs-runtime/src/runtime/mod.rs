@@ -1,9 +1,7 @@
-mod bundle_loader;
 mod engine;
 mod executor;
 mod history;
 mod prompt;
-mod resolver;
 mod scheduler;
 mod templates;
 mod tool_event;

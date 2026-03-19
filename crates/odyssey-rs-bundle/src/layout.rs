@@ -347,9 +347,10 @@ mod tests {
         read_config, read_manifest, sha256_digest, unpack_payload, write_blob,
     };
     use odyssey_rs_manifest::{
-        AgentModel, AgentSpec, AgentToolPolicy, BundleExecutor, BundleManifest, BundleMemory,
-        BundleSandbox, BundleServer,
+        AgentSpec, AgentToolPolicy, BundleExecutor, BundleManifest, BundleMemory, BundleSandbox,
+        BundleServer,
     };
+    use odyssey_rs_protocol::ModelSpec;
     use pretty_assertions::assert_eq;
     use std::collections::BTreeMap;
     use std::fs;
@@ -381,9 +382,10 @@ mod tests {
                 id: "demo".to_string(),
                 description: "demo bundle".to_string(),
                 prompt: "be concise".to_string(),
-                model: AgentModel {
+                model: ModelSpec {
                     provider: "openai".to_string(),
                     name: "gpt-4.1-mini".to_string(),
+                    config: None,
                 },
                 tools: AgentToolPolicy::default(),
             },

@@ -17,7 +17,7 @@ odyssey-rs-tools.workspace = true
 odyssey-rs-sandbox.workspace = true
 
 autoagents-core = { workspace = true }
-autoagents-llm = { workspace = true, features = ["openai"] }
+autoagents-llm = { workspace = true, features = ["openai", "anthropic", "deepseek", "google", "groq", "azure_openai", "openrouter", "xai", "phind", "minimax"] }
 
 async-trait.workspace = true
 chrono.workspace = true

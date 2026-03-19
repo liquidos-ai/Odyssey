@@ -310,9 +310,12 @@ pub struct TurnContextOverride {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelSpec {
     pub provider: String,
     pub name: String,
+    //Provider Config
+    pub config: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -387,6 +390,7 @@ mod tests {
             model: Some(ModelSpec {
                 provider: "openai".to_string(),
                 name: "gpt-4.1-mini".to_string(),
+                config: None,
             }),
             sandbox_mode: Some(SandboxMode::ReadOnly),
             approval_policy: Some(ApprovalPolicy::OnRequest),

@@ -2022,6 +2022,7 @@ dependencies = [
  "directories",
  "hex",
  "odyssey-rs-manifest",
+ "odyssey-rs-protocol",
  "pretty_assertions",
  "reqwest",
  "serde",

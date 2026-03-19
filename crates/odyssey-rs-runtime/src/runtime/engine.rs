@@ -1,6 +1,6 @@
 use super::scheduler::ExecutionScheduler;
 use super::templates::initialize_bundle;
-use crate::runtime::resolver::resolve_agent;
+use crate::resolver::agent::resolve_agent;
 use crate::sandbox::build_sandbox_runtime;
 use crate::session::{ApprovalStore, SessionRecord, SessionStore, TurnChatMessageKind};
 use crate::skill::BundleSkillStore;

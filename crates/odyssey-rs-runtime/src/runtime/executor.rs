@@ -10,11 +10,11 @@ use crate::{
     RunOutput, RuntimeError,
     agent::{ExecutorRun, run_executor},
     memory::build_memory,
+    resolver::{agent::ResolvedAgentSpec, agent::resolve_agent, llm::LLMResolver},
     runtime::{
         engine::OdysseyRuntimeInner,
         history::TurnHistoryCollector,
         prompt::build_system_prompt,
-        resolver::{LLMResolver, ResolvedAgentSpec, resolve_agent},
         tool_event::{RuntimeApprovalHandler, RuntimeToolEventSink},
     },
     sandbox::{build_permission_rules, build_sandbox_runtime, prepare_cell},
@@ -144,6 +144,7 @@ impl ScheduleExecutor {
             .unwrap_or_else(|| ModelSpec {
                 provider: session.model_provider.clone(),
                 name: session.model_id.clone(),
+                config: None, //TODO
             });
         let llm_resolver = LLMResolver::new(&model);
         let llm = llm_resolver.build_llm()?;
@@ -327,6 +328,7 @@ mod tests {
             ModelSpec {
                 provider: "openai".to_string(),
                 name: "gpt-4.1-mini".to_string(),
+                config: None,
             },
             SandboxMode::WorkspaceWrite,
             Some(&TurnContextOverride {

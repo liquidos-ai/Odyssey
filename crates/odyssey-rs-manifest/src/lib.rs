@@ -4,7 +4,7 @@ mod error;
 mod reference;
 mod validation;
 
-pub use agent_spec::{AgentModel, AgentSpec, AgentToolPolicy};
+pub use agent_spec::{AgentSpec, AgentToolPolicy};
 pub use bundle_manifest::{
     BundleExecutor, BundleManifest, BundleMemory, BundleMemoryProvider, BundlePermissionAction,
     BundlePermissionRule, BundleSandbox, BundleSandboxFilesystem, BundleSandboxLimits,
