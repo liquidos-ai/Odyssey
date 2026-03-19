@@ -6,6 +6,7 @@ use odyssey_rs_protocol::EventMsg;
 use odyssey_rs_protocol::Task;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -28,6 +29,8 @@ pub(crate) struct SessionRecord {
     #[serde(default = "default_model_provider")]
     pub model_provider: String,
     pub model_id: String,
+    #[serde(default)]
+    pub model_config: Option<Value>,
     pub created_at: DateTime<Utc>,
     pub turns: Vec<TurnRecord>,
 }
@@ -205,6 +208,7 @@ impl SessionStore {
         agent_id: String,
         model_provider: String,
         model_id: String,
+        model_config: Option<Value>,
     ) -> Result<SessionRecord, RuntimeError> {
         let id = Uuid::new_v4();
         let record = SessionRecord {
@@ -213,6 +217,7 @@ impl SessionStore {
             agent_id,
             model_provider,
             model_id,
+            model_config,
             created_at: Utc::now(),
             turns: Vec::new(),
         };
@@ -353,7 +358,7 @@ mod tests {
     use chrono::Utc;
     use odyssey_rs_protocol::Task;
     use pretty_assertions::assert_eq;
-    use serde_json::Value;
+    use serde_json::{Value, json};
     use std::fs;
     use tempfile::tempdir;
     use uuid::Uuid;
@@ -367,6 +372,7 @@ mod tests {
             agent_id: "odyssey-cowork".to_string(),
             model_provider: "openai".to_string(),
             model_id: "gpt-4.1-mini".to_string(),
+            model_config: None,
             created_at: Utc::now(),
             turns: vec![TurnRecord {
                 turn_id: Uuid::new_v4(),
@@ -413,6 +419,7 @@ mod tests {
                 "odyssey-cowork".to_string(),
                 "openai".to_string(),
                 "gpt-4.1-mini".to_string(),
+                None,
             )
             .expect("session");
         let turn = TurnRecord::from_history(
@@ -436,5 +443,27 @@ mod tests {
         assert_eq!(turn.get("response"), None);
         assert_eq!(turn["chat_history"][0]["content"], "hello");
         assert_eq!(turn["chat_history"][1]["content"], "world");
+    }
+
+    #[test]
+    fn create_persists_model_config() {
+        let temp = tempdir().expect("tempdir");
+        let store = SessionStore::new(temp.path()).expect("store");
+        let session = store
+            .create(
+                "odyssey-cowork@latest".to_string(),
+                "odyssey-cowork".to_string(),
+                "openai".to_string(),
+                "gpt-5".to_string(),
+                Some(json!({ "reasoning_effort": "high" })),
+            )
+            .expect("session");
+
+        let loaded = store.get(session.id).expect("load session");
+
+        assert_eq!(
+            loaded.model_config,
+            Some(json!({ "reasoning_effort": "high" }))
+        );
     }
 }

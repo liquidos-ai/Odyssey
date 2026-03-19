@@ -1,7 +1,7 @@
 use crate::{
     SandboxContext, SandboxError, SandboxHandle, SandboxPolicy, SandboxProvider, SandboxSupport,
     default_provider_name,
-    provider::{DependencyReport, local::HostExecProvider},
+    provider::{DependencyReport, canonicalize_existing_path, local::HostExecProvider},
 };
 use odyssey_rs_protocol::SandboxMode;
 use std::path::{Path, PathBuf};
@@ -106,6 +106,7 @@ struct SandboxCellState {
     handle: SandboxHandle,
     workspace_root: PathBuf,
     cell_root: PathBuf,
+    managed_private: bool,
     mode: SandboxMode,
     policy: SandboxPolicy,
 }
@@ -266,22 +267,36 @@ impl SandboxRuntime {
         &self,
         spec: SandboxCellSpec,
     ) -> Result<Arc<SandboxCellLease>, SandboxError> {
+        let cell_root = self.materialize_cell_root(&spec.key)?;
+        let managed_private = matches!(&spec.root, SandboxCellRoot::ManagedPrivate);
+        let workspace_root = match &spec.root {
+            SandboxCellRoot::SharedWorkspace(path) => canonicalize_existing_path(path)?,
+            SandboxCellRoot::ManagedPrivate => {
+                self.ensure_managed_cell_dirs(&cell_root)?;
+                cell_root.clone()
+            }
+        };
+
         let mut cells = self.cells.lock().await;
         if let Some(state) = cells.get(&spec.key) {
+            if state.workspace_root != workspace_root
+                || state.cell_root != cell_root
+                || state.managed_private != managed_private
+                || state.mode != spec.mode
+                || state.policy != spec.policy
+            {
+                return Err(SandboxError::InvalidConfig(format!(
+                    "sandbox cell '{}' already exists with a different root, mode, or policy",
+                    spec.key.component_id
+                )));
+            }
+
             return Ok(Arc::new(SandboxCellLease {
                 provider: self.provider.clone(),
                 state: state.clone(),
             }));
         }
 
-        let cell_root = self.materialize_cell_root(&spec.key)?;
-        let workspace_root = match &spec.root {
-            SandboxCellRoot::SharedWorkspace(path) => path.clone(),
-            SandboxCellRoot::ManagedPrivate => {
-                self.ensure_managed_cell_dirs(&cell_root)?;
-                cell_root.clone()
-            }
-        };
         let context = SandboxContext {
             workspace_root: workspace_root.clone(),
             mode: spec.mode,
@@ -293,6 +308,7 @@ impl SandboxRuntime {
             handle,
             workspace_root,
             cell_root,
+            managed_private,
             mode: spec.mode,
             policy: spec.policy,
         });
@@ -440,6 +456,53 @@ mod tests {
         assert_eq!(execution.outbox.exists(), true);
         assert_eq!(execution.work.exists(), true);
         assert_eq!(execution.tmp.exists(), true);
+    }
+
+    #[tokio::test]
+    async fn runtime_rejects_conflicting_cell_reuse() {
+        let temp = tempdir().expect("tempdir");
+        let runtime = SandboxRuntime::new(
+            "host",
+            Arc::new(LocalSandboxProvider::new()),
+            temp.path().join("sandbox"),
+        )
+        .expect("runtime");
+        let workspace = temp.path().join("workspace");
+        let alternate = temp.path().join("alternate");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::create_dir_all(&alternate).expect("alternate");
+
+        runtime
+            .lease_cell(SandboxCellSpec::tooling(
+                Uuid::nil(),
+                "agent",
+                workspace,
+                SandboxMode::WorkspaceWrite,
+                SandboxPolicy::default(),
+            ))
+            .await
+            .expect("first lease");
+
+        let error = match runtime
+            .lease_cell(SandboxCellSpec::tooling(
+                Uuid::nil(),
+                "agent",
+                alternate,
+                SandboxMode::WorkspaceWrite,
+                SandboxPolicy::default(),
+            ))
+            .await
+        {
+            Ok(_) => panic!("conflicting lease should fail"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error
+                .to_string()
+                .contains("already exists with a different root, mode, or policy"),
+            true
+        );
     }
 
     #[test]

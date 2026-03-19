@@ -28,7 +28,7 @@ pub struct SandboxHandle {
     pub id: Uuid,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SandboxPolicy {
     pub filesystem: SandboxFilesystemPolicy,
     pub env: SandboxEnvPolicy,
@@ -36,20 +36,20 @@ pub struct SandboxPolicy {
     pub limits: SandboxLimits,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SandboxFilesystemPolicy {
     pub read_roots: Vec<String>,
     pub write_roots: Vec<String>,
     pub exec_roots: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SandboxEnvPolicy {
     pub inherit: Vec<String>,
     pub set: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxNetworkPolicy {
     pub mode: SandboxNetworkMode,
 }
@@ -62,7 +62,7 @@ impl Default for SandboxNetworkPolicy {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SandboxLimits {
     pub cpu_seconds: Option<u64>,
     pub memory_bytes: Option<u64>,

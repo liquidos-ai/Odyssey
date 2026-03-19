@@ -127,7 +127,7 @@ fn resolve_rule_path(path: &Path) -> Result<PathBuf, String> {
 fn apply_landlock(policy: &LauncherPolicy) -> Result<(), String> {
     let mut rights_by_path: BTreeMap<PathBuf, BitFlags<AccessFs>> = BTreeMap::new();
     add_roots(&mut rights_by_path, &policy.read_roots, read_access());
-    add_roots(&mut rights_by_path, &policy.exec_roots, read_access());
+    add_roots(&mut rights_by_path, &policy.exec_roots, exec_access());
     add_roots(
         &mut rights_by_path,
         &policy.write_roots,
@@ -162,8 +162,9 @@ fn apply_landlock(policy: &LauncherPolicy) -> Result<(), String> {
         .map_err(|error| format!("failed to restrict process with Landlock: {error}"))?;
 
     match status.ruleset {
-        landlock::RulesetStatus::FullyEnforced | landlock::RulesetStatus::PartiallyEnforced => {
-            Ok(())
+        landlock::RulesetStatus::FullyEnforced => Ok(()),
+        landlock::RulesetStatus::PartiallyEnforced => {
+            Err("Landlock ruleset was only partially enforced by the kernel".to_string())
         }
         landlock::RulesetStatus::NotEnforced => {
             Err("Landlock ruleset was not enforced by the kernel".to_string())
@@ -187,7 +188,12 @@ fn add_roots(
 
 #[cfg(target_os = "linux")]
 fn read_access() -> BitFlags<AccessFs> {
-    AccessFs::ReadFile | AccessFs::ReadDir | AccessFs::Execute
+    AccessFs::ReadFile | AccessFs::ReadDir
+}
+
+#[cfg(target_os = "linux")]
+fn exec_access() -> BitFlags<AccessFs> {
+    read_access() | AccessFs::Execute
 }
 
 #[cfg(target_os = "linux")]
@@ -215,7 +221,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[cfg(target_os = "linux")]
-    use super::{add_roots, read_access, write_access};
+    use super::{add_roots, exec_access, read_access, write_access};
 
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
@@ -340,6 +346,14 @@ mod tests {
         let merged = rights.get(&root).expect("merged rights");
         assert!((*merged).contains(read_access()));
         assert!((*merged).contains(write_access()));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn read_and_write_access_do_not_grant_execute() {
+        assert!(!read_access().contains(landlock::AccessFs::Execute));
+        assert!(!write_access().contains(landlock::AccessFs::Execute));
+        assert!(exec_access().contains(landlock::AccessFs::Execute));
     }
 
     #[test]

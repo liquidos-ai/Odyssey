@@ -165,6 +165,7 @@ impl OdysseyRuntime {
             resolved.agent.id,
             model.provider,
             model.name,
+            model.config,
         )?;
         Ok(summary_from_record(&record))
     }
@@ -349,6 +350,7 @@ mod tests {
             agent_id: "demo".to_string(),
             model_provider: "openai".to_string(),
             model_id: "gpt-4.1-mini".to_string(),
+            model_config: None,
             created_at: Utc::now(),
             turns: vec![
                 TurnRecord {

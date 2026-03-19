@@ -1,10 +1,10 @@
 mod agent;
 pub(crate) mod bundle;
+mod config;
 mod error;
 mod memory;
 mod resolver;
 mod runtime;
-mod runtime_config;
 mod sandbox;
 mod session;
 mod skill;
@@ -15,4 +15,4 @@ pub use error::RuntimeError;
 
 pub use runtime::{OdysseyRuntime, RunOutput};
 pub type RuntimeEngine = OdysseyRuntime;
-pub use runtime_config::RuntimeConfig;
+pub use config::RuntimeConfig;

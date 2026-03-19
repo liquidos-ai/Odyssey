@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use log::{info, warn};
 use std::{
     collections::HashMap,
-    fs,
     path::{Path, PathBuf},
 };
 use tokio::process::Command;
@@ -317,20 +316,9 @@ pub(crate) fn append_runtime_mounts(args: &mut Vec<String>) {
     for dir in ["/usr", "/lib", "/lib64", "/bin", "/sbin", "/opt"] {
         bind_if_exists(args, "--ro-bind", Path::new(dir), Path::new(dir));
     }
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        bind_if_exists(
-            args,
-            "--bind",
-            Path::new(&runtime_dir),
-            Path::new(&runtime_dir),
-        );
-    }
-    if Path::new("/run").exists() {
-        let metadata = fs::metadata("/run");
-        if metadata.map(|value| value.is_dir()).unwrap_or(false) {
-            bind_if_exists(args, "--ro-bind", Path::new("/run"), Path::new("/run"));
-        }
-    }
+    // Keep /run private so the sandbox cannot reach host Unix-domain sockets.
+    args.push("--tmpfs".to_string());
+    args.push("/run".to_string());
 }
 
 #[cfg(test)]
@@ -393,6 +381,15 @@ mod tests {
 
         assert!(args.windows(3).any(|window| {
             window[0] == "--ro-bind" && window[1] == "/usr" && window[2] == "/usr"
+        }));
+        assert!(
+            args.windows(2)
+                .any(|window| { window[0] == "--tmpfs" && window[1] == "/run" })
+        );
+        assert!(!args.windows(3).any(|window| {
+            (window[0] == "--bind" || window[0] == "--ro-bind")
+                && window[1] == "/run"
+                && window[2] == "/run"
         }));
     }
 }

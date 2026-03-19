@@ -92,10 +92,7 @@ impl ScheduleExecutor {
         let sandbox_runtime = if mode == SandboxMode::DangerFullAccess {
             &self.runtime.host_sandbox
         } else {
-            &Arc::new(build_sandbox_runtime(
-                &self.runtime.config,
-                SandboxMode::WorkspaceWrite,
-            )?)
+            &Arc::new(build_sandbox_runtime(&self.runtime.config, mode)?)
         };
         let cell = prepare_cell(
             sandbox_runtime,
@@ -138,14 +135,7 @@ impl ScheduleExecutor {
         };
         let selected = select_tools(&self.runtime.tools, &resolved.manifest, &resolved.agent);
         let adapted = tools_to_adaptors(selected, ctx.clone());
-        let model = turn_context_override
-            .as_ref()
-            .and_then(|ctx| ctx.model.clone())
-            .unwrap_or_else(|| ModelSpec {
-                provider: session.model_provider.clone(),
-                name: session.model_id.clone(),
-                config: None, //TODO
-            });
+        let model = resolve_model_spec(&session, &resolved, turn_context_override.as_ref());
         let llm_resolver = LLMResolver::new(&model);
         let llm = llm_resolver.build_llm()?;
         let memory = build_memory(&resolved.manifest, &session.turns)?;
@@ -210,6 +200,34 @@ fn build_turn_context(
     context
 }
 
+fn resolve_model_spec(
+    session: &SessionRecord,
+    resolved: &ResolvedAgentSpec,
+    override_ctx: Option<&odyssey_rs_protocol::TurnContextOverride>,
+) -> ModelSpec {
+    if let Some(model) = override_ctx.and_then(|ctx| ctx.model.clone()) {
+        return model;
+    }
+
+    let default_model = &resolved.default_model;
+    let config = if session.model_provider == default_model.provider
+        && session.model_id == default_model.name
+    {
+        session
+            .model_config
+            .clone()
+            .or_else(|| default_model.config.clone())
+    } else {
+        session.model_config.clone()
+    };
+
+    ModelSpec {
+        provider: session.model_provider.clone(),
+        name: session.model_id.clone(),
+        config,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
@@ -224,9 +242,11 @@ mod tests {
     use tokio::sync::broadcast;
     use uuid::Uuid;
 
+    use crate::resolver::agent::ResolvedAgentSpec;
     use crate::runtime::executor::{
-        build_turn_context, collect_turn_chat_history, effective_sandbox_mode,
+        build_turn_context, collect_turn_chat_history, effective_sandbox_mode, resolve_model_spec,
     };
+    use crate::session::SessionRecord;
 
     fn manifest(mode: SandboxMode) -> BundleManifest {
         BundleManifest {
@@ -344,5 +364,91 @@ mod tests {
                 "trace": "abc"
             })
         );
+    }
+
+    #[test]
+    fn resolve_model_spec_falls_back_to_bundle_default_config() {
+        let session = SessionRecord {
+            id: Uuid::new_v4(),
+            agent_ref: "demo@latest".to_string(),
+            agent_id: "demo".to_string(),
+            model_provider: "openai".to_string(),
+            model_id: "gpt-5".to_string(),
+            model_config: None,
+            created_at: Utc::now(),
+            turns: Vec::new(),
+        };
+        let resolved = ResolvedAgentSpec {
+            install_path: std::path::PathBuf::from("/tmp/demo"),
+            manifest: manifest(SandboxMode::WorkspaceWrite),
+            agent: odyssey_rs_manifest::AgentSpec {
+                id: "demo".to_string(),
+                description: String::new(),
+                prompt: "You are demo".to_string(),
+                model: ModelSpec {
+                    provider: "openai".to_string(),
+                    name: "gpt-5".to_string(),
+                    config: Some(json!({ "reasoning_effort": "medium" })),
+                },
+                tools: odyssey_rs_manifest::AgentToolPolicy::default(),
+            },
+            default_model: ModelSpec {
+                provider: "openai".to_string(),
+                name: "gpt-5".to_string(),
+                config: Some(json!({ "reasoning_effort": "medium" })),
+            },
+        };
+
+        let model = resolve_model_spec(&session, &resolved, None);
+
+        assert_eq!(model.config, Some(json!({ "reasoning_effort": "medium" })));
+    }
+
+    #[test]
+    fn resolve_model_spec_prefers_turn_override() {
+        let session = SessionRecord {
+            id: Uuid::new_v4(),
+            agent_ref: "demo@latest".to_string(),
+            agent_id: "demo".to_string(),
+            model_provider: "openai".to_string(),
+            model_id: "gpt-5".to_string(),
+            model_config: Some(json!({ "reasoning_effort": "medium" })),
+            created_at: Utc::now(),
+            turns: Vec::new(),
+        };
+        let resolved = ResolvedAgentSpec {
+            install_path: std::path::PathBuf::from("/tmp/demo"),
+            manifest: manifest(SandboxMode::WorkspaceWrite),
+            agent: odyssey_rs_manifest::AgentSpec {
+                id: "demo".to_string(),
+                description: String::new(),
+                prompt: "You are demo".to_string(),
+                model: ModelSpec {
+                    provider: "openai".to_string(),
+                    name: "gpt-5".to_string(),
+                    config: Some(json!({ "reasoning_effort": "medium" })),
+                },
+                tools: odyssey_rs_manifest::AgentToolPolicy::default(),
+            },
+            default_model: ModelSpec {
+                provider: "openai".to_string(),
+                name: "gpt-5".to_string(),
+                config: Some(json!({ "reasoning_effort": "medium" })),
+            },
+        };
+        let override_ctx = TurnContextOverride {
+            model: Some(ModelSpec {
+                provider: "anthropic".to_string(),
+                name: "claude-sonnet".to_string(),
+                config: Some(json!({ "temperature": 0.2 })),
+            }),
+            ..TurnContextOverride::default()
+        };
+
+        let model = resolve_model_spec(&session, &resolved, Some(&override_ctx));
+
+        assert_eq!(model.provider, "anthropic");
+        assert_eq!(model.name, "claude-sonnet");
+        assert_eq!(model.config, Some(json!({ "temperature": 0.2 })));
     }
 }

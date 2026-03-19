@@ -5,6 +5,9 @@ prompt: |
 model:
   provider: openai
   name: gpt-4.1-mini
+  config:
+    max_tokens: 1024
+    temperature: 0.2
 tools:
   allow: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'Skill']
   deny: []

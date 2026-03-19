@@ -234,7 +234,7 @@ fn reject_glob(pattern: &str) -> Result<(), SandboxError> {
     Ok(())
 }
 
-fn canonicalize_existing_path(path: &Path) -> Result<PathBuf, SandboxError> {
+pub(crate) fn canonicalize_existing_path(path: &Path) -> Result<PathBuf, SandboxError> {
     path.canonicalize().map_err(|err| {
         SandboxError::InvalidConfig(format!("failed to resolve {}: {err}", path.display()))
     })
@@ -642,37 +642,37 @@ pub(crate) async fn collect_child_result(
     sink: &mut dyn CommandOutputSink,
     limits: &SandboxLimits,
 ) -> Result<CommandResult, SandboxError> {
-    let output_future = stream_child_output(stdout, stderr, sink, limits);
-    tokio::pin!(output_future);
+    let execution = async {
+        let (stdout, stderr, stdout_truncated, stderr_truncated) =
+            stream_child_output(stdout, stderr, sink, limits).await?;
+        let status = child.wait().await.map_err(SandboxError::Io)?;
 
-    let (stdout, stderr, stdout_truncated, stderr_truncated) =
-        if let Some(timeout) = effective_wall_clock(limits.wall_clock_seconds) {
-            tokio::select! {
-                output = &mut output_future => output?,
-                _ = tokio::time::sleep(timeout) => {
-                    if let Some(pid) = child.id() {
-                        kill_process_tree(pid).await?;
-                    }
-                    let _ = child.wait().await;
-                    return Err(SandboxError::LimitExceeded(format!(
-                        "command exceeded wall clock limit of {} seconds",
-                        timeout.as_secs()
-                    )));
+        Ok(CommandResult {
+            status_code: status.code(),
+            stdout,
+            stderr,
+            stdout_truncated,
+            stderr_truncated,
+        })
+    };
+
+    if let Some(timeout) = effective_wall_clock(limits.wall_clock_seconds) {
+        match tokio::time::timeout(timeout, execution).await {
+            Ok(result) => result,
+            Err(_) => {
+                if let Some(pid) = child.id() {
+                    kill_process_tree(pid).await?;
                 }
+                let _ = child.wait().await;
+                Err(SandboxError::LimitExceeded(format!(
+                    "command exceeded wall clock limit of {} seconds",
+                    timeout.as_secs()
+                )))
             }
-        } else {
-            output_future.await?
-        };
-
-    let status = child.wait().await.map_err(SandboxError::Io)?;
-
-    Ok(CommandResult {
-        status_code: status.code(),
-        stdout,
-        stderr,
-        stdout_truncated,
-        stderr_truncated,
-    })
+        }
+    } else {
+        execution.await
+    }
 }
 
 pub(crate) fn resolve_working_dir(
@@ -1140,6 +1140,38 @@ mod tests {
             error
                 .to_string()
                 .contains("command exceeded wall clock limit of 0 seconds")
+        );
+    }
+
+    #[tokio::test]
+    async fn run_host_process_enforces_wall_clock_limit_after_stdio_closes() {
+        let temp = tempdir().expect("tempdir");
+        let ctx = SandboxContext {
+            workspace_root: temp.path().to_path_buf(),
+            mode: SandboxMode::WorkspaceWrite,
+            policy: SandboxPolicy {
+                limits: SandboxLimits {
+                    wall_clock_seconds: Some(1),
+                    ..SandboxLimits::default()
+                },
+                ..SandboxPolicy::default()
+            },
+        };
+        let prepared = build_prepared_sandbox(&ctx).expect("prepared");
+        let mut spec = CommandSpec::new("sh");
+        spec.args = vec![
+            "-c".to_string(),
+            "exec >/dev/null 2>&1; sleep 2".to_string(),
+        ];
+
+        let mut sink = crate::provider::BufferingSink::default();
+        let error = run_host_process(spec, &prepared, &mut sink)
+            .await
+            .expect_err("timeout expected");
+        assert!(
+            error
+                .to_string()
+                .contains("command exceeded wall clock limit of 1 seconds")
         );
     }
 
