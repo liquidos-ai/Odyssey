@@ -80,12 +80,12 @@ mod tests {
                 SkillSummary {
                     name: "zebra".to_string(),
                     description: "last".to_string(),
-                    path: PathBuf::from("/tmp/zebra/SKILL.md"),
+                    path: PathBuf::from("skills/zebra/SKILL.md"),
                 },
                 SkillSummary {
                     name: "alpha".to_string(),
                     description: "first".to_string(),
-                    path: PathBuf::from("/tmp/alpha/SKILL.md"),
+                    path: PathBuf::from("skills/alpha/SKILL.md"),
                 },
             ],
         };
@@ -107,12 +107,12 @@ mod tests {
                 SkillSummary {
                     name: "alpha".to_string(),
                     description: "  tidy repo history  ".to_string(),
-                    path: PathBuf::from("/tmp/alpha/SKILL.md"),
+                    path: PathBuf::from("skills/alpha/SKILL.md"),
                 },
                 SkillSummary {
                     name: "beta".to_string(),
                     description: "   ".to_string(),
-                    path: PathBuf::from("/tmp/beta/SKILL.md"),
+                    path: PathBuf::from("skills/beta/SKILL.md"),
                 },
             ],
         };
@@ -123,7 +123,7 @@ mod tests {
         );
         assert_eq!(
             DummySkillProvider { skills: Vec::new() }.render_summary(),
-            String::new()
+            String::default()
         );
     }
 }

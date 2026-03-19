@@ -286,11 +286,9 @@ impl TurnContext {
             return;
         }
         if let Some(target) = self.metadata.as_object_mut() {
-            for (key, value) in override_map {
-                target.insert(key.clone(), value.clone());
-            }
+            target.extend(override_map.clone());
         } else {
-            self.metadata = override_ctx.metadata.clone();
+            self.metadata.clone_from(&override_ctx.metadata);
         }
     }
 }

@@ -1,0 +1,9 @@
+.git
+.github
+target
+.claude
+.odyssey
+.DS_Store
+coverage
+tarpaulin-report.html
+cobertura.xml

@@ -126,7 +126,7 @@ mod tests {
         assert_eq!(path_ref.kind, BundleRefKind::Path);
         assert_eq!(path_ref.repository(), None);
 
-        let file_ref = BundleRef::parse("/tmp/demo.odyssey");
+        let file_ref = BundleRef::parse("fixtures/demo.odyssey");
         assert_eq!(file_ref.kind, BundleRefKind::File);
         assert_eq!(file_ref.repository(), None);
     }

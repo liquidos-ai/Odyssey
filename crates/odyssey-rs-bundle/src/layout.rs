@@ -423,10 +423,10 @@ mod tests {
                 .expect("read unpacked skill"),
             "# Repo\n"
         );
-        assert_eq!(out.join("bundle.json").exists(), false);
-        assert_eq!(out.join("index.json").exists(), false);
-        assert_eq!(out.join("oci-layout").exists(), false);
-        assert_eq!(out.join("blobs").exists(), false);
+        assert!(!out.join("bundle.json").exists());
+        assert!(!out.join("index.json").exists());
+        assert!(!out.join("oci-layout").exists());
+        assert!(!out.join("blobs").exists());
     }
 
     #[test]
@@ -494,21 +494,15 @@ mod tests {
         assert_eq!(loaded_config.id, "demo");
         assert_eq!(loaded_config.version, "0.1.0");
         assert_eq!(loaded_manifest.layers[0].digest, layer_digest);
-        assert_eq!(
-            decoded_paths.contains(&format!(
-                "blobs/sha256/{}",
-                layer_digest.trim_start_matches("sha256:")
-            )),
-            true
-        );
-        assert_eq!(
-            decoded_paths.contains(&format!(
-                "blobs/sha256/{}",
-                manifest_digest.trim_start_matches("sha256:")
-            )),
-            true
-        );
-        assert_eq!(archived.starts_with(ARCHIVE_MAGIC), true);
+        assert!(decoded_paths.contains(&format!(
+            "blobs/sha256/{}",
+            layer_digest.trim_start_matches("sha256:")
+        )));
+        assert!(decoded_paths.contains(&format!(
+            "blobs/sha256/{}",
+            manifest_digest.trim_start_matches("sha256:")
+        )));
+        assert!(archived.starts_with(ARCHIVE_MAGIC));
     }
 
     #[test]

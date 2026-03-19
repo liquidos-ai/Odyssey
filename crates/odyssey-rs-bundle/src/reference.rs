@@ -748,11 +748,10 @@ tools:
             error
                 .expect_err("archive path should be rejected")
                 .to_string(),
-            "invalid bundle: bundle archives must be imported before use: /tmp/demo.odyssey"
-                .replace(
-                    "/tmp/demo.odyssey",
-                    archive_path.to_str().expect("archive path")
-                )
+            format!(
+                "invalid bundle: bundle archives must be imported before use: {}",
+                archive_path.display()
+            )
         );
     }
 }

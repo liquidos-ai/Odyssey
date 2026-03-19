@@ -1,0 +1,21 @@
+services:
+  odyssey:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: odyssey-linux
+    working_dir: /workspace
+    command: bash
+    init: true
+    stdin_open: true
+    tty: true
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    ports:
+      - "8472:8472"
+    volumes:
+      - .:/workspace

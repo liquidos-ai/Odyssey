@@ -141,7 +141,8 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 [[package]]
 name = "autoagents-core"
 version = "0.3.6"
-source = "git+https://github.com/liquidos-ai/AutoAgents#74bdad04cba979fc5807bbd905effc0c6942c0ac"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0db215937ceb234bb40b28b1f3792cef7f37ac872422326621d4557428c3e040"
 dependencies = [
  "async-trait",
  "autoagents-llm",
@@ -167,7 +168,8 @@ dependencies = [
 [[package]]
 name = "autoagents-llm"
 version = "0.3.6"
-source = "git+https://github.com/liquidos-ai/AutoAgents#74bdad04cba979fc5807bbd905effc0c6942c0ac"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67bd99e01ebcc552b334dfdd7197d8dab4bcf29a5c94d99261a9a7205ddeda3b"
 dependencies = [
  "async-trait",
  "autoagents-protocol",
@@ -195,7 +197,8 @@ dependencies = [
 [[package]]
 name = "autoagents-protocol"
 version = "0.3.6"
-source = "git+https://github.com/liquidos-ai/AutoAgents#74bdad04cba979fc5807bbd905effc0c6942c0ac"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16ca055e75b55bf5a38007013b8b0f27de42bb8e8dc3b866b7a618f90eb88b07"
 dependencies = [
  "serde",
  "serde_json",

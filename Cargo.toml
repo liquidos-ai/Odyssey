@@ -35,9 +35,9 @@ odyssey-rs-sandbox = { path = "crates/odyssey-rs-sandbox", version = "0.1.0" }
 odyssey-rs-server = { path = "crates/odyssey-rs-server", version = "0.1.0" }
 odyssey-rs-tui = { path = "crates/odyssey-rs-tui", version = "0.1.0" }
 
-autoagents-core = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.6" }
-autoagents-llm = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.6" }
-autoagents-protocol = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.6" }
+autoagents-core = { version = "0.3.6" }
+autoagents-llm = { version = "0.3.6" }
+autoagents-protocol = { version = "0.3.6" }
 
 anyhow = "1.0.96"
 async-trait = "0.1.86"

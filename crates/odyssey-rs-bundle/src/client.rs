@@ -165,7 +165,7 @@ impl HubClient {
 
 async fn http_status(response: reqwest::Response) -> HubClientError {
     let status = response.status();
-    let message = response.text().await.unwrap_or_else(|_| String::new());
+    let message = response.text().await.unwrap_or_default();
     HubClientError::HttpStatus { status, message }
 }
 

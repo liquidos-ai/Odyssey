@@ -246,7 +246,7 @@ mod tests {
         assert_eq!(manifest.resources, Vec::<String>::new());
         assert_eq!(manifest.skills.len(), 0);
         assert_eq!(manifest.tools.len(), 0);
-        assert_eq!(manifest.server.enable_http, false);
+        assert!(!manifest.server.enable_http);
         assert_eq!(manifest.sandbox.mode, SandboxMode::WorkspaceWrite);
         assert_eq!(
             manifest.sandbox.permissions.filesystem.exec,

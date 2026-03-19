@@ -56,7 +56,7 @@ Odyssey currently uses prebuilt executors and prebuilt memory providers in v1. C
 - Hub push/pull distribution flow
 - Custom executors
 - Custom memory providers
-- MacOS and Windows Sandbox providers
+- Native macOS and Windows sandbox providers
 - Custom tools
 - WASM-based extension support
 - Stronger pluggability around runtime components
@@ -146,6 +146,47 @@ cargo run -p odyssey-rs -- --remote http://127.0.0.1:8472 run hello-world@latest
 cargo run -p odyssey-rs -- --remote http://127.0.0.1:8472 sessions
 ```
 
+## Docker on macOS
+
+Odyssey's confined sandbox backend is Linux-only today. If you are developing on macOS and want to run the current system with the Linux `bubblewrap` sandbox instead of host fallback mode, use the included Docker image.
+
+Build the image:
+
+```bash
+docker compose build odyssey
+```
+
+Start an interactive shell in the Linux container:
+
+```bash
+docker compose run --rm odyssey
+```
+
+Inside the container, run the same commands you would run natively:
+
+```bash
+export OPENAI_API_KEY="your-key"
+cargo run -p odyssey-rs --release -- build ./bundles/hello-world
+cargo run -p odyssey-rs --release -- run hello-world@latest --prompt "What can you do?"
+```
+
+The Compose setup mounts this repository at `/workspace`. Odyssey creates and uses `/home/odyssey/.odyssey` inside the container itself, so it stays isolated from the host filesystem.
+
+To expose the runtime server back to the host, publish ports and bind to `0.0.0.0`:
+
+```bash
+docker compose run --rm --service-ports odyssey \
+  cargo run -p odyssey-rs --release -- serve --bind 0.0.0.0:8472
+```
+
+Then connect from the host with:
+
+```bash
+cargo run -p odyssey-rs -- --remote http://127.0.0.1:8472 bundles
+```
+
+If you only need host execution and do not need the Linux sandbox backend, native macOS runs are still possible with `--dangerous-sandbox-mode`.
+
 ## Bundle Distribution
 
 Export a portable archive:
@@ -193,6 +234,7 @@ For local debugging, the CLI and server support `--dangerous-sandbox-mode`, whic
 - Rust toolchain
 - `rg`
 - `tokei`
+- Docker Desktop or another recent Docker engine when running the Linux sandbox workflow on macOS
 
 ### Quality Gates
 
