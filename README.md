@@ -3,7 +3,7 @@
 <div align="center">
   <img src="assets/logo.png" alt="Odyssey logo" width="180" height="180">
 
-  <p><strong>Build agents once. Run them anywhere.</strong></p>
+  <p><strong>Define, build, and run agents as portable bundles.</strong></p>
   <p>Open-source Rust runtime for packaging, securing, and operating portable AI agents.</p>
 
   [![License](https://img.shields.io/github/license/liquidos-ai/odyssey)](https://github.com/liquidos-ai/odyssey/blob/main/APACHE_LICENSE)

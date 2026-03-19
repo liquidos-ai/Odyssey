@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # privileged: true #Need to add this for Bwrap sandbox to work
     image: odyssey-linux
     working_dir: /workspace
     command: bash
@@ -12,7 +13,9 @@ services:
     cap_add:
       - SYS_ADMIN
     security_opt:
+      - apparmor=unconfined
       - seccomp=unconfined
+      - systempaths=unconfined
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     ports:
