@@ -1,8 +1,12 @@
-use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+
+#[cfg(target_os = "linux")]
+use std::collections::BTreeMap;
+
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt;
 
 #[cfg(target_os = "linux")]
 use landlock::{
@@ -32,14 +36,23 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode, String> {
     let (policy, command, args) = parse_args(std::env::args_os())?;
     #[cfg(target_os = "linux")]
-    apply_landlock(&policy)?;
+    {
+        apply_landlock(&policy)?;
+        exec_command(&command, args)
+    }
+
     #[cfg(not(target_os = "linux"))]
     {
         let _ = policy;
-        return Err("internal Landlock helper is only supported on Linux".to_string());
+        let _ = command;
+        let _ = args;
+        Err("internal Landlock helper is only supported on Linux".to_string())
     }
+}
 
-    let error = Command::new(&command).args(args).exec();
+#[cfg(target_os = "linux")]
+fn exec_command(command: &Path, args: Vec<OsString>) -> Result<ExitCode, String> {
+    let error = Command::new(command).args(args).exec();
     Err(format!("failed to exec {}: {error}", command.display()))
 }
 

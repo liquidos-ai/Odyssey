@@ -118,6 +118,12 @@ cargo run -p odyssey-rs -- build ./hello-world --output ./dist
 export OPENAI_API_KEY="your-key"
 cargo run -p odyssey-rs -- run hello-world@latest --prompt "Summarize this bundle"
 ```
+Run the agent in the TUI - The TUI Automatically loads the installed bundles
+
+```bash
+export OPENAI_API_KEY="your-key"
+cargo run --release -p odyssey-rs-tui
+```
 
 ### 4. Inspect installed metadata
 

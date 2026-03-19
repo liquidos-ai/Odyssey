@@ -73,96 +73,89 @@ async fn handle_viewer_input(
     stream_handle: &mut Option<JoinHandle<()>>,
 ) -> anyhow::Result<bool> {
     match key.code {
-        KeyCode::Up => match kind {
-            ViewerKind::Agents => {
-                if app.selected_agent > 0 {
-                    app.selected_agent -= 1;
-                }
-            }
-            ViewerKind::Bundles => {
-                if app.selected_bundle > 0 {
-                    app.selected_bundle -= 1;
-                }
-            }
-            ViewerKind::Sessions => {
-                if app.selected_session > 0 {
-                    app.selected_session -= 1;
-                }
-            }
-            ViewerKind::Skills => app.viewer_scroll_up(1),
-            ViewerKind::Models => {
-                if app.selected_model > 0 {
-                    app.selected_model -= 1;
-                }
-            }
-            ViewerKind::Themes => {
-                if app.selected_theme > 0 {
-                    app.selected_theme -= 1;
-                }
-            }
-        },
-        KeyCode::Down => match kind {
-            ViewerKind::Agents => {
-                if app.selected_agent + 1 < app.agents.len() {
-                    app.selected_agent += 1;
-                }
-            }
-            ViewerKind::Bundles => {
-                if app.selected_bundle + 1 < app.bundles.len() {
-                    app.selected_bundle += 1;
-                }
-            }
-            ViewerKind::Sessions => {
-                if app.selected_session + 1 < app.sessions.len() {
-                    app.selected_session += 1;
-                }
-            }
-            ViewerKind::Skills => app.viewer_scroll_down(1),
-            ViewerKind::Models => {
-                if app.selected_model + 1 < app.models.len() {
-                    app.selected_model += 1;
-                }
-            }
-            ViewerKind::Themes => {
-                if app.selected_theme + 1 < AVAILABLE_THEMES.len() {
-                    app.selected_theme += 1;
-                }
-            }
-        },
+        KeyCode::Up => handle_viewer_up(app, kind),
+        KeyCode::Down => handle_viewer_down(app, kind),
         KeyCode::PageUp => app.viewer_scroll_up(5),
         KeyCode::PageDown => app.viewer_scroll_down(5),
         KeyCode::Home => app.viewer_scroll_up(u16::MAX),
         KeyCode::End => app.viewer_scroll_down(u16::MAX),
-        KeyCode::Enter => match kind {
-            ViewerKind::Agents => {
-                agent::activate_selected_agent(app)?;
-                app.close_viewer();
-            }
-            ViewerKind::Bundles => {
-                bundle::activate_selected_bundle(client, app, sender, stream_handle)
-                    .await
-                    .map_err(anyhow::Error::msg)?;
-                app.close_viewer();
-            }
-            ViewerKind::Sessions => {
-                session::activate_selected_session(client, app, sender, stream_handle).await?;
-                app.close_viewer();
-            }
-            ViewerKind::Models => {
-                model::activate_selected_model(app)?;
-                app.close_viewer();
-            }
-            ViewerKind::Themes => {
-                app.apply_theme_at(app.selected_theme);
-                let name = app.theme.name;
-                app.push_status(format!("theme set: {name}"));
-                app.close_viewer();
-            }
-            ViewerKind::Skills => {}
-        },
+        KeyCode::Enter => {
+            handle_viewer_enter(kind, client, app, sender, stream_handle).await?;
+        }
         _ => {}
     }
     Ok(false)
+}
+
+fn handle_viewer_up(app: &mut App, kind: ViewerKind) {
+    match kind {
+        ViewerKind::Agents => decrement_selection(&mut app.selected_agent),
+        ViewerKind::Bundles => decrement_selection(&mut app.selected_bundle),
+        ViewerKind::Sessions => decrement_selection(&mut app.selected_session),
+        ViewerKind::Skills => app.viewer_scroll_up(1),
+        ViewerKind::Models => decrement_selection(&mut app.selected_model),
+        ViewerKind::Themes => decrement_selection(&mut app.selected_theme),
+    }
+}
+
+fn handle_viewer_down(app: &mut App, kind: ViewerKind) {
+    match kind {
+        ViewerKind::Agents => increment_selection(&mut app.selected_agent, app.agents.len()),
+        ViewerKind::Bundles => increment_selection(&mut app.selected_bundle, app.bundles.len()),
+        ViewerKind::Sessions => increment_selection(&mut app.selected_session, app.sessions.len()),
+        ViewerKind::Skills => app.viewer_scroll_down(1),
+        ViewerKind::Models => increment_selection(&mut app.selected_model, app.models.len()),
+        ViewerKind::Themes => increment_selection(&mut app.selected_theme, AVAILABLE_THEMES.len()),
+    }
+}
+
+async fn handle_viewer_enter(
+    kind: ViewerKind,
+    client: &Arc<AgentRuntimeClient>,
+    app: &mut App,
+    sender: mpsc::Sender<AppEvent>,
+    stream_handle: &mut Option<JoinHandle<()>>,
+) -> anyhow::Result<()> {
+    match kind {
+        ViewerKind::Agents => {
+            agent::activate_selected_agent(app)?;
+            app.close_viewer();
+        }
+        ViewerKind::Bundles => {
+            bundle::activate_selected_bundle(client, app, sender, stream_handle)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            app.close_viewer();
+        }
+        ViewerKind::Sessions => {
+            session::activate_selected_session(client, app, sender, stream_handle).await?;
+            app.close_viewer();
+        }
+        ViewerKind::Models => {
+            model::activate_selected_model(app)?;
+            app.close_viewer();
+        }
+        ViewerKind::Themes => {
+            app.apply_theme_at(app.selected_theme);
+            let name = app.theme.name;
+            app.push_status(format!("theme set: {name}"));
+            app.close_viewer();
+        }
+        ViewerKind::Skills => {}
+    }
+    Ok(())
+}
+
+fn decrement_selection(selected: &mut usize) {
+    if *selected > 0 {
+        *selected -= 1;
+    }
+}
+
+fn increment_selection(selected: &mut usize, len: usize) {
+    if *selected + 1 < len {
+        *selected += 1;
+    }
 }
 
 async fn handle_normal_input(

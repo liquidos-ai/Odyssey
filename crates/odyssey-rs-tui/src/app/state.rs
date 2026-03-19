@@ -490,7 +490,7 @@ mod tests {
     use super::*;
 
     fn make_app() -> App {
-        App::new()
+        App::default()
     }
 
     #[test]

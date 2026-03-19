@@ -9,7 +9,7 @@ pre-commit:
       run: cargo clippy --workspace --all-features --all-targets -- -D warnings
 
     test:
-      run: cargo test --workspace --all-features
+      run: cargo test --workspace --all-features --all-targets
 
     check:
-      run: cargo check --all-features --all-targets
+      run: cargo check --workspace --all-features --all-targets

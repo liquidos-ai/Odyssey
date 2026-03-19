@@ -83,187 +83,173 @@ impl<'t> MdRenderer<'t> {
 
     fn handle(&mut self, event: Event<'_>) {
         match event {
-            // ── Headings ──────────────────────────────────────────────────────
-            Event::Start(Tag::Heading { level, .. }) => {
+            Event::Start(tag) => self.handle_start(tag),
+            Event::End(tag) => self.handle_end(tag),
+            Event::Rule => self.handle_rule(),
+            Event::Code(code) => self.handle_inline_code(code.into_string()),
+            Event::Text(text) => self.handle_text(text.into_string()),
+            Event::SoftBreak => self.handle_soft_break(),
+            Event::HardBreak => self.flush_line(),
+            _ => {}
+        }
+    }
+
+    fn handle_start(&mut self, tag: Tag<'_>) {
+        match tag {
+            Tag::Heading { level, .. } => self.handle_heading_start(level),
+            Tag::Paragraph => self.apply_pending_item_prefix(),
+            Tag::List(start) => {
                 self.flush_line();
-                let style = self.heading_style(level);
-                self.push_style(style);
-                // Visual prefix makes heading level obvious in terminal
-                let prefix = match level {
-                    HeadingLevel::H1 => "# ",
-                    HeadingLevel::H2 => "## ",
-                    HeadingLevel::H3 => "### ",
-                    _ => "#### ",
-                };
-                self.current_spans
-                    .push(Span::styled(prefix, self.cur_style()));
+                self.list_stack.push(start);
             }
-            Event::End(TagEnd::Heading(_)) => {
+            Tag::Item => self.handle_item_start(),
+            Tag::CodeBlock(kind) => self.handle_code_block_start(kind),
+            Tag::BlockQuote(_) => self.handle_block_quote_start(),
+            Tag::Strong => self.push_style(self.cur_style().add_modifier(Modifier::BOLD)),
+            Tag::Emphasis => self.push_style(self.cur_style().add_modifier(Modifier::ITALIC)),
+            Tag::Strikethrough => {
+                self.push_style(self.cur_style().add_modifier(Modifier::CROSSED_OUT))
+            }
+            Tag::Link { .. } => self.push_style(
+                self.cur_style()
+                    .fg(self.theme.primary)
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
+            _ => {}
+        }
+    }
+
+    fn handle_end(&mut self, tag: TagEnd) {
+        match tag {
+            TagEnd::Heading(_) => {
                 self.pop_style();
                 self.flush_line();
                 self.blank_line();
             }
-
-            // ── Paragraphs ────────────────────────────────────────────────────
-            Event::Start(Tag::Paragraph) => {
-                self.apply_pending_item_prefix();
-            }
-            Event::End(TagEnd::Paragraph) => {
+            TagEnd::Paragraph => {
                 self.flush_line();
-                // Only add blank line between top-level paragraphs, not inside list items
                 if self.list_stack.is_empty() {
                     self.blank_line();
                 }
             }
-
-            // ── Lists ─────────────────────────────────────────────────────────
-            Event::Start(Tag::List(start)) => {
-                self.flush_line();
-                self.list_stack.push(start);
-            }
-            Event::End(TagEnd::List(_)) => {
+            TagEnd::List(_) => {
                 self.list_stack.pop();
                 if self.list_stack.is_empty() {
                     self.blank_line();
                 }
             }
-            Event::Start(Tag::Item) => {
-                self.flush_line();
-                let depth = self.list_stack.len().saturating_sub(1);
-                let indent = "  ".repeat(depth);
-                let prefix = match self.list_stack.last_mut() {
-                    Some(Some(n)) => {
-                        let s = format!("{indent}{n}. ");
-                        *n += 1;
-                        s
-                    }
-                    _ => format!("{indent}• "),
-                };
-                self.pending_item_prefix = Some(prefix);
-            }
-            Event::End(TagEnd::Item) => {
-                // Tight list items: text arrives directly without a Paragraph wrapper,
-                // so the prefix may still be pending (empty item) or spans may be buffered.
+            TagEnd::Item => {
                 self.apply_pending_item_prefix();
                 self.flush_line();
             }
-
-            // ── Code blocks ───────────────────────────────────────────────────
-            Event::Start(Tag::CodeBlock(kind)) => {
-                self.flush_line();
-                // Show language tag for fenced blocks
-                if let CodeBlockKind::Fenced(lang) = &kind
-                    && !lang.is_empty()
-                {
-                    let lang_style = Style::default()
-                        .fg(self.theme.text_muted)
-                        .add_modifier(Modifier::ITALIC);
-                    self.lines
-                        .push(Line::from(Span::styled(format!(" {lang}"), lang_style)));
-                }
-                self.in_code_block = true;
-            }
-            Event::End(TagEnd::CodeBlock) => {
+            TagEnd::CodeBlock => {
                 self.in_code_block = false;
                 self.blank_line();
             }
-
-            // ── Block quotes ──────────────────────────────────────────────────
-            Event::Start(Tag::BlockQuote(_)) => {
-                self.flush_line();
-                let style = Style::default()
-                    .fg(self.theme.text_muted)
-                    .add_modifier(Modifier::ITALIC);
-                self.push_style(style);
-                self.current_spans
-                    .push(Span::styled("│ ", self.cur_style()));
-            }
-            Event::End(TagEnd::BlockQuote(_)) => {
+            TagEnd::BlockQuote(_) => {
                 self.pop_style();
                 self.flush_line();
                 self.blank_line();
             }
-
-            // ── Horizontal rule ───────────────────────────────────────────────
-            Event::Rule => {
-                self.flush_line();
-                self.lines.push(Line::from(Span::styled(
-                    "─".repeat(40),
-                    Style::default().fg(self.theme.border),
-                )));
-                self.blank_line();
+            TagEnd::Strong | TagEnd::Emphasis | TagEnd::Strikethrough | TagEnd::Link => {
+                self.pop_style();
             }
-
-            // ── Inline: bold / italic / strikethrough ─────────────────────────
-            Event::Start(Tag::Strong) => {
-                let s = self.cur_style().add_modifier(Modifier::BOLD);
-                self.push_style(s);
-            }
-            Event::End(TagEnd::Strong) => self.pop_style(),
-
-            Event::Start(Tag::Emphasis) => {
-                let s = self.cur_style().add_modifier(Modifier::ITALIC);
-                self.push_style(s);
-            }
-            Event::End(TagEnd::Emphasis) => self.pop_style(),
-
-            Event::Start(Tag::Strikethrough) => {
-                let s = self.cur_style().add_modifier(Modifier::CROSSED_OUT);
-                self.push_style(s);
-            }
-            Event::End(TagEnd::Strikethrough) => self.pop_style(),
-
-            // ── Inline: links ─────────────────────────────────────────────────
-            Event::Start(Tag::Link { .. }) => {
-                let s = self
-                    .cur_style()
-                    .fg(self.theme.primary)
-                    .add_modifier(Modifier::UNDERLINED);
-                self.push_style(s);
-            }
-            Event::End(TagEnd::Link) => self.pop_style(),
-
-            // ── Inline code ───────────────────────────────────────────────────
-            Event::Code(code) => {
-                self.apply_pending_item_prefix();
-                let style = Style::default()
-                    .fg(self.theme.accent)
-                    .bg(self.theme.bg_popup);
-                self.current_spans
-                    .push(Span::styled(code.into_string(), style));
-            }
-
-            // ── Text ──────────────────────────────────────────────────────────
-            Event::Text(text) => {
-                if self.in_code_block {
-                    let code_style = Style::default().fg(self.theme.accent);
-                    let s = text.into_string();
-                    // Code block text typically ends with '\n'; trim it.
-                    let trimmed = s.trim_end_matches('\n');
-                    for line in trimmed.split('\n') {
-                        self.lines
-                            .push(Line::from(Span::styled(line.to_owned(), code_style)));
-                    }
-                } else {
-                    self.apply_pending_item_prefix();
-                    let style = self.cur_style();
-                    self.current_spans
-                        .push(Span::styled(text.into_string(), style));
-                }
-            }
-
-            // ── Breaks ───────────────────────────────────────────────────────
-            Event::SoftBreak => {
-                // Soft breaks become a space; Paragraph handles wrapping.
-                let style = self.cur_style();
-                self.current_spans.push(Span::styled(" ", style));
-            }
-            Event::HardBreak => {
-                self.flush_line();
-            }
-
             _ => {}
         }
+    }
+
+    fn handle_heading_start(&mut self, level: HeadingLevel) {
+        self.flush_line();
+        self.push_style(self.heading_style(level));
+        let prefix = match level {
+            HeadingLevel::H1 => "# ",
+            HeadingLevel::H2 => "## ",
+            HeadingLevel::H3 => "### ",
+            _ => "#### ",
+        };
+        self.current_spans
+            .push(Span::styled(prefix, self.cur_style()));
+    }
+
+    fn handle_item_start(&mut self) {
+        self.flush_line();
+        let depth = self.list_stack.len().saturating_sub(1);
+        let indent = "  ".repeat(depth);
+        let prefix = match self.list_stack.last_mut() {
+            Some(Some(n)) => {
+                let prefix = format!("{indent}{n}. ");
+                *n += 1;
+                prefix
+            }
+            _ => format!("{indent}• "),
+        };
+        self.pending_item_prefix = Some(prefix);
+    }
+
+    fn handle_code_block_start(&mut self, kind: CodeBlockKind<'_>) {
+        self.flush_line();
+        if let CodeBlockKind::Fenced(lang) = &kind
+            && !lang.is_empty()
+        {
+            let lang_style = Style::default()
+                .fg(self.theme.text_muted)
+                .add_modifier(Modifier::ITALIC);
+            self.lines
+                .push(Line::from(Span::styled(format!(" {lang}"), lang_style)));
+        }
+        self.in_code_block = true;
+    }
+
+    fn handle_block_quote_start(&mut self) {
+        self.flush_line();
+        let style = Style::default()
+            .fg(self.theme.text_muted)
+            .add_modifier(Modifier::ITALIC);
+        self.push_style(style);
+        self.current_spans
+            .push(Span::styled("│ ", self.cur_style()));
+    }
+
+    fn handle_rule(&mut self) {
+        self.flush_line();
+        self.lines.push(Line::from(Span::styled(
+            "─".repeat(40),
+            Style::default().fg(self.theme.border),
+        )));
+        self.blank_line();
+    }
+
+    fn handle_inline_code(&mut self, code: String) {
+        self.apply_pending_item_prefix();
+        let style = Style::default()
+            .fg(self.theme.accent)
+            .bg(self.theme.bg_popup);
+        self.current_spans.push(Span::styled(code, style));
+    }
+
+    fn handle_text(&mut self, text: String) {
+        if self.in_code_block {
+            self.push_code_block_lines(&text);
+            return;
+        }
+
+        self.apply_pending_item_prefix();
+        let style = self.cur_style();
+        self.current_spans.push(Span::styled(text, style));
+    }
+
+    fn push_code_block_lines(&mut self, text: &str) {
+        let code_style = Style::default().fg(self.theme.accent);
+        let trimmed = text.trim_end_matches('\n');
+        for line in trimmed.lines() {
+            self.lines
+                .push(Line::from(Span::styled(line.to_owned(), code_style)));
+        }
+    }
+
+    fn handle_soft_break(&mut self) {
+        let style = self.cur_style();
+        self.current_spans.push(Span::styled(" ", style));
     }
 
     fn finish(mut self) -> Vec<Line<'static>> {

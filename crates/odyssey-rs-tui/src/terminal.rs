@@ -10,6 +10,9 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io::{self, Stdout};
 
+const USER_ENV_VAR: &str = "USER";
+const USERNAME_ENV_VAR: &str = "USERNAME";
+
 /// Enter raw mode, switch to the alternate screen, and enable mouse capture.
 pub fn setup_terminal() -> anyhow::Result<Terminal<CrosstermBackend<Stdout>>> {
     debug!("setting up terminal");
@@ -36,7 +39,7 @@ pub fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> an
 
 /// Resolve the current UNIX user name, with a safe fallback.
 pub fn resolve_user_name() -> String {
-    std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
+    std::env::var(USER_ENV_VAR)
+        .or_else(|_| std::env::var(USERNAME_ENV_VAR))
         .unwrap_or_else(|_| "user".to_string())
 }

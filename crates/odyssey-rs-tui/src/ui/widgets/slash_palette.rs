@@ -39,7 +39,7 @@ pub fn draw_slash_palette(frame: &mut Frame<'_>, app: &App, area: Rect) {
         };
 
         let args_text = if entry.args.is_empty() {
-            String::new()
+            String::default()
         } else {
             format!(" {}", entry.args)
         };
