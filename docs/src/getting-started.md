@@ -1,0 +1,101 @@
+# Getting Started
+
+## Prerequisites
+
+- A Rust toolchain
+- An API key for whichever cloud model provider your bundle uses
+
+## Initialize A Bundle
+
+Create a starter bundle project:
+
+```bash
+cargo run -p odyssey-rs -- init ./hello-world
+```
+
+The template creates:
+
+- `odyssey.bundle.json5`
+- `agent.yaml`
+- `README.md`
+- `skills/`
+- `resources/`
+
+The default template uses the `react` executor, the `sliding_window` memory provider, and an OpenAI model entry in `agent.yaml`.
+
+## Build And Install
+
+Build a project and install it into the local bundle store:
+
+```bash
+cargo run -p odyssey-rs -- build ./hello-world
+```
+
+Without `--output`, the CLI installs into the runtime cache under:
+
+```text
+~/.odyssey/bundles/installs/local/<bundle-id>/<version>
+```
+
+Build an OCI-style bundle layout into a custom output directory instead:
+
+```bash
+cargo run -p odyssey-rs -- build ./hello-world --output ./dist
+```
+
+## Run A Prompt
+
+`run` is a one-shot command. It creates a fresh session, sends one prompt, prints the final assistant response, and exits.
+
+```bash
+export OPENAI_API_KEY="your-key"
+cargo run -p odyssey-rs -- run hello-world@latest --prompt "What can you do?"
+```
+
+When you want to bypass sandbox restrictions locally:
+
+```bash
+cargo run -p odyssey-rs -- run hello-world@latest --prompt "What can you do?" --dangerous-sandbox-mode
+```
+
+Inspect installed metadata:
+
+```bash
+cargo run -p odyssey-rs -- inspect hello-world@latest
+```
+
+List installed bundles and saved sessions:
+
+```bash
+cargo run -p odyssey-rs -- bundles
+cargo run -p odyssey-rs -- sessions
+```
+
+## Start The HTTP Runtime
+
+Run the Axum server on the default bind address:
+
+```bash
+cargo run -p odyssey-rs -- serve
+```
+
+Or choose a custom bind address:
+
+```bash
+cargo run -p odyssey-rs -- serve --bind 127.0.0.1:8472
+```
+
+The server exposes bundle and session APIs over HTTP. The CLI can target that server with `--remote` for the subset of commands that support remote execution:
+
+```bash
+cargo run -p odyssey-rs -- --remote http://127.0.0.1:8472 bundles
+cargo run -p odyssey-rs -- --remote http://127.0.0.1:8472 run hello-world@latest --prompt "Summarize yourself"
+```
+
+## Start The TUI
+
+The TUI embeds the runtime directly.
+
+```bash
+cargo run -p odyssey-rs-tui -- --bundle hello-world@latest
+```
