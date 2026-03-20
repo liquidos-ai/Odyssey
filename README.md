@@ -12,7 +12,10 @@
   [![Codecov](https://codecov.io/gh/liquidos-ai/odyssey/graph/badge.svg)](https://codecov.io/gh/liquidos-ai/odyssey)
   [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/liquidos-ai/Odyssey)
 
-  [Documentation](https://liquidos-ai.github.io/odyssey/) | [Docs Index](docs/README.md) | [Architecture](docs/architecture-runtime.md) | [Contributing](CONTRIBUTING.md)
+  [Documentation](https://liquidos-ai.github.io/Odyssey/) | [Contributing](CONTRIBUTING.md)
+  
+  <br />
+  <strong>Like this project?</strong> <a href="https://github.com/liquidos-ai/Odyssey">Star us on GitHub</a>
 </div>
 
 ---
