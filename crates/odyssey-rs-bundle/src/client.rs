@@ -1,13 +1,13 @@
 use crate::build::BundleMetadata;
+use crate::layout::{BundleConfig, OCI_INDEX_MEDIA_TYPE, OCI_MANIFEST_MEDIA_TYPE, REF_ANNOTATION};
 use base64::Engine;
 use reqwest::{StatusCode, Url};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::env;
 use thiserror::Error;
 
 const HUB_TOKEN_ENV: &str = "ODYSSEY_HUB_TOKEN";
-const HUB_USERNAME_ENV: &str = "ODYSSEY_HUB_USERNAME";
-const HUB_PASSWORD_ENV: &str = "ODYSSEY_HUB_PASSWORD";
 
 #[derive(Debug, Error)]
 pub enum HubClientError {
@@ -22,7 +22,7 @@ pub enum HubClientError {
 #[derive(Clone)]
 pub(crate) struct HubClient {
     base_url: Url,
-    auth: HubAuth,
+    token: Option<String>,
     http: reqwest::Client,
 }
 
@@ -59,26 +59,29 @@ pub(crate) struct BlobPayload {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PullBundleResponse {
-    #[serde(with = "base64_bytes")]
     pub manifest_bytes: Vec<u8>,
-    #[serde(with = "base64_bytes")]
     pub index_bytes: Vec<u8>,
-    #[serde(with = "base64_bytes")]
     pub config_bytes: Vec<u8>,
     pub metadata: BundleMetadata,
     pub layers: Vec<BlobPayload>,
 }
 
 #[derive(Debug, Deserialize)]
-struct PublishBundleResponse {
-    metadata: BundleMetadata,
+#[serde(rename_all = "camelCase")]
+struct HubPullBundleResponse {
+    #[serde(with = "base64_bytes")]
+    manifest_bytes: Vec<u8>,
+    #[serde(with = "base64_bytes")]
+    config_bytes: Vec<u8>,
+    layers: Vec<BlobPayload>,
+    version: HubArtifactVersion,
 }
 
-#[derive(Debug, Clone)]
-enum HubAuth {
-    Anonymous,
-    Basic(String, String),
-    Bearer(String),
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HubArtifactVersion {
+    version: String,
+    manifest_digest: String,
 }
 
 impl HubClient {
@@ -91,20 +94,21 @@ impl HubClient {
             ));
         }
 
-        let auth = auth_from_url(&url);
         if !url.username().is_empty() {
-            url.set_username("")
-                .map_err(|_| HubClientError::InvalidHubUrl("invalid username".to_string()))?;
+            return Err(HubClientError::InvalidHubUrl(
+                "hub URL must not include a username".to_string(),
+            ));
         }
         if url.password().is_some() {
-            url.set_password(None)
-                .map_err(|_| HubClientError::InvalidHubUrl("invalid password".to_string()))?;
+            return Err(HubClientError::InvalidHubUrl(
+                "hub URL must not include a password".to_string(),
+            ));
         }
         url.set_path("");
 
         Ok(Self {
             base_url: url,
-            auth,
+            token: hub_token(),
             http: reqwest::Client::new(),
         })
     }
@@ -113,10 +117,11 @@ impl HubClient {
         &self,
         request: PublishBundleRequest,
     ) -> Result<BundleMetadata, HubClientError> {
+        let metadata = request.metadata.clone();
         let response = self
             .with_auth(
                 self.http
-                    .post(self.endpoint("api/v1/bundles/publish")?)
+                    .post(self.endpoint("api/v1/artifacts/publish")?)
                     .json(&request),
             )
             .send()
@@ -124,7 +129,7 @@ impl HubClient {
         if !response.status().is_success() {
             return Err(http_status(response).await);
         }
-        Ok(response.json::<PublishBundleResponse>().await?.metadata)
+        Ok(metadata)
     }
 
     pub(crate) async fn pull_bundle(
@@ -134,7 +139,7 @@ impl HubClient {
         let response = self
             .with_auth(
                 self.http
-                    .post(self.endpoint("api/v1/bundles/pull")?)
+                    .post(self.endpoint("api/v1/artifacts/pull")?)
                     .json(&request),
             )
             .send()
@@ -142,10 +147,30 @@ impl HubClient {
         if !response.status().is_success() {
             return Err(http_status(response).await);
         }
-        response
-            .json::<PullBundleResponse>()
-            .await
-            .map_err(Into::into)
+        let response = response.json::<HubPullBundleResponse>().await?;
+        let config: BundleConfig = serde_json::from_slice(&response.config_bytes)
+            .map_err(|err| HubClientError::InvalidHubUrl(err.to_string()))?;
+        let metadata = BundleMetadata {
+            namespace: config.namespace.clone(),
+            id: config.id.clone(),
+            version: config.version.clone(),
+            digest: response.version.manifest_digest.clone(),
+            bundle_manifest: config.bundle_manifest,
+            agent_spec: config.agent_spec,
+        };
+        Ok(PullBundleResponse {
+            index_bytes: build_index_bytes(
+                &request.repository,
+                request.tag.as_deref().unwrap_or(&response.version.version),
+                &response.version.manifest_digest,
+                response.manifest_bytes.len(),
+                request.digest.is_some(),
+            )?,
+            manifest_bytes: response.manifest_bytes,
+            config_bytes: response.config_bytes,
+            metadata,
+            layers: response.layers,
+        })
     }
 
     fn endpoint(&self, path: &str) -> Result<Url, HubClientError> {
@@ -155,10 +180,9 @@ impl HubClient {
     }
 
     fn with_auth(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match &self.auth {
-            HubAuth::Anonymous => request,
-            HubAuth::Basic(username, password) => request.basic_auth(username, Some(password)),
-            HubAuth::Bearer(token) => request.bearer_auth(token),
+        match &self.token {
+            Some(token) => request.bearer_auth(token),
+            None => request,
         }
     }
 }
@@ -169,28 +193,37 @@ async fn http_status(response: reqwest::Response) -> HubClientError {
     HubClientError::HttpStatus { status, message }
 }
 
-fn auth_from_url(url: &Url) -> HubAuth {
-    if !url.username().is_empty() {
-        return HubAuth::Basic(
-            url.username().to_string(),
-            url.password().unwrap_or_default().to_string(),
-        );
-    }
-    if let Some(token) = env::var(HUB_TOKEN_ENV)
+fn hub_token() -> Option<String> {
+    env::var(HUB_TOKEN_ENV)
         .ok()
         .filter(|value| !value.is_empty())
-    {
-        return HubAuth::Bearer(token);
-    }
-    match (
-        env::var(HUB_USERNAME_ENV).ok(),
-        env::var(HUB_PASSWORD_ENV).ok(),
-    ) {
-        (Some(username), Some(password)) if !username.is_empty() => {
-            HubAuth::Basic(username, password)
-        }
-        _ => HubAuth::Anonymous,
-    }
+}
+
+fn build_index_bytes(
+    repository: &str,
+    version: &str,
+    manifest_digest: &str,
+    manifest_size: usize,
+    pull_by_digest: bool,
+) -> Result<Vec<u8>, HubClientError> {
+    let reference_name = if pull_by_digest {
+        format!("{repository}@{manifest_digest}")
+    } else {
+        format!("{repository}:{version}")
+    };
+    serde_json::to_vec_pretty(&json!({
+        "schemaVersion": 2,
+        "mediaType": OCI_INDEX_MEDIA_TYPE,
+        "manifests": [{
+            "mediaType": OCI_MANIFEST_MEDIA_TYPE,
+            "digest": manifest_digest,
+            "size": manifest_size,
+            "annotations": {
+                REF_ANNOTATION: reference_name,
+            }
+        }]
+    }))
+    .map_err(|err| HubClientError::InvalidHubUrl(err.to_string()))
 }
 
 mod base64_bytes {
@@ -217,23 +250,29 @@ mod base64_bytes {
 
 #[cfg(test)]
 mod tests {
-    use super::{HubClient, HubClientError, auth_from_url};
+    use super::{HUB_TOKEN_ENV, HubClient, HubClientError, hub_token};
     use pretty_assertions::assert_eq;
     use reqwest::Url;
+    use std::env;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
-    fn hub_url_parsing_supports_http_https_and_basic_auth() {
-        let client = HubClient::from_hub_url("http://user:pass@localhost:8473").expect("client");
+    fn hub_url_parsing_supports_http_and_https() {
+        let client = HubClient::from_hub_url("http://localhost:8473").expect("client");
 
         assert_eq!(
-            client.endpoint("api/v1/bundles/publish").expect("endpoint"),
-            "http://localhost:8473/api/v1/bundles/publish"
+            client
+                .endpoint("api/v1/artifacts/publish")
+                .expect("endpoint"),
+            "http://localhost:8473/api/v1/artifacts/publish"
                 .parse::<Url>()
                 .expect("url")
         );
-
-        let auth = auth_from_url(&"https://registry.example.com".parse::<Url>().expect("url"));
-        assert_eq!(format!("{auth:?}"), "Anonymous");
     }
 
     #[test]
@@ -246,5 +285,40 @@ mod tests {
             HubClientError::InvalidHubUrl("hub URL must not include a path".to_string())
                 .to_string()
         );
+    }
+
+    #[test]
+    fn hub_url_rejects_embedded_credentials() {
+        let error = HubClient::from_hub_url("http://user:pass@localhost:8473")
+            .err()
+            .expect("credentials should fail");
+        assert_eq!(
+            error.to_string(),
+            HubClientError::InvalidHubUrl("hub URL must not include a username".to_string())
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn hub_token_uses_non_empty_env_value() {
+        let _guard = env_lock().lock().expect("env lock");
+        unsafe {
+            env::remove_var(HUB_TOKEN_ENV);
+        }
+        assert_eq!(hub_token(), None);
+
+        unsafe {
+            env::set_var(HUB_TOKEN_ENV, "");
+        }
+        assert_eq!(hub_token(), None);
+
+        unsafe {
+            env::set_var(HUB_TOKEN_ENV, "token-value");
+        }
+        assert_eq!(hub_token(), Some("token-value".to_string()));
+
+        unsafe {
+            env::remove_var(HUB_TOKEN_ENV);
+        }
     }
 }

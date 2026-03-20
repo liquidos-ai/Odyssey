@@ -156,6 +156,12 @@ async fn publish_and_pull_round_trip_through_hub_api() {
         .await
         .expect("pull by digest");
     assert_eq!(by_digest.metadata.digest, published.digest);
+
+    let by_latest = consumer_store
+        .pull("team/demo@latest", &hub_url)
+        .await
+        .expect("pull latest");
+    assert_eq!(by_latest.metadata.digest, published.digest);
 }
 
 #[tokio::test]
@@ -264,8 +270,8 @@ async fn start_failing_hub(status: StatusCode, body: serde_json::Value) -> Strin
     let addr = listener.local_addr().expect("listener addr");
     let server: JoinHandle<()> = tokio::spawn(async move {
         let app = Router::new()
-            .route("/api/v1/bundles/publish", post(fail_publish_bundle))
-            .route("/api/v1/bundles/pull", post(fail_pull_bundle))
+            .route("/api/v1/artifacts/publish", post(fail_publish_bundle))
+            .route("/api/v1/artifacts/pull", post(fail_pull_bundle))
             .with_state(FailingHubState { status, body });
         axum::serve(listener, app).await.expect("serve failing hub");
     });
@@ -282,9 +288,6 @@ struct HubState {
 
 #[derive(Clone)]
 struct StoredBundle {
-    repository: String,
-    tag: String,
-    manifest_digest: String,
     manifest_bytes: Vec<u8>,
     config_bytes: Vec<u8>,
     metadata: BundleMetadata,
@@ -299,8 +302,8 @@ struct FailingHubState {
 
 fn hub_app() -> Router {
     Router::new()
-        .route("/api/v1/bundles/publish", post(publish_bundle))
-        .route("/api/v1/bundles/pull", post(pull_bundle))
+        .route("/api/v1/artifacts/publish", post(publish_bundle))
+        .route("/api/v1/artifacts/pull", post(pull_bundle))
         .with_state(HubState::default())
 }
 
@@ -309,9 +312,6 @@ async fn publish_bundle(
     Json(request): Json<PublishBundleRequest>,
 ) -> impl IntoResponse {
     let stored = StoredBundle {
-        repository: request.repository.clone(),
-        tag: request.tag.clone(),
-        manifest_digest: request.manifest_digest.clone(),
         manifest_bytes: request.manifest_bytes,
         config_bytes: request.config_bytes,
         metadata: request.metadata.clone(),
@@ -328,9 +328,16 @@ async fn publish_bundle(
     );
 
     (
-        StatusCode::OK,
+        StatusCode::CREATED,
         Json(json!({
-            "metadata": stored.metadata,
+            "artifact": {
+                "ownerHandle": stored.metadata.namespace,
+                "name": stored.metadata.id,
+            },
+            "version": {
+                "version": stored.metadata.version,
+                "manifestDigest": stored.metadata.digest,
+            },
         })),
     )
 }
@@ -356,7 +363,19 @@ async fn pull_bundle(
         .expect("digest lock")
         .get(&key)
         .cloned()
-        .or_else(|| state.by_tag.lock().expect("tag lock").get(&key).cloned());
+        .or_else(|| {
+            if request.tag.as_deref() == Some("latest") {
+                state
+                    .by_tag
+                    .lock()
+                    .expect("tag lock")
+                    .values()
+                    .max_by(|a, b| a.metadata.version.cmp(&b.metadata.version))
+                    .cloned()
+            } else {
+                state.by_tag.lock().expect("tag lock").get(&key).cloned()
+            }
+        });
 
     let Some(bundle) = bundle else {
         return (
@@ -365,32 +384,19 @@ async fn pull_bundle(
         );
     };
 
-    let reference_name = if request.digest.is_some() {
-        format!("{}@{}", bundle.repository, bundle.manifest_digest)
-    } else {
-        format!("{}:{}", bundle.repository, bundle.tag)
-    };
-    let index_bytes = serde_json::to_vec_pretty(&json!({
-        "schemaVersion": 2,
-        "mediaType": "application/vnd.oci.image.index.v1+json",
-        "manifests": [{
-            "mediaType": "application/vnd.oci.image.manifest.v1+json",
-            "digest": bundle.manifest_digest,
-            "size": bundle.manifest_bytes.len(),
-            "annotations": {
-                "org.opencontainers.image.ref.name": reference_name
-            }
-        }]
-    }))
-    .expect("index bytes");
-
     (
         StatusCode::OK,
         Json(json!({
+            "artifact": {
+                "ownerHandle": bundle.metadata.namespace,
+                "name": bundle.metadata.id,
+            },
+            "version": {
+                "version": bundle.metadata.version,
+                "manifestDigest": bundle.metadata.digest,
+            },
             "manifestBytes": encode(&bundle.manifest_bytes),
-            "indexBytes": encode(&index_bytes),
             "configBytes": encode(&bundle.config_bytes),
-            "metadata": bundle.metadata,
             "layers": bundle.layers,
         })),
     )
