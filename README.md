@@ -244,6 +244,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --all-features
 ```
 
+### Coverage
+
+```bash
+cargo tarpaulin --engine llvm --skip-clean --workspace --all-features --timeout 120 --out Xml --ignore-panics
+```
+
 ## Documentation
 
 - [Docs index](docs/README.md)

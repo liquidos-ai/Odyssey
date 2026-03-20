@@ -501,4 +501,112 @@ tools:
             .expect("delete session response");
         assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
     }
+
+    #[tokio::test]
+    async fn distribution_routes_map_publish_and_pull_failures() {
+        let temp = tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        fs::create_dir_all(&project_root).expect("create project root");
+        write_bundle_project(&project_root);
+
+        let runtime = Arc::new(RuntimeEngine::new(runtime_config(temp.path())).expect("runtime"));
+        let app = router(AppState {
+            runtime: runtime.clone(),
+            bundles: runtime.bundle_store(),
+            hub_url: "http://127.0.0.1:9".to_string(),
+        });
+
+        let publish = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/bundles/publish")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "source": project_root,
+                            "target": "demo:0.1.0"
+                        }))
+                        .expect("serialize publish request"),
+                    ))
+                    .expect("publish request"),
+            )
+            .await
+            .expect("publish response");
+        assert_eq!(publish.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(
+            String::from_utf8(
+                to_bytes(publish.into_body(), usize::MAX)
+                    .await
+                    .expect("publish body")
+                    .to_vec()
+            )
+            .expect("publish text"),
+            "invalid bundle: publish target must be a namespaced remote reference"
+        );
+
+        let pull = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/bundles/pull")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "reference": "team/:0.1.0"
+                        }))
+                        .expect("serialize pull request"),
+                    ))
+                    .expect("pull request"),
+            )
+            .await
+            .expect("pull response");
+        assert_eq!(pull.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            String::from_utf8(
+                to_bytes(pull.into_body(), usize::MAX)
+                    .await
+                    .expect("pull body")
+                    .to_vec()
+            )
+            .expect("pull text"),
+            "invalid bundle: remote reference missing repository"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_routes_return_empty_arrays_for_fresh_runtime() {
+        let temp = tempdir().expect("tempdir");
+        let runtime = Arc::new(RuntimeEngine::new(runtime_config(temp.path())).expect("runtime"));
+        let app = router(AppState {
+            runtime: runtime.clone(),
+            bundles: runtime.bundle_store(),
+            hub_url: runtime.config().hub_url.clone(),
+        });
+
+        let bundles = json_response(
+            app.clone(),
+            Request::builder()
+                .method(Method::GET)
+                .uri("/bundles")
+                .body(Body::empty())
+                .expect("bundles request"),
+            StatusCode::OK,
+        )
+        .await;
+        let sessions = json_response(
+            app,
+            Request::builder()
+                .method(Method::GET)
+                .uri("/sessions")
+                .body(Body::empty())
+                .expect("sessions request"),
+            StatusCode::OK,
+        )
+        .await;
+
+        assert_eq!(bundles, serde_json::json!([]));
+        assert_eq!(sessions, serde_json::json!([]));
+    }
 }

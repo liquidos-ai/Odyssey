@@ -158,6 +158,91 @@ async fn publish_and_pull_round_trip_through_hub_api() {
     assert_eq!(by_digest.metadata.digest, published.digest);
 }
 
+#[tokio::test]
+async fn publish_requires_namespaced_remote_target_for_project_sources() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("project");
+    fs::create_dir_all(&project_root).expect("create project");
+    write_bundle_project(&project_root);
+
+    let store = BundleStore::new(temp.path().join("store"));
+    let error = store
+        .publish(
+            project_root.to_str().expect("project root path"),
+            "demo:0.1.0",
+            "http://127.0.0.1:8473",
+        )
+        .await
+        .expect_err("publish without namespace should fail");
+
+    assert_eq!(
+        error.to_string(),
+        "invalid bundle: publish target must be a namespaced remote reference"
+    );
+}
+
+#[tokio::test]
+async fn publish_surfaces_hub_http_failures() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("project");
+    fs::create_dir_all(&project_root).expect("create project");
+    write_bundle_project(&project_root);
+
+    let store = BundleStore::new(temp.path().join("store"));
+    let hub_url =
+        start_failing_hub(StatusCode::BAD_REQUEST, json!({ "error": "bad bundle" })).await;
+    let error = store
+        .publish(
+            project_root.to_str().expect("project root path"),
+            "team/demo:0.1.0",
+            &hub_url,
+        )
+        .await
+        .expect_err("publish should fail");
+
+    assert_eq!(
+        error.to_string(),
+        "http error: hub returned 400 Bad Request: {\"error\":\"bad bundle\"}"
+    );
+}
+
+#[tokio::test]
+async fn pull_rejects_non_remote_references() {
+    let temp = tempdir().expect("tempdir");
+    let store = BundleStore::new(temp.path().join("store"));
+
+    let error = store
+        .pull("team/:0.1.0", "http://127.0.0.1:8473")
+        .await
+        .expect_err("invalid remote reference should fail");
+
+    assert_eq!(
+        error.to_string(),
+        "invalid bundle: remote reference missing repository"
+    );
+}
+
+#[tokio::test]
+async fn pull_surfaces_hub_http_failures() {
+    let temp = tempdir().expect("tempdir");
+    let store = BundleStore::new(temp.path().join("store"));
+    let hub_url = start_failing_hub(
+        StatusCode::NOT_FOUND,
+        json!({ "error": "bundle not found" }),
+    )
+    .await;
+
+    let error = store
+        .pull("team/demo:0.1.0", &hub_url)
+        .await
+        .expect_err("pull should fail");
+
+    assert_eq!(
+        error.to_string(),
+        "http error: hub returned 404 Not Found: {\"error\":\"bundle not found\"}"
+    );
+}
+
 async fn start_hub() -> String {
     let app = hub_app();
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -166,6 +251,23 @@ async fn start_hub() -> String {
     let addr = listener.local_addr().expect("listener addr");
     let server: JoinHandle<()> = tokio::spawn(async move {
         axum::serve(listener, app).await.expect("serve hub");
+    });
+    sleep(Duration::from_millis(25)).await;
+    drop(server);
+    format!("http://{addr}")
+}
+
+async fn start_failing_hub(status: StatusCode, body: serde_json::Value) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let server: JoinHandle<()> = tokio::spawn(async move {
+        let app = Router::new()
+            .route("/api/v1/bundles/publish", post(fail_publish_bundle))
+            .route("/api/v1/bundles/pull", post(fail_pull_bundle))
+            .with_state(FailingHubState { status, body });
+        axum::serve(listener, app).await.expect("serve failing hub");
     });
     sleep(Duration::from_millis(25)).await;
     drop(server);
@@ -187,6 +289,12 @@ struct StoredBundle {
     config_bytes: Vec<u8>,
     metadata: BundleMetadata,
     layers: Vec<BlobPayload>,
+}
+
+#[derive(Clone)]
+struct FailingHubState {
+    status: StatusCode,
+    body: serde_json::Value,
 }
 
 fn hub_app() -> Router {
@@ -286,6 +394,14 @@ async fn pull_bundle(
             "layers": bundle.layers,
         })),
     )
+}
+
+async fn fail_publish_bundle(State(state): State<FailingHubState>) -> impl IntoResponse {
+    (state.status, Json(state.body))
+}
+
+async fn fail_pull_bundle(State(state): State<FailingHubState>) -> impl IntoResponse {
+    (state.status, Json(state.body))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
