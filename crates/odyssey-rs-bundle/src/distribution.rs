@@ -32,6 +32,22 @@ pub async fn publish_layout(
     let client = HubClient::from_hub_url(hub_url).map_err(hub_err)?;
     let (_, manifest, manifest_digest) = read_manifest(bundle_path)?;
     let config = read_config(bundle_path, &manifest)?;
+    if let Some(id) = target.id.as_ref()
+        && id != &config.id
+    {
+        return Err(BundleError::Invalid(format!(
+            "publish target id {id} does not match bundle id {}",
+            config.id
+        )));
+    }
+    if let Some(version) = target.version.as_ref()
+        && version != &config.version
+    {
+        return Err(BundleError::Invalid(format!(
+            "publish target version {version} does not match bundle version {}",
+            config.version
+        )));
+    }
     let config_bytes = read_blob(bundle_path, &manifest.config.digest)?;
     let metadata = BundleMetadata {
         namespace: target
@@ -109,7 +125,9 @@ pub async fn pull_layout(
 
 fn hub_err(err: HubClientError) -> BundleError {
     match err {
-        HubClientError::InvalidHubUrl(message) => BundleError::Invalid(message),
+        HubClientError::InvalidHubUrl(message) | HubClientError::InvalidResponse(message) => {
+            BundleError::Invalid(message)
+        }
         HubClientError::Transport(source) => BundleError::Http(source.to_string()),
         HubClientError::HttpStatus { status, message } => {
             BundleError::Http(format!("hub returned {status}: {message}"))

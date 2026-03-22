@@ -17,7 +17,10 @@ use crate::{
         prompt::build_system_prompt,
         tool_event::{RuntimeApprovalHandler, RuntimeToolEventSink},
     },
-    sandbox::{build_permission_rules, build_sandbox_runtime, prepare_cell},
+    sandbox::{
+        PreparedToolSandbox, build_permission_rules, build_sandbox_runtime, prepare_cell,
+        prepare_operator_command_cell,
+    },
     session::{SessionRecord, TurnChatMessageRecord, TurnRecord},
     skill::BundleSkillStore,
     tool::select_tools,
@@ -83,20 +86,7 @@ impl ScheduleExecutor {
         let session_id = session.id;
         let mode_override = self.runtime.config.sandbox_mode_override;
         let mode = effective_sandbox_mode(&resolved.manifest, mode_override);
-        let sandbox_runtime = if mode == SandboxMode::DangerFullAccess {
-            &self.runtime.host_sandbox
-        } else {
-            &Arc::new(build_sandbox_runtime(&self.runtime.config, mode)?)
-        };
-        let cell = prepare_cell(
-            sandbox_runtime,
-            session_id,
-            &resolved.agent.id,
-            &resolved.install_path,
-            &resolved.manifest,
-            mode_override,
-        )
-        .await?;
+        let cell = prepare_resolved_agent_cell(&self.runtime, &resolved, session_id).await?;
         let permissions = build_permission_rules(&resolved.manifest);
         let event_sink = Arc::new(RuntimeToolEventSink {
             session_id,
@@ -168,7 +158,53 @@ fn collect_turn_chat_history(
     collector.finish(response)
 }
 
-fn effective_sandbox_mode(
+pub(crate) async fn prepare_resolved_agent_cell(
+    runtime: &Arc<OdysseyRuntimeInner>,
+    resolved: &ResolvedAgentSpec,
+    session_id: Uuid,
+) -> Result<PreparedToolSandbox, RuntimeError> {
+    let mode = effective_sandbox_mode(&resolved.manifest, runtime.config.sandbox_mode_override);
+    let sandbox_runtime = if mode == SandboxMode::DangerFullAccess {
+        runtime.host_sandbox.clone()
+    } else {
+        Arc::new(build_sandbox_runtime(&runtime.config, mode)?)
+    };
+
+    prepare_cell(
+        &sandbox_runtime,
+        session_id,
+        &resolved.agent.id,
+        &resolved.install_path,
+        &resolved.manifest,
+        runtime.config.sandbox_mode_override,
+    )
+    .await
+}
+
+pub(crate) async fn prepare_resolved_agent_command_cell(
+    runtime: &Arc<OdysseyRuntimeInner>,
+    resolved: &ResolvedAgentSpec,
+    session_id: Uuid,
+) -> Result<PreparedToolSandbox, RuntimeError> {
+    let mode = effective_sandbox_mode(&resolved.manifest, runtime.config.sandbox_mode_override);
+    let sandbox_runtime = if mode == SandboxMode::DangerFullAccess {
+        runtime.host_sandbox.clone()
+    } else {
+        Arc::new(build_sandbox_runtime(&runtime.config, mode)?)
+    };
+
+    prepare_operator_command_cell(
+        &sandbox_runtime,
+        session_id,
+        &resolved.agent.id,
+        &resolved.install_path,
+        &resolved.manifest,
+        runtime.config.sandbox_mode_override,
+    )
+    .await
+}
+
+pub(crate) fn effective_sandbox_mode(
     manifest: &odyssey_rs_manifest::BundleManifest,
     override_mode: Option<SandboxMode>,
 ) -> SandboxMode {

@@ -25,7 +25,7 @@
         exec: [],
         mounts: { read: [], write: [] }
       },
-      network: [],
+      network: ["*"],
       tools: {
         mode: 'default',
         rules: [
@@ -39,7 +39,8 @@
         ]
       }
     },
-    system_tools: ['bash'],
+    system_tools_mode: 'standard',
+    system_tools: [],
     resources: { cpu: 1, memory_mb: 512, gpu: 0 }
   }
 }

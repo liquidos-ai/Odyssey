@@ -49,6 +49,7 @@ default template:
         rules: []
       }
     },
+    system_tools_mode: 'explicit',
     system_tools: [],
     resources: { cpu: 1, memory_mb: 512, gpu: 0 }
   }
@@ -75,13 +76,14 @@ default template:
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `mode` | string | `"workspace_write"` | Isolation mode: `read_only`, `workspace_write`, or `danger_full_access` |
-| `permissions.filesystem.exec` | string[] | `[]` | Executable paths |
+| `permissions.filesystem.exec` | string[] | `[]` | Executable paths under the staged bundle root |
 | `permissions.filesystem.mounts.read` | string[] | `[]` | Read-only host mount paths (must be absolute) |
 | `permissions.filesystem.mounts.write` | string[] | `[]` | Read-write host mount paths (must be absolute) |
-| `permissions.network` | string[] | `[]` | Network whitelist (empty = no network access) |
+| `permissions.network` | string[] | `[]` | `[]` disables network; `["*"]` enables unrestricted outbound network |
 | `permissions.tools.mode` | string | `"default"` | Tool permission mode |
 | `permissions.tools.rules` | array | `[]` | Per-tool rules (`{ action, tool }` where action is `allow`, `ask`, or `deny`) |
-| `system_tools` | string[] | `[]` | System tool identifiers |
+| `system_tools_mode` | string | `"explicit"` | Host executable policy: `explicit`, `standard`, or `all` |
+| `system_tools` | string[] | `[]` | Host executable names that process-execution tools may run via `PATH` |
 | `resources.cpu` | number | `1` | CPU limit |
 | `resources.memory_mb` | number | `512` | Memory limit in MB |
 | `resources.gpu` | number | `0` | GPU limit |
@@ -94,6 +96,8 @@ default template:
 - `readme` must point to an existing file inside the project
 - Each skill path must exist inside the project
 - Host mount paths in `sandbox.permissions.filesystem.mounts.read` and `.write` must be absolute
+- `sandbox.permissions.network` only supports `[]` or `["*"]` in v1
+- `sandbox.system_tools_mode` must be one of `explicit`, `standard`, or `all`
 - Tool entries must use `source: "builtin"`
 
 ### Current implementation limits
@@ -101,6 +105,8 @@ default template:
 - `executor.id = "react"` is the only executor implemented by the runtime
 - `memory.id = "sliding_window"` is the only memory provider implemented
 - Only `source: "builtin"` tools are supported (no custom tools in v1)
+- Network hostname allowlists are not implemented in v1; network policy is either disabled or unrestricted
+- `system_tools_mode: "all"` allows sandboxed process execution to resolve any executable path the sandbox can see, so it should only be used for trusted workspace agents
 
 ## Agent Spec
 
@@ -135,10 +141,10 @@ tools:
 
 ## Build Output Layout
 
-`odyssey-rs-bundle` materializes an installable bundle layout (OCI-compliant):
+`odyssey-rs-bundle` materializes an OCI bundle layout when building directly:
 
 ```text
-<install-root>/
+<bundle-layout-root>/
   agent.yaml
   bundle.json
   index.json
@@ -148,10 +154,26 @@ tools:
   skills/
 ```
 
+When a bundle is installed into the local store, the runtime-visible files stay at install root and
+the OCI metadata moves under `.odyssey/`:
+
+```text
+<install-root>/
+  agent.yaml
+  resources/
+  skills/
+  .odyssey/
+    bundle.json
+    index.json
+    oci-layout
+    blobs/
+```
+
 Build behavior that matters when authoring bundles:
 
 - The agent spec file is copied into the built layout as `agent.yaml`
 - The README file is copied into the built layout at the manifest-defined `readme` path
 - Each skill entry is copied into `skills/<skill.name>`
 - The `resources/` directory, when present, is copied into the built layout as `resources/`
+- Installed bundles keep OCI metadata and blobs under `.odyssey/` so the install root stays focused on runtime-visible files
 - The manifest (`odyssey.bundle.json5`) is not included in the payload layer

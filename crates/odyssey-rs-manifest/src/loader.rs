@@ -107,6 +107,7 @@ impl<'a> BundleLoader<'a> {
         for path in &manifest.sandbox.permissions.filesystem.mounts.write {
             ensure_absolute_mount(self.root, path, "write mount")?;
         }
+        validate_network_permissions(self.root, &manifest.sandbox.permissions.network)?;
         Ok(())
     }
 }
@@ -143,6 +144,21 @@ fn ensure_absolute_mount(root: &Path, value: &str, label: &str) -> Result<(), Ma
         return invalid(root, &format!("{label} must be an absolute host path"));
     }
     Ok(())
+}
+
+fn validate_network_permissions(root: &Path, values: &[String]) -> Result<(), ManifestError> {
+    if values.is_empty() {
+        return Ok(());
+    }
+
+    if values.len() == 1 && values[0] == "*" {
+        return Ok(());
+    }
+
+    invalid(
+        root,
+        "sandbox.permissions.network only supports [] or [\"*\"] in v1",
+    )
 }
 
 fn invalid(root: &Path, message: &str) -> Result<(), ManifestError> {
@@ -194,6 +210,44 @@ mod tests {
         let (manifest, agent) = bundle_loader.load_project().expect("project");
         assert_eq!(manifest.executor.id, "react");
         assert_eq!(agent.id, "demo");
+    }
+
+    #[test]
+    fn load_project_rejects_network_allowlists() {
+        let temp = tempdir().expect("tempdir");
+        fs::write(
+            temp.path().join("odyssey.bundle.json5"),
+            r#"{
+                id: 'demo',
+                version: '0.1.0',
+                manifest_version: 'odyssey.bundle/v1',
+                readme: 'README.md',
+                agent_spec: 'agent.yaml',
+                executor: { type: 'prebuilt', id: 'react' },
+                memory: { type: 'prebuilt', id: 'sliding_window' },
+                sandbox: {
+                    permissions: {
+                        filesystem: { exec: [], mounts: { read: [], write: [] } },
+                        network: ['wttr.in'],
+                        tools: { mode: 'default', rules: [] }
+                    },
+                    system_tools: [],
+                    resources: {}
+                }
+            }"#,
+        )
+        .expect("write manifest");
+        fs::write(temp.path().join("README.md"), "hello").expect("write readme");
+        fs::write(
+            temp.path().join("agent.yaml"),
+            "id: demo\nmodel:\n  provider: openai\n  name: gpt-5\nprompt: hi\n",
+        )
+        .expect("write agent");
+
+        let error = BundleLoader::new(temp.path())
+            .load_project()
+            .expect_err("network allowlist rejected");
+        assert!(error.to_string().contains("only supports [] or [\"*\"]"));
     }
 
     #[test]

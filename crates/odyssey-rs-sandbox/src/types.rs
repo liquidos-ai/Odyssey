@@ -41,6 +41,7 @@ pub struct SandboxFilesystemPolicy {
     pub read_roots: Vec<String>,
     pub write_roots: Vec<String>,
     pub exec_roots: Vec<String>,
+    pub exec_allow_all: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -79,20 +80,12 @@ pub enum SandboxNetworkMode {
     Disabled,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CommandLandlockPolicy {
-    pub read_roots: Vec<PathBuf>,
-    pub write_roots: Vec<PathBuf>,
-    pub exec_roots: Vec<PathBuf>,
-}
-
 #[derive(Debug, Clone)]
 pub struct CommandSpec {
     pub command: PathBuf,
     pub args: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub env: BTreeMap<String, String>,
-    pub landlock: Option<CommandLandlockPolicy>,
 }
 
 impl CommandSpec {
@@ -102,7 +95,6 @@ impl CommandSpec {
             args: Vec::new(),
             cwd: None,
             env: BTreeMap::new(),
-            landlock: None,
         }
     }
 }
@@ -134,7 +126,7 @@ pub struct SandboxSupport {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommandLandlockPolicy, CommandSpec, SandboxNetworkMode, SandboxNetworkPolicy};
+    use super::{CommandSpec, SandboxNetworkMode, SandboxNetworkPolicy};
     use pretty_assertions::assert_eq;
     use std::path::PathBuf;
 
@@ -145,15 +137,6 @@ mod tests {
         assert_eq!(spec.args.len(), 0);
         assert_eq!(spec.cwd, None);
         assert_eq!(spec.env.len(), 0);
-        assert_eq!(spec.landlock, None);
-    }
-
-    #[test]
-    fn landlock_policy_defaults_are_empty() {
-        let policy = CommandLandlockPolicy::default();
-        assert_eq!(policy.read_roots.len(), 0);
-        assert_eq!(policy.write_roots.len(), 0);
-        assert_eq!(policy.exec_roots.len(), 0);
     }
 
     #[test]

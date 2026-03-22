@@ -6,4 +6,4 @@ mod scheduler;
 mod templates;
 mod tool_event;
 
-pub use engine::{OdysseyRuntime, RunOutput};
+pub use engine::{OdysseyRuntime, RunOutput, SessionCommandOutput};

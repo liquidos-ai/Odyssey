@@ -3,7 +3,7 @@
 use crate::app::App;
 use crate::client::AgentRuntimeClient;
 use crate::event::AppEvent;
-use crate::spawn::{spawn_send_message, spawn_stream};
+use crate::spawn::{spawn_run_command, spawn_send_message, spawn_stream};
 use log::{debug, info, warn};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -121,5 +121,40 @@ pub async fn send_message(
     let llm_id = app.model_id.clone();
     app.push_status("running");
     spawn_send_message(client.clone(), session_id, prompt, agent_id, llm_id, sender);
+    Ok(())
+}
+
+/// Take the current input, execute it as a sandboxed session command, and spawn a task.
+pub async fn send_command(
+    client: &Arc<AgentRuntimeClient>,
+    app: &mut App,
+    sender: mpsc::Sender<AppEvent>,
+) -> anyhow::Result<()> {
+    let session_id = match app.active_session {
+        Some(id) => id,
+        None => {
+            app.push_status("no active session");
+            return Ok(());
+        }
+    };
+    let raw_input = std::mem::take(&mut app.input);
+    let command_line = raw_input
+        .trim_start()
+        .strip_prefix('!')
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    info!(
+        "sending direct command (session_id={}, command_len={})",
+        session_id,
+        command_line.len()
+    );
+    if command_line.is_empty() {
+        app.push_status("command cannot be empty");
+        return Ok(());
+    }
+    app.enable_auto_scroll();
+    app.push_status("running");
+    spawn_run_command(client.clone(), session_id, command_line, sender);
     Ok(())
 }

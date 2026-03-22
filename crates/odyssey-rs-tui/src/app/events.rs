@@ -75,6 +75,9 @@ impl App {
                     );
                 }
             }
+            EventPayload::ExecCommandEnd { .. } => {
+                self.status = "idle".to_string();
+            }
             EventPayload::PermissionRequested {
                 request_id,
                 request,

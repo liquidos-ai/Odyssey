@@ -1,6 +1,8 @@
 mod bridge;
 
-pub(crate) use bridge::{build_permission_rules, prepare_cell};
+pub(crate) use bridge::{
+    PreparedToolSandbox, build_permission_rules, prepare_cell, prepare_operator_command_cell,
+};
 use odyssey_rs_sandbox::{SandboxMode, SandboxRuntime, default_provider_name};
 
 use crate::{RuntimeConfig, RuntimeError};

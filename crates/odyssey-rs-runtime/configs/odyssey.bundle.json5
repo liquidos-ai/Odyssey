@@ -23,6 +23,7 @@
         rules: []
       }
     },
+    system_tools_mode: 'explicit',
     system_tools: [],
     resources: { cpu: 1, memory_mb: 512, gpu: 0 }
   }

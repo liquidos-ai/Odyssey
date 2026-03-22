@@ -4,6 +4,7 @@ use crate::{
     provider::{DependencyReport, canonicalize_existing_path, local::HostExecProvider},
 };
 use odyssey_rs_protocol::SandboxMode;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::{collections::HashMap, fmt::Display};
@@ -368,17 +369,37 @@ fn sanitize_segment(value: &str) -> String {
         }
     }
     if sanitized.is_empty() {
-        "default".to_string()
-    } else {
-        sanitized
+        sanitized = "default".to_string();
     }
+    if sanitized.len() > 32 {
+        sanitized.truncate(32);
+        while sanitized.ends_with('_') {
+            sanitized.pop();
+        }
+        if sanitized.is_empty() {
+            sanitized = "default".to_string();
+        }
+    }
+
+    let digest = Sha256::digest(value.as_bytes());
+    let suffix = hex::encode(&digest[..6]);
+    format!("{sanitized}-{suffix}")
+}
+
+#[cfg(test)]
+fn has_same_sanitized_prefix(left: &str, right: &str) -> bool {
+    fn prefix(value: &str) -> &str {
+        value.rsplit_once('-').map_or(value, |(prefix, _)| prefix)
+    }
+
+    prefix(left) == prefix(right)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         SandboxCellKey, SandboxCellKind, SandboxCellRoot, SandboxCellSpec, SandboxRuntime,
-        sanitize_segment,
+        has_same_sanitized_prefix, sanitize_segment,
     };
     use crate::{LocalSandboxProvider, SandboxPolicy};
     use odyssey_rs_protocol::SandboxMode;
@@ -404,7 +425,7 @@ mod tests {
                 Uuid::nil(),
                 "agent",
                 workspace.clone(),
-                SandboxMode::WorkspaceWrite,
+                SandboxMode::DangerFullAccess,
                 SandboxPolicy::default(),
             ))
             .await
@@ -414,13 +435,22 @@ mod tests {
                 Uuid::nil(),
                 "agent",
                 workspace,
-                SandboxMode::WorkspaceWrite,
+                SandboxMode::DangerFullAccess,
                 SandboxPolicy::default(),
             ))
             .await
             .expect("second lease");
 
         assert_eq!(first.handle().id, second.handle().id);
+    }
+
+    #[test]
+    fn sanitize_segment_keeps_colliding_prefixes_distinct() {
+        let first = sanitize_segment("agent/name");
+        let second = sanitize_segment("agent?name");
+
+        assert!(has_same_sanitized_prefix(&first, &second));
+        assert_ne!(first, second);
     }
 
     #[tokio::test]
@@ -442,13 +472,18 @@ mod tests {
                     component_id: "writer".to_string(),
                 },
                 root: SandboxCellRoot::ManagedPrivate,
-                mode: SandboxMode::WorkspaceWrite,
+                mode: SandboxMode::DangerFullAccess,
                 policy: SandboxPolicy::default(),
             })
             .await
             .expect("lease");
 
-        assert!(lease.cell_root().ends_with("writer"));
+        let component_name = lease
+            .cell_root()
+            .file_name()
+            .and_then(|value| value.to_str())
+            .expect("component name");
+        assert!(component_name.starts_with("writer-"));
         assert!(lease.data_dir().exists());
         let execution = lease.begin_execution().expect("execution dirs");
         assert!(execution.inbox.exists());
@@ -476,7 +511,7 @@ mod tests {
                 Uuid::nil(),
                 "agent",
                 workspace,
-                SandboxMode::WorkspaceWrite,
+                SandboxMode::DangerFullAccess,
                 SandboxPolicy::default(),
             ))
             .await
@@ -487,7 +522,7 @@ mod tests {
                 Uuid::nil(),
                 "agent",
                 alternate,
-                SandboxMode::WorkspaceWrite,
+                SandboxMode::DangerFullAccess,
                 SandboxPolicy::default(),
             ))
             .await
@@ -505,9 +540,9 @@ mod tests {
 
     #[test]
     fn sanitize_segment_rewrites_unsafe_characters() {
-        assert_eq!(sanitize_segment("agent/name"), "agent_name");
-        assert_eq!(sanitize_segment(""), "default");
-        assert_eq!(sanitize_segment("safe-_value"), "safe-_value");
+        assert!(sanitize_segment("agent/name").starts_with("agent_name-"));
+        assert!(sanitize_segment("").starts_with("default-"));
+        assert!(sanitize_segment("safe-_value").starts_with("safe-_value-"));
     }
 
     #[test]
@@ -558,7 +593,11 @@ mod tests {
 
         let root = runtime.managed_cell_root(&key).expect("managed root");
 
-        assert!(root.ends_with("comp_id"));
+        let component_name = root
+            .file_name()
+            .and_then(|value| value.to_str())
+            .expect("component name");
+        assert!(component_name.starts_with("comp_id-"));
         assert!(root.join("app").exists());
         assert!(root.join("data").exists());
         assert!(root.join("cache").exists());

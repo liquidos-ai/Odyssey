@@ -144,7 +144,7 @@ mod tests {
         let request = crate::SandboxRunRequest {
             context: SandboxContext {
                 workspace_root: workspace.path().to_path_buf(),
-                mode: SandboxMode::WorkspaceWrite,
+                mode: SandboxMode::DangerFullAccess,
                 policy: SandboxPolicy::default(),
             },
             command: {

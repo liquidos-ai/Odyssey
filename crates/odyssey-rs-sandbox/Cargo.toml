@@ -13,6 +13,8 @@ readme.workspace = true
 odyssey-rs-protocol.workspace = true
 
 async-trait.workspace = true
+hex.workspace = true
+sha2.workspace = true
 log.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
@@ -22,13 +24,6 @@ uuid.workspace = true
 which.workspace = true
 libc.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
-landlock.workspace = true
-
 [dev-dependencies]
 pretty_assertions.workspace = true
 tempfile.workspace = true
-
-[[bin]]
-name = "odyssey-rs-sandbox-internal-landlock-helper"
-path = "src/bin/odyssey-rs-sandbox-internal-landlock-helper.rs"

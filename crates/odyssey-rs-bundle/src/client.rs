@@ -1,5 +1,6 @@
 use crate::build::BundleMetadata;
-use crate::layout::{BundleConfig, OCI_INDEX_MEDIA_TYPE, OCI_MANIFEST_MEDIA_TYPE, REF_ANNOTATION};
+use crate::constants::{OCI_INDEX_MEDIA_TYPE, OCI_MANIFEST_MEDIA_TYPE, REF_ANNOTATION};
+use crate::layout::parse_config_bytes;
 use base64::Engine;
 use reqwest::{StatusCode, Url};
 use serde::{Deserialize, Serialize};
@@ -13,6 +14,8 @@ const HUB_TOKEN_ENV: &str = "ODYSSEY_HUB_TOKEN";
 pub enum HubClientError {
     #[error("invalid hub URL: {0}")]
     InvalidHubUrl(String),
+    #[error("invalid hub response: {0}")]
+    InvalidResponse(String),
     #[error(transparent)]
     Transport(#[from] reqwest::Error),
     #[error("hub request failed with {status}: {message}")]
@@ -148,8 +151,8 @@ impl HubClient {
             return Err(http_status(response).await);
         }
         let response = response.json::<HubPullBundleResponse>().await?;
-        let config: BundleConfig = serde_json::from_slice(&response.config_bytes)
-            .map_err(|err| HubClientError::InvalidHubUrl(err.to_string()))?;
+        let config = parse_config_bytes(&response.config_bytes)
+            .map_err(|err| HubClientError::InvalidResponse(err.to_string()))?;
         let metadata = BundleMetadata {
             namespace: config.namespace.clone(),
             id: config.id.clone(),
@@ -321,5 +324,13 @@ mod tests {
         unsafe {
             env::remove_var(HUB_TOKEN_ENV);
         }
+    }
+
+    #[test]
+    fn invalid_response_error_formats_cleanly() {
+        assert_eq!(
+            HubClientError::InvalidResponse("bad payload".to_string()).to_string(),
+            "invalid hub response: bad payload"
+        );
     }
 }

@@ -274,6 +274,8 @@ async fn handle_enter(
         {
             app.push_system_message(err);
         }
+    } else if app.input.trim_start().starts_with('!') {
+        session::send_command(client, app, sender).await?;
     } else {
         session::send_message(client, app, sender).await?;
     }
@@ -314,4 +316,159 @@ pub async fn handle_permission_input(
         });
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handle_input;
+    use crate::app::App;
+    use crate::client::AgentRuntimeClient;
+    use crate::event::AppEvent;
+    use crate::handlers;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use odyssey_rs_protocol::SandboxMode;
+    use odyssey_rs_runtime::{RuntimeConfig, RuntimeEngine};
+    use pretty_assertions::assert_eq;
+    use std::fs;
+    use std::path::Path;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+    use tokio::sync::mpsc;
+
+    fn runtime_config(root: &Path) -> RuntimeConfig {
+        RuntimeConfig {
+            cache_root: root.join("cache"),
+            session_root: root.join("sessions"),
+            sandbox_root: root.join("sandbox"),
+            bind_addr: "127.0.0.1:0".to_string(),
+            sandbox_mode_override: Some(SandboxMode::DangerFullAccess),
+            hub_url: "http://127.0.0.1:8473".to_string(),
+            worker_count: 2,
+            queue_capacity: 32,
+        }
+    }
+
+    fn write_bundle_project(root: &Path, bundle_id: &str, agent_id: &str) {
+        fs::create_dir_all(root.join("skills").join("repo-hygiene")).expect("create skill dir");
+        fs::create_dir_all(root.join("resources").join("data")).expect("create data dir");
+        fs::write(
+            root.join("odyssey.bundle.json5"),
+            format!(
+                r#"{{
+                    id: "{bundle_id}",
+                    version: "0.1.0",
+                    manifest_version: "odyssey.bundle/v1",
+                    readme: "README.md",
+                    agent_spec: "agent.yaml",
+                    executor: {{ type: "prebuilt", id: "react" }},
+                    memory: {{ type: "prebuilt", id: "sliding_window" }},
+                    skills: [{{ name: "repo-hygiene", path: "skills/repo-hygiene" }}],
+                    tools: [{{ name: "Read", source: "builtin" }}],
+                    sandbox: {{
+                        permissions: {{
+                            filesystem: {{ exec: [], mounts: {{ read: [], write: [] }} }},
+                            network: ["*"],
+                            tools: {{ mode: "default", rules: [] }}
+                        }},
+                        system_tools: ["sh"],
+                        resources: {{}}
+                    }}
+                }}"#
+            ),
+        )
+        .expect("write manifest");
+        fs::write(
+            root.join("agent.yaml"),
+            format!(
+                r#"id: {agent_id}
+description: test bundle
+prompt: keep responses concise
+model:
+  provider: openai
+  name: gpt-4.1-mini
+tools:
+  allow: ["Read", "Skill"]
+"#
+            ),
+        )
+        .expect("write agent");
+        fs::write(root.join("README.md"), format!("# {bundle_id}\n")).expect("write readme");
+        fs::write(
+            root.join("skills").join("repo-hygiene").join("SKILL.md"),
+            "Keep commits focused.\n",
+        )
+        .expect("write skill");
+        fs::write(
+            root.join("resources").join("data").join("notes.txt"),
+            "hello world\n",
+        )
+        .expect("write resource");
+    }
+
+    #[tokio::test]
+    async fn enter_routes_bang_prefix_to_session_command_execution() {
+        let temp = tempdir().expect("tempdir");
+        let runtime = Arc::new(RuntimeEngine::new(runtime_config(temp.path())).expect("runtime"));
+        let project = temp.path().join("alpha-project");
+        fs::create_dir_all(&project).expect("create project");
+        write_bundle_project(&project, "alpha", "alpha-agent");
+        runtime.build_and_install(&project).expect("install bundle");
+
+        let client = Arc::new(AgentRuntimeClient::new(
+            runtime,
+            "local/alpha@0.1.0".to_string(),
+        ));
+        let mut app = App {
+            bundle_ref: "local/alpha@0.1.0".to_string(),
+            input: "!printf input-route".to_string(),
+            ..App::default()
+        };
+        let (sender, mut receiver) = mpsc::channel::<AppEvent>(32);
+        let mut stream_handle = None;
+
+        handlers::session::create_session(&client, &mut app, sender.clone(), &mut stream_handle)
+            .await
+            .expect("create session");
+
+        let exit = handle_input(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &client,
+            &mut app,
+            sender,
+            &mut stream_handle,
+        )
+        .await
+        .expect("handle enter");
+
+        assert!(!exit);
+        assert_eq!(app.input, "");
+        assert_eq!(app.status, "running");
+        assert!(app.messages.is_empty());
+
+        let mut saw_begin = false;
+        let mut saw_end = false;
+        for _ in 0..4 {
+            let Some(event) = receiver.recv().await else {
+                break;
+            };
+            if let AppEvent::Server(message) = event {
+                match message.payload {
+                    odyssey_rs_protocol::EventPayload::ExecCommandBegin { .. } => {
+                        saw_begin = true;
+                    }
+                    odyssey_rs_protocol::EventPayload::ExecCommandEnd { .. } => {
+                        saw_end = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        assert!(saw_begin);
+        assert!(saw_end);
+        if let Some(handle) = stream_handle.take() {
+            handle.abort();
+        }
+    }
 }

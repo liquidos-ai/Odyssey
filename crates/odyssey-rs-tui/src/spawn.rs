@@ -58,6 +58,27 @@ pub fn spawn_send_message(
     });
 }
 
+/// Spawn a background task to execute a direct sandbox command in a session.
+pub fn spawn_run_command(
+    client: Arc<AgentRuntimeClient>,
+    session_id: Uuid,
+    command_line: String,
+    sender: mpsc::Sender<AppEvent>,
+) {
+    let command_len = command_line.len();
+    tokio::spawn(async move {
+        debug!(
+            "dispatching session command (session_id={}, command_len={})",
+            session_id, command_len
+        );
+        if let Err(err) = client.run_session_command(session_id, command_line).await {
+            let _ = sender
+                .send(AppEvent::ActionError(format!("run command failed: {err}")))
+                .await;
+        }
+    });
+}
+
 /// Spawn a task that polls crossterm for keyboard and mouse events.
 pub fn spawn_input_handler(sender: mpsc::Sender<AppEvent>) {
     const MOUSE_SCROLL_LINES: i16 = 3;

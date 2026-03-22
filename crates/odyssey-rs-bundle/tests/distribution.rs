@@ -230,6 +230,99 @@ async fn pull_surfaces_hub_http_failures() {
     );
 }
 
+#[tokio::test]
+async fn publish_rejects_target_version_mismatch() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("project");
+    fs::create_dir_all(&project_root).expect("create project");
+    write_bundle_project(
+        &project_root,
+        "demo",
+        "0.1.0",
+        "data/notes.txt",
+        "hello world\n",
+    );
+
+    let store = BundleStore::new(temp.path().join("store"));
+    let error = store
+        .publish(
+            project_root.to_str().expect("project root path"),
+            "team/demo:9.9.9",
+            "http://127.0.0.1:8473",
+        )
+        .await
+        .expect_err("publish mismatch should fail");
+
+    assert_eq!(
+        error.to_string(),
+        "invalid bundle: publish target version 9.9.9 does not match bundle version 0.1.0"
+    );
+}
+
+#[tokio::test]
+async fn pull_rejects_tampered_config_bytes() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("project");
+    fs::create_dir_all(&project_root).expect("create project");
+    write_bundle_project(
+        &project_root,
+        "demo",
+        "0.1.0",
+        "data/notes.txt",
+        "hello world\n",
+    );
+
+    let publisher_store = BundleStore::new(temp.path().join("publisher-store"));
+    let install = publisher_store
+        .build_and_install(&project_root)
+        .expect("build install");
+    let manifest_bytes = read_blob_from_install(&install.path, &install.metadata.digest);
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&manifest_bytes).expect("parse manifest json");
+    let config_digest = manifest["config"]["digest"]
+        .as_str()
+        .expect("config digest")
+        .to_string();
+    let mut config_bytes = read_blob_from_install(&install.path, &config_digest);
+    config_bytes.push(b' ');
+    let layers = manifest["layers"]
+        .as_array()
+        .expect("layer array")
+        .iter()
+        .map(|layer| {
+            let digest = layer["digest"].as_str().expect("layer digest").to_string();
+            json!({
+                "digest": digest,
+                "bytes": encode(&read_blob_from_install(&install.path, &digest)),
+            })
+        })
+        .collect::<Vec<_>>();
+    let hub_url = start_failing_hub(
+        StatusCode::OK,
+        json!({
+            "version": {
+                "version": install.metadata.version,
+                "manifestDigest": install.metadata.digest,
+            },
+            "manifestBytes": encode(&manifest_bytes),
+            "configBytes": encode(&config_bytes),
+            "layers": layers,
+        }),
+    )
+    .await;
+
+    let consumer_store = BundleStore::new(temp.path().join("consumer-store"));
+    let error = consumer_store
+        .pull("team/demo:0.1.0", &hub_url)
+        .await
+        .expect_err("tampered config should fail");
+
+    assert_eq!(
+        error.to_string(),
+        "invalid bundle: hub returned config bytes that do not match manifest digest"
+    );
+}
+
 async fn start_hub() -> String {
     let app = hub_app();
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -423,6 +516,11 @@ struct BlobPayload {
 
 fn encode(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+fn read_blob_from_install(root: &std::path::Path, digest: &str) -> Vec<u8> {
+    let hex = digest.strip_prefix("sha256:").expect("sha256 digest");
+    fs::read(root.join(".odyssey").join("blobs").join("sha256").join(hex)).expect("read blob")
 }
 
 mod base64_bytes {

@@ -1,19 +1,14 @@
 use crate::BundleError;
+use crate::constants::{
+    ARCHIVE_MAGIC, BUNDLE_CONFIG_SCHEMA_VERSION, LAYOUT_PAYLOAD_BUNDLE_MAGIC, REF_ANNOTATION,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Cursor, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use walkdir::WalkDir;
-
-pub const OCI_LAYOUT_VERSION: &str = "1.0.0";
-pub const OCI_INDEX_MEDIA_TYPE: &str = "application/vnd.oci.image.index.v1+json";
-pub const OCI_MANIFEST_MEDIA_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
-pub const BUNDLE_CONFIG_MEDIA_TYPE: &str = "application/vnd.odyssey.bundle.config.v1+json";
-pub const BUNDLE_LAYER_MEDIA_TYPE: &str = "application/vnd.odyssey.bundle.layer.v1";
-pub const REF_ANNOTATION: &str = "org.opencontainers.image.ref.name";
-pub const ARCHIVE_MAGIC: &[u8; 6] = b"ODYB1\n";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,14 +34,14 @@ pub struct OciImageManifest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OciImageIndex {
-    pub schema_version: u32,
+    pub schema_version: usize,
     pub media_type: String,
     pub manifests: Vec<OciDescriptor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundleConfig {
-    pub schema_version: u32,
+    pub schema_version: usize,
     pub id: String,
     pub version: String,
     pub namespace: String,
@@ -64,7 +59,8 @@ pub struct ArchiveEntry {
 pub fn pack_payload(root: &Path) -> Result<Vec<u8>, BundleError> {
     let entries = payload_entries(root)?;
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"ODLP1\n");
+    //Add a Magic Header for the blob
+    bytes.extend_from_slice(LAYOUT_PAYLOAD_BUNDLE_MAGIC);
     bytes.extend_from_slice(&(entries.len() as u32).to_le_bytes());
     for entry in entries {
         let path = normalize_relative(root, entry.path())?;
@@ -80,11 +76,12 @@ pub fn pack_payload(root: &Path) -> Result<Vec<u8>, BundleError> {
 
 pub fn unpack_payload(bytes: &[u8], dst: &Path) -> Result<(), BundleError> {
     let mut cursor = Cursor::new(bytes);
-    let mut magic = [0_u8; 6];
+    let mut entries = Vec::new();
+    let mut magic = [0_u8; 7];
     cursor
         .read_exact(&mut magic)
         .map_err(|err| BundleError::Invalid(err.to_string()))?;
-    if &magic != b"ODLP1\n" {
+    if &magic != LAYOUT_PAYLOAD_BUNDLE_MAGIC {
         return Err(BundleError::Invalid(
             "invalid bundle payload header".to_string(),
         ));
@@ -92,19 +89,28 @@ pub fn unpack_payload(bytes: &[u8], dst: &Path) -> Result<(), BundleError> {
 
     let file_count = read_u32(&mut cursor)?;
     for _ in 0..file_count {
-        let path_len = read_u32(&mut cursor)? as usize;
+        let path_len = usize_len(read_u32(&mut cursor)? as u64, "payload path length")?;
         let mut path_bytes = vec![0_u8; path_len];
         cursor
             .read_exact(&mut path_bytes)
             .map_err(|err| BundleError::Invalid(err.to_string()))?;
         let path =
             String::from_utf8(path_bytes).map_err(|err| BundleError::Invalid(err.to_string()))?;
-        let data_len = read_u64(&mut cursor)? as usize;
+        let data_len = usize_len(read_u64(&mut cursor)?, "payload data length")?;
         let mut contents = vec![0_u8; data_len];
         cursor
             .read_exact(&mut contents)
             .map_err(|err| BundleError::Invalid(err.to_string()))?;
-        let target = dst.join(path);
+        let target = payload_target(dst, &path)?;
+        entries.push((target, contents));
+    }
+    if cursor.position() != bytes.len() as u64 {
+        return Err(BundleError::Invalid(
+            "payload bundle contains trailing data".to_string(),
+        ));
+    }
+
+    for (target, contents) in entries {
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent).map_err(|err| io_err(parent, err))?;
         }
@@ -166,7 +172,7 @@ pub fn read_blob(root: &Path, digest: &str) -> Result<Vec<u8>, BundleError> {
 
 pub fn read_config(root: &Path, manifest: &OciImageManifest) -> Result<BundleConfig, BundleError> {
     let bytes = read_blob(root, &manifest.config.digest)?;
-    serde_json::from_slice(&bytes).map_err(|err| BundleError::Invalid(err.to_string()))
+    parse_config_bytes(&bytes)
 }
 
 pub fn read_manifest(
@@ -262,19 +268,24 @@ pub fn read_archive_entries(bytes: &[u8]) -> Result<Vec<ArchiveEntry>, BundleErr
     let count = read_u32(&mut cursor)?;
     let mut entries = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        let path_len = read_u32(&mut cursor)? as usize;
+        let path_len = usize_len(read_u32(&mut cursor)? as u64, "archive path length")?;
         let mut path_bytes = vec![0_u8; path_len];
         cursor
             .read_exact(&mut path_bytes)
             .map_err(|err| BundleError::Invalid(err.to_string()))?;
         let path =
             String::from_utf8(path_bytes).map_err(|err| BundleError::Invalid(err.to_string()))?;
-        let data_len = read_u64(&mut cursor)? as usize;
+        let data_len = usize_len(read_u64(&mut cursor)?, "archive entry length")?;
         let mut data = vec![0_u8; data_len];
         cursor
             .read_exact(&mut data)
             .map_err(|err| BundleError::Invalid(err.to_string()))?;
         entries.push(ArchiveEntry { path, bytes: data });
+    }
+    if cursor.position() != bytes.len() as u64 {
+        return Err(BundleError::Invalid(
+            "bundle archive contains trailing data".to_string(),
+        ));
     }
     Ok(entries)
 }
@@ -315,6 +326,36 @@ fn normalize_relative(root: &Path, path: &Path) -> Result<String, BundleError> {
     Ok(relative.to_string_lossy().replace('\\', "/"))
 }
 
+fn payload_target(dst: &Path, path: &str) -> Result<PathBuf, BundleError> {
+    let relative = Path::new(path);
+    if relative.is_absolute() {
+        return Err(BundleError::Invalid(format!(
+            "payload entry path must be relative: {path}"
+        )));
+    }
+
+    let mut normalized = PathBuf::new();
+    for component in relative.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => normalized.push(part),
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(BundleError::Invalid(format!(
+                    "payload entry path escapes destination: {path}"
+                )));
+            }
+        }
+    }
+
+    if normalized.as_os_str().is_empty() {
+        return Err(BundleError::Invalid(
+            "payload entry path cannot be empty".to_string(),
+        ));
+    }
+
+    Ok(dst.join(normalized))
+}
+
 fn read_u32(cursor: &mut Cursor<&[u8]>) -> Result<u32, BundleError> {
     let mut buffer = [0_u8; 4];
     cursor
@@ -331,6 +372,23 @@ fn read_u64(cursor: &mut Cursor<&[u8]>) -> Result<u64, BundleError> {
     Ok(u64::from_le_bytes(buffer))
 }
 
+pub(crate) fn parse_config_bytes(bytes: &[u8]) -> Result<BundleConfig, BundleError> {
+    let config: BundleConfig =
+        serde_json::from_slice(bytes).map_err(|err| BundleError::Invalid(err.to_string()))?;
+    if config.schema_version != BUNDLE_CONFIG_SCHEMA_VERSION {
+        return Err(BundleError::Invalid(format!(
+            "unsupported bundle config schema version {}",
+            config.schema_version
+        )));
+    }
+    Ok(config)
+}
+
+fn usize_len(value: u64, field: &str) -> Result<usize, BundleError> {
+    usize::try_from(value)
+        .map_err(|_| BundleError::Invalid(format!("{field} exceeds platform limits")))
+}
+
 fn io_err(path: &Path, err: std::io::Error) -> BundleError {
     BundleError::Io {
         path: path.display().to_string(),
@@ -341,11 +399,15 @@ fn io_err(path: &Path, err: std::io::Error) -> BundleError {
 #[cfg(test)]
 mod tests {
     use super::{
-        ARCHIVE_MAGIC, BUNDLE_CONFIG_MEDIA_TYPE, BUNDLE_LAYER_MEDIA_TYPE, BundleConfig,
-        OCI_INDEX_MEDIA_TYPE, OCI_LAYOUT_VERSION, OCI_MANIFEST_MEDIA_TYPE, OciImageIndex,
-        OciImageManifest, annotated_descriptor, archive_entries, blob_path, collect_oci_entries,
-        copy_blob_into_layout, descriptor, pack_payload, read_archive_entries, read_blob,
-        read_config, read_manifest, sha256_digest, unpack_payload, write_blob,
+        BundleConfig, OciImageIndex, OciImageManifest, annotated_descriptor, archive_entries,
+        blob_path, collect_oci_entries, copy_blob_into_layout, descriptor, pack_payload,
+        read_archive_entries, read_blob, read_config, read_manifest, sha256_digest, unpack_payload,
+        write_blob,
+    };
+    use crate::constants::{
+        ARCHIVE_MAGIC, BUNDLE_CONFIG_MEDIA_TYPE, BUNDLE_LAYER_MEDIA_TYPE,
+        LAYOUT_PAYLOAD_BUNDLE_MAGIC, OCI_INDEX_MEDIA_TYPE, OCI_LAYOUT_VERSION,
+        OCI_MANIFEST_MEDIA_TYPE,
     };
     use odyssey_rs_manifest::{
         AgentSpec, AgentToolPolicy, BundleExecutor, BundleManifest, BundleMemory, BundleSandbox,
@@ -538,5 +600,48 @@ mod tests {
             error.to_string(),
             "invalid bundle: unsupported digest format md5:abc"
         );
+    }
+
+    #[test]
+    fn unpack_payload_rejects_paths_outside_destination() {
+        let temp = tempdir().expect("tempdir");
+        let mut payload = Vec::new();
+        let path = "../escape.txt";
+
+        payload.extend_from_slice(LAYOUT_PAYLOAD_BUNDLE_MAGIC);
+        payload.extend_from_slice(&1_u32.to_le_bytes());
+        payload.extend_from_slice(&(path.len() as u32).to_le_bytes());
+        payload.extend_from_slice(path.as_bytes());
+        payload.extend_from_slice(&4_u64.to_le_bytes());
+        payload.extend_from_slice(b"evil");
+
+        let error = unpack_payload(&payload, temp.path()).expect_err("reject traversal path");
+        assert_eq!(
+            error.to_string(),
+            "invalid bundle: payload entry path escapes destination: ../escape.txt"
+        );
+        assert!(!temp.path().join("..").join("escape.txt").exists());
+    }
+
+    #[test]
+    fn unpack_payload_rejects_trailing_bytes() {
+        let temp = tempdir().expect("tempdir");
+        let mut payload = Vec::new();
+        let path = "agent.yaml";
+
+        payload.extend_from_slice(LAYOUT_PAYLOAD_BUNDLE_MAGIC);
+        payload.extend_from_slice(&1_u32.to_le_bytes());
+        payload.extend_from_slice(&(path.len() as u32).to_le_bytes());
+        payload.extend_from_slice(path.as_bytes());
+        payload.extend_from_slice(&9_u64.to_le_bytes());
+        payload.extend_from_slice(b"id: demo\n");
+        payload.extend_from_slice(b"junk");
+
+        let error = unpack_payload(&payload, temp.path()).expect_err("reject trailing bytes");
+        assert_eq!(
+            error.to_string(),
+            "invalid bundle: payload bundle contains trailing data"
+        );
+        assert!(!temp.path().join("agent.yaml").exists());
     }
 }

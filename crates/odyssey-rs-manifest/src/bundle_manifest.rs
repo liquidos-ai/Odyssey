@@ -91,6 +91,8 @@ pub struct BundleSandbox {
     #[serde(default)]
     pub permissions: BundleSandboxPermissions,
     #[serde(default)]
+    pub system_tools_mode: BundleSystemToolsMode,
+    #[serde(default)]
     pub system_tools: Vec<String>,
     #[serde(default)]
     pub resources: BundleSandboxLimits,
@@ -105,10 +107,20 @@ impl Default for BundleSandbox {
         Self {
             mode: default_sandbox_mode(),
             permissions: BundleSandboxPermissions::default(),
+            system_tools_mode: BundleSystemToolsMode::default(),
             system_tools: Vec::new(),
             resources: BundleSandboxLimits::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BundleSystemToolsMode {
+    #[default]
+    Explicit,
+    Standard,
+    All,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -194,7 +206,7 @@ mod tests {
 
     use super::{
         BundleManifest, BundleMemory, BundlePermissionAction, BundleSandbox, BundleSandboxTools,
-        default_builtin_source,
+        BundleSystemToolsMode, default_builtin_source,
     };
     use odyssey_rs_protocol::SandboxMode;
     use pretty_assertions::assert_eq;
@@ -210,6 +222,7 @@ mod tests {
         let sandbox = BundleSandbox::default();
         assert_eq!(sandbox.mode, SandboxMode::WorkspaceWrite);
         assert_eq!(sandbox.permissions.network, Vec::<String>::new());
+        assert_eq!(sandbox.system_tools_mode, BundleSystemToolsMode::Explicit);
         assert_eq!(sandbox.system_tools, Vec::<String>::new());
 
         let tools = BundleSandboxTools::default();
@@ -250,6 +263,10 @@ mod tests {
         assert_eq!(
             manifest.sandbox.permissions.filesystem.mounts.write,
             Vec::<String>::new()
+        );
+        assert_eq!(
+            manifest.sandbox.system_tools_mode,
+            BundleSystemToolsMode::Explicit
         );
     }
 
@@ -298,6 +315,30 @@ mod tests {
         assert_eq!(
             manifest.sandbox.permissions.tools.rules[2].action,
             BundlePermissionAction::Deny
+        );
+    }
+
+    #[test]
+    fn manifest_deserialization_accepts_system_tools_modes() {
+        let manifest: BundleManifest = serde_json::from_value(json!({
+            "id": "demo",
+            "version": "0.1.0",
+            "manifest_version": "odyssey.bundle/v1",
+            "readme": "README.md",
+            "agent_spec": "agent.yaml",
+            "executor": {
+                "type": "prebuilt",
+                "id": "react"
+            },
+            "sandbox": {
+                "system_tools_mode": "standard"
+            }
+        }))
+        .expect("deserialize bundle manifest");
+
+        assert_eq!(
+            manifest.sandbox.system_tools_mode,
+            BundleSystemToolsMode::Standard
         );
     }
 }

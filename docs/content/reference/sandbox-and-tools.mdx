@@ -16,6 +16,12 @@ The builtin tool registry currently contains:
 - `Bash`
 - `Skill`
 
+Important behavior detail:
+
+- `Write` and `Edit` mutate files directly through the tool API after sandbox read or write checks
+- `Bash` runs the command through a real sandboxed system shell (`sh -lc ...`), so shell features like redirection and pipelines work
+- that means `Bash` depends on both the sandbox write policy and the executable policy for the shell itself, while `Write` does not
+
 ## How Tool Selection Works
 
 Tool availability is the result of two filters:
@@ -40,7 +46,7 @@ How they are used today:
 
 - `danger_full_access` uses the host provider directly
 - on Linux, `read_only` and `workspace_write` use the `bubblewrap` provider by default
-- on non-Linux, confined modes fall back to the host provider because `bubblewrap` is Linux-only
+- on non-Linux, confined modes are rejected because the host provider cannot safely enforce them
 
 ## Filesystem Policy
 
@@ -49,22 +55,25 @@ The runtime builds sandbox filesystem policy from the manifest:
 - `mounts.read` becomes host read roots
 - `mounts.write` becomes host write roots
 - `filesystem.exec` becomes executable paths under the staged bundle root
+- `system_tools` resolves named host executables and adds those exact binaries to the execute allowlist
+- `Bash` also needs a permitted system shell because it executes commands through `sh -lc ...`
 
 The sandbox cell root itself is always added as a readable root. In `workspace_write` and
 `danger_full_access`, that cell root is also writable.
 
 ## Network Policy
 
-The current network implementation is intentionally simple:
+The current network implementation is intentionally narrow:
 
-- an empty `sandbox.permissions.network` list disables network access
-- a non-empty list enables outbound network access
+- `sandbox.permissions.network: []` disables outbound network access
+- `sandbox.permissions.network: ["*"]` enables unrestricted outbound network access
 
-The individual strings in that list are not enforced as a hostname allowlist by the current
-sandbox bridge. At the moment the list acts like an on/off switch.
+Hostname allowlists are not implemented in v1. Any other value is rejected during manifest
+validation. For confined Linux sandboxes, network disablement is enforced by `bubblewrap`
+network namespace isolation.
 
-One practical consequence: when the runtime falls back to the host provider and the bundle disables
-network, execution is rejected because the host backend cannot safely emulate that restriction.
+One practical consequence: the host provider is only accepted for `danger_full_access`. Restricted
+bundle sandboxes require the `bubblewrap` backend.
 
 ## Tool Permission Rules
 
@@ -78,5 +87,36 @@ Important details from the current implementation:
 
 ## System Tools
 
-`sandbox.system_tools` is currently used as a preflight dependency check. Before execution starts,
-the runtime verifies that each named binary exists using `which`.
+The runtime supports three host executable policies:
+
+- `system_tools_mode: "explicit"`:
+  only `sandbox.system_tools` plus `filesystem.exec` paths are executable
+- `system_tools_mode: "standard"`:
+  standard host executable roots such as `/usr` and `/bin` are executable, plus any explicit `system_tools`
+- `system_tools_mode: "all"`:
+  executable path checks are not restricted to an allowlist
+
+When `sandbox.system_tools` is used, the runtime resolves each named binary with `which`, verifies
+it exists, and then permits sandboxed commands to execute that binary via `PATH`.
+
+This is the main difference between filesystem tools and process execution tools:
+
+- `Write` can create `hello.py` if the workspace path is writable
+- `Bash` can only run `echo hello > hello.py` if the workspace is writable and the bundle's executable policy allows the shell
+
+So those two flows are intentionally governed by different sandbox controls:
+
+- filesystem tools are governed by read or write access
+- process execution is governed by both filesystem access and the configured executable policy
+
+## Roadmap
+
+The current v1 sandbox roadmap is intentionally conservative:
+
+- keep Linux confined execution centered on `bubblewrap`
+- keep host execution limited to `danger_full_access`
+- keep network semantics limited to `[]` and `["*"]`
+
+Landlock is not part of the current v1 runtime contract. It may be revisited later as an optional
+hardening layer, but only if it can be added without making normal sandboxed command execution
+fragile or changing the primary `bubblewrap` confinement model.

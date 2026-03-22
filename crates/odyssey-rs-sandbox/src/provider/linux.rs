@@ -12,7 +12,7 @@ use crate::{
     provider::{
         BufferingSink, DependencyReport, Mount, PreparedSandbox, bind_if_exists,
         build_prepared_sandbox, collect_child_result, command_display, configure_child_unix,
-        merge_command_env, resolve_command_path, resolve_working_dir, wrap_command_with_landlock,
+        merge_command_env, resolve_command_path, resolve_working_dir,
     },
     types::SandboxNetworkMode,
 };
@@ -67,8 +67,7 @@ impl BubblewrapProvider {
         let cwd = resolve_working_dir(spec, prepared)?;
         let command = resolve_command_path(&spec.command, &cwd, prepared)?;
         let env = merge_command_env(prepared, &spec.env)?;
-        let (command, args) =
-            wrap_command_with_landlock(command, spec.args.clone(), spec.landlock.as_ref())?;
+        let args = spec.args.clone();
 
         let mut bwrap_args: Vec<String> = vec![
             "--die-with-parent".to_string(),
@@ -108,6 +107,7 @@ impl BubblewrapProvider {
         for mount in &prepared.mounts {
             append_mount(&mut bwrap_args, mount)?;
         }
+        append_command_mount_if_needed(&mut bwrap_args, prepared, &command)?;
 
         bwrap_args.push("--chdir".to_string());
         bwrap_args.push(cwd.display().to_string());
@@ -128,6 +128,37 @@ impl BubblewrapProvider {
         cmd.args(&bwrap_args);
         Ok(cmd)
     }
+}
+
+fn append_command_mount_if_needed(
+    args: &mut Vec<String>,
+    prepared: &PreparedSandbox,
+    command: &Path,
+) -> Result<(), SandboxError> {
+    if !command.is_absolute() || path_is_mounted(command, prepared) {
+        return Ok(());
+    }
+
+    let Some(parent) = command.parent() else {
+        return Err(SandboxError::InvalidConfig(format!(
+            "command path has no parent directory: {}",
+            command.display()
+        )));
+    };
+    bind_if_exists(args, "--ro-bind", parent, parent);
+    Ok(())
+}
+
+fn path_is_mounted(path: &Path, prepared: &PreparedSandbox) -> bool {
+    prepared
+        .mounts
+        .iter()
+        .any(|mount| path.starts_with(&mount.target))
+        || [
+            "/usr", "/lib", "/lib64", "/bin", "/sbin", "/opt", "/etc", "/dev",
+        ]
+        .into_iter()
+        .any(|root| path.starts_with(root))
 }
 
 #[async_trait]

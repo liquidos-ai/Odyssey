@@ -8,7 +8,7 @@ use odyssey_rs_protocol::{
     AgentRef, ApprovalDecision, ExecutionRequest, Session, SessionFilter, SessionSpec,
     SessionSummary, SkillSummary, Task,
 };
-use odyssey_rs_runtime::{OdysseyRuntime, RunOutput};
+use odyssey_rs_runtime::{OdysseyRuntime, RunOutput, SessionCommandOutput};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
@@ -113,6 +113,18 @@ impl AgentRuntimeClient {
             .map_err(Into::into)
     }
 
+    /// Execute a direct process invocation in the current session sandbox.
+    pub async fn run_session_command(
+        &self,
+        session_id: Uuid,
+        command_line: impl AsRef<str>,
+    ) -> Result<SessionCommandOutput> {
+        self.runtime
+            .run_session_command(session_id, command_line)
+            .await
+            .map_err(Into::into)
+    }
+
     /// Resolve a permission request.
     pub async fn resolve_permission(
         &self,
@@ -212,7 +224,7 @@ mod tests {
                     sandbox: {{
                         permissions: {{
                             filesystem: {{ exec: [], mounts: {{ read: [], write: [] }} }},
-                            network: [],
+                            network: ["*"],
                             tools: {{ mode: "default", rules: [] }}
                         }},
                         system_tools: [],
@@ -386,5 +398,34 @@ tools:
                 .await
                 .expect("resolve unknown request")
         );
+    }
+
+    #[tokio::test]
+    async fn client_runs_direct_session_commands() {
+        let temp = tempdir().expect("tempdir");
+        let runtime = Arc::new(RuntimeEngine::new(runtime_config(temp.path())).expect("runtime"));
+        let project = temp.path().join("alpha-project");
+        fs::create_dir_all(&project).expect("create project");
+        write_bundle_project(
+            &project,
+            "alpha",
+            "alpha-agent",
+            "gpt-4.1-mini",
+            "repo-hygiene",
+            "Keep commits focused.",
+        );
+        runtime.build_and_install(&project).expect("install bundle");
+
+        let client = AgentRuntimeClient::new(runtime, "local/alpha@0.1.0".to_string());
+        let session_id = client.create_session(None).await.expect("create session");
+        let output = client
+            .run_session_command(session_id, "printf client-direct")
+            .await
+            .expect("run session command");
+
+        assert_eq!(output.session_id, session_id);
+        assert_eq!(output.stdout, "client-direct");
+        assert_eq!(output.stderr, "");
+        assert_eq!(output.status_code, Some(0));
     }
 }

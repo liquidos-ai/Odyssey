@@ -1,9 +1,9 @@
 use crate::RuntimeError;
-use odyssey_rs_manifest::{BundleManifest, BundlePermissionAction};
+use odyssey_rs_manifest::{BundleManifest, BundlePermissionAction, BundleSystemToolsMode};
 use odyssey_rs_protocol::SandboxMode;
 use odyssey_rs_sandbox::{
     SandboxCellKey, SandboxCellSpec, SandboxLimits, SandboxNetworkMode, SandboxNetworkPolicy,
-    SandboxPolicy, SandboxRuntime,
+    SandboxPolicy, SandboxRuntime, standard_system_exec_roots,
 };
 use odyssey_rs_tools::{PermissionAction, ToolSandbox};
 use std::collections::HashMap;
@@ -16,7 +16,26 @@ pub(crate) struct PreparedToolSandbox {
     pub work_dir: PathBuf,
 }
 
-pub fn build_policy(bundle_root: &Path, manifest: &BundleManifest) -> SandboxPolicy {
+pub fn build_policy(
+    bundle_root: &Path,
+    manifest: &BundleManifest,
+) -> Result<SandboxPolicy, RuntimeError> {
+    build_policy_with_exec_roots(bundle_root, manifest, &[], false)
+}
+
+pub fn build_operator_command_policy(
+    bundle_root: &Path,
+    manifest: &BundleManifest,
+) -> Result<SandboxPolicy, RuntimeError> {
+    build_policy_with_exec_roots(bundle_root, manifest, &[], true)
+}
+
+fn build_policy_with_exec_roots(
+    bundle_root: &Path,
+    manifest: &BundleManifest,
+    extra_exec_roots: &[String],
+    force_standard_exec_roots: bool,
+) -> Result<SandboxPolicy, RuntimeError> {
     let map_bundle_paths = |entries: &[String]| -> Vec<String> {
         entries
             .iter()
@@ -24,20 +43,42 @@ pub fn build_policy(bundle_root: &Path, manifest: &BundleManifest) -> SandboxPol
             .collect()
     };
     let map_host_paths = |entries: &[String]| -> Vec<String> { entries.to_vec() };
+    let explicit_system_tools = resolve_system_tools(&manifest.sandbox.system_tools)?;
+    let mut exec_roots = map_bundle_paths(&manifest.sandbox.permissions.filesystem.exec);
+    exec_roots.extend(explicit_system_tools);
+    let mut exec_allow_all = false;
+    match manifest.sandbox.system_tools_mode {
+        BundleSystemToolsMode::Explicit => {}
+        BundleSystemToolsMode::Standard => {
+            exec_roots.extend(
+                standard_system_exec_roots()
+                    .into_iter()
+                    .map(|path| path.display().to_string()),
+            );
+        }
+        BundleSystemToolsMode::All => {
+            exec_allow_all = true;
+        }
+    }
+    if force_standard_exec_roots && !exec_allow_all {
+        exec_roots.extend(
+            standard_system_exec_roots()
+                .into_iter()
+                .map(|path| path.display().to_string()),
+        );
+    }
+    exec_roots.extend(extra_exec_roots.iter().cloned());
+    exec_roots.sort();
+    exec_roots.dedup();
 
-    SandboxPolicy {
+    Ok(SandboxPolicy {
         filesystem: odyssey_rs_sandbox::SandboxFilesystemPolicy {
             read_roots: map_host_paths(&manifest.sandbox.permissions.filesystem.mounts.read),
             write_roots: map_host_paths(&manifest.sandbox.permissions.filesystem.mounts.write),
-            exec_roots: map_bundle_paths(&manifest.sandbox.permissions.filesystem.exec),
+            exec_roots,
+            exec_allow_all,
         },
-        network: SandboxNetworkPolicy {
-            mode: if manifest.sandbox.permissions.network.is_empty() {
-                SandboxNetworkMode::Disabled
-            } else {
-                SandboxNetworkMode::AllowAll
-            },
-        },
+        network: build_network_policy(&manifest.sandbox.permissions.network)?,
         limits: SandboxLimits {
             cpu_seconds: manifest.sandbox.resources.cpu,
             memory_bytes: manifest
@@ -48,7 +89,7 @@ pub fn build_policy(bundle_root: &Path, manifest: &BundleManifest) -> SandboxPol
             ..SandboxLimits::default()
         },
         ..SandboxPolicy::default()
-    }
+    })
 }
 
 pub fn build_mode(manifest: &BundleManifest, override_mode: Option<SandboxMode>) -> SandboxMode {
@@ -81,24 +122,55 @@ pub async fn prepare_cell(
     manifest: &BundleManifest,
     override_mode: Option<SandboxMode>,
 ) -> Result<PreparedToolSandbox, RuntimeError> {
-    verify_system_tools(&manifest.sandbox.system_tools)?;
+    prepare_cell_with_policy(
+        sandbox,
+        session_id,
+        agent_id,
+        bundle_root,
+        manifest,
+        override_mode,
+        build_policy,
+    )
+    .await
+}
+
+pub async fn prepare_operator_command_cell(
+    sandbox: &SandboxRuntime,
+    session_id: Uuid,
+    agent_id: &str,
+    bundle_root: &Path,
+    manifest: &BundleManifest,
+    override_mode: Option<SandboxMode>,
+) -> Result<PreparedToolSandbox, RuntimeError> {
+    prepare_cell_with_policy(
+        sandbox,
+        session_id,
+        agent_id,
+        bundle_root,
+        manifest,
+        override_mode,
+        build_operator_command_policy,
+    )
+    .await
+}
+
+async fn prepare_cell_with_policy(
+    sandbox: &SandboxRuntime,
+    session_id: Uuid,
+    agent_id: &str,
+    bundle_root: &Path,
+    manifest: &BundleManifest,
+    override_mode: Option<SandboxMode>,
+    policy_builder: fn(&Path, &BundleManifest) -> Result<SandboxPolicy, RuntimeError>,
+) -> Result<PreparedToolSandbox, RuntimeError> {
     let mode = build_mode(manifest, override_mode);
     let key = SandboxCellKey::tooling(session_id, agent_id);
     let cell_root = sandbox.managed_cell_root(&key)?;
     let root = cell_root.join("app");
-    stage_bundle(bundle_root, &root)?;
+    let policy = policy_builder(&root, manifest)?;
+    validate_provider_support(sandbox.provider_name(), mode, &policy)?;
+    stage_bundle_if_needed(bundle_root, &root, mode)?;
     let work_dir = root.clone();
-    let policy = build_policy(&root, manifest);
-
-    if sandbox.provider_name() == "host"
-        && matches!(policy.network.mode, SandboxNetworkMode::Disabled)
-    {
-        return Err(RuntimeError::Sandbox(
-            odyssey_rs_sandbox::SandboxError::Unsupported(
-                "bundle disables network but runtime fell back to host execution without kernel isolation".to_string(),
-            ),
-        ));
-    }
 
     let (read_roots, write_roots, exec_roots) =
         extend_cell_filesystem_policy(&policy, &cell_root, mode);
@@ -112,6 +184,7 @@ pub async fn prepare_cell(
                     read_roots,
                     write_roots,
                     exec_roots,
+                    exec_allow_all: policy.filesystem.exec_allow_all,
                 },
                 env: policy.env.clone(),
                 network: policy.network.clone(),
@@ -129,6 +202,18 @@ pub async fn prepare_cell(
         root,
         work_dir,
     })
+}
+
+fn stage_bundle_if_needed(
+    source: &Path,
+    target: &Path,
+    mode: SandboxMode,
+) -> Result<(), RuntimeError> {
+    if mode == SandboxMode::WorkspaceWrite && target_has_entries(target)? {
+        return Ok(());
+    }
+
+    stage_bundle(source, target)
 }
 
 fn extend_cell_filesystem_policy(
@@ -155,25 +240,108 @@ fn extend_cell_filesystem_policy(
     (read_roots, write_roots, exec_roots)
 }
 
+#[cfg(test)]
 fn verify_system_tools(tools: &[String]) -> Result<(), RuntimeError> {
-    for tool in tools {
-        which::which(tool).map_err(|_| {
-            RuntimeError::Sandbox(odyssey_rs_sandbox::SandboxError::DependencyMissing(
-                format!("missing system tool: {tool}"),
-            ))
-        })?;
-    }
+    let _ = resolve_system_tools(tools)?;
     Ok(())
 }
 
 fn stage_bundle(source: &Path, target: &Path) -> Result<(), RuntimeError> {
-    if target.exists() && target_has_entries(target)? {
-        return Ok(());
-    }
-    copy_dir_all(source, target).map_err(|err| RuntimeError::Io {
-        path: target.display().to_string(),
+    let Some(parent) = target.parent() else {
+        return Err(RuntimeError::Io {
+            path: target.display().to_string(),
+            message: "sandbox app root must have a parent directory".to_string(),
+        });
+    };
+
+    std::fs::create_dir_all(parent).map_err(|err| RuntimeError::Io {
+        path: parent.display().to_string(),
         message: err.to_string(),
     })?;
+
+    let staging_root = parent.join(format!(".stage-{}", Uuid::new_v4().simple()));
+    if let Err(err) = copy_dir_all(source, &staging_root) {
+        let _ = std::fs::remove_dir_all(&staging_root);
+        return Err(RuntimeError::Io {
+            path: staging_root.display().to_string(),
+            message: err.to_string(),
+        });
+    }
+
+    if target.exists()
+        && let Err(err) = std::fs::remove_dir_all(target)
+    {
+        let _ = std::fs::remove_dir_all(&staging_root);
+        return Err(RuntimeError::Io {
+            path: target.display().to_string(),
+            message: err.to_string(),
+        });
+    }
+
+    if let Err(err) = std::fs::rename(&staging_root, target) {
+        let _ = std::fs::remove_dir_all(&staging_root);
+        return Err(RuntimeError::Io {
+            path: target.display().to_string(),
+            message: err.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn build_network_policy(entries: &[String]) -> Result<SandboxNetworkPolicy, RuntimeError> {
+    match entries {
+        [] => Ok(SandboxNetworkPolicy {
+            mode: SandboxNetworkMode::Disabled,
+        }),
+        [entry] if entry == "*" => Ok(SandboxNetworkPolicy {
+            mode: SandboxNetworkMode::AllowAll,
+        }),
+        _ => Err(RuntimeError::Sandbox(
+            odyssey_rs_sandbox::SandboxError::InvalidConfig(
+                "sandbox.permissions.network only supports [] or [\"*\"] in v1".to_string(),
+            ),
+        )),
+    }
+}
+
+fn resolve_system_tools(tools: &[String]) -> Result<Vec<String>, RuntimeError> {
+    let mut resolved = Vec::with_capacity(tools.len());
+    for tool in tools {
+        let path = which::which(tool).map_err(|_| {
+            RuntimeError::Sandbox(odyssey_rs_sandbox::SandboxError::DependencyMissing(
+                format!("missing system tool: {tool}"),
+            ))
+        })?;
+        let path = path.canonicalize().map_err(|err| RuntimeError::Io {
+            path: path.display().to_string(),
+            message: err.to_string(),
+        })?;
+        resolved.push(path.display().to_string());
+    }
+    Ok(resolved)
+}
+
+fn validate_provider_support(
+    provider_name: &str,
+    mode: SandboxMode,
+    policy: &SandboxPolicy,
+) -> Result<(), RuntimeError> {
+    if provider_name == "host" && mode != SandboxMode::DangerFullAccess {
+        return Err(RuntimeError::Sandbox(
+            odyssey_rs_sandbox::SandboxError::Unsupported(
+                "host provider only supports danger_full_access; restricted bundle sandboxes require bubblewrap".to_string(),
+            ),
+        ));
+    }
+
+    if provider_name == "host" && matches!(policy.network.mode, SandboxNetworkMode::Disabled) {
+        return Err(RuntimeError::Sandbox(
+            odyssey_rs_sandbox::SandboxError::Unsupported(
+                "bundle disables network but host execution cannot enforce that policy".to_string(),
+            ),
+        ));
+    }
+
     Ok(())
 }
 
@@ -214,13 +382,15 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_mode, build_permission_rules, build_policy, extend_cell_filesystem_policy,
-        stage_bundle, target_has_entries, verify_system_tools,
+        build_mode, build_network_policy, build_operator_command_policy, build_permission_rules,
+        build_policy, extend_cell_filesystem_policy, stage_bundle, stage_bundle_if_needed,
+        target_has_entries, validate_provider_support, verify_system_tools,
     };
     use odyssey_rs_manifest::{
         BundleExecutor, BundleManifest, BundleMemory, BundlePermissionAction, BundlePermissionRule,
         BundleSandbox, BundleSandboxFilesystem, BundleSandboxLimits, BundleSandboxMounts,
-        BundleSandboxPermissions, BundleSandboxTools, ManifestVersion, ProviderKind,
+        BundleSandboxPermissions, BundleSandboxTools, BundleSystemToolsMode, ManifestVersion,
+        ProviderKind,
     };
     use odyssey_rs_protocol::SandboxMode;
     use odyssey_rs_sandbox::{SandboxNetworkMode, SandboxPolicy};
@@ -258,12 +428,13 @@ mod tests {
                     network: Vec::new(),
                     tools: BundleSandboxTools::default(),
                 },
+                system_tools_mode: BundleSystemToolsMode::Explicit,
                 system_tools: Vec::new(),
                 resources: BundleSandboxLimits::default(),
             },
         };
 
-        let policy = build_policy(Path::new("/bundle"), &manifest);
+        let policy = build_policy(Path::new("/bundle"), &manifest).expect("build policy");
 
         assert!(
             policy
@@ -299,6 +470,7 @@ mod tests {
             sandbox: BundleSandbox {
                 mode: SandboxMode::ReadOnly,
                 permissions: BundleSandboxPermissions::default(),
+                system_tools_mode: BundleSystemToolsMode::Explicit,
                 system_tools: Vec::new(),
                 resources: BundleSandboxLimits::default(),
             },
@@ -312,13 +484,27 @@ mod tests {
     }
 
     #[test]
-    fn stage_bundle_preserves_existing_workspace_changes() {
+    fn stage_bundle_replaces_existing_workspace_contents() {
         let src = tempdir().expect("src");
         let dst = tempdir().expect("dst");
         std::fs::write(src.path().join("hello.txt"), "from bundle").expect("write src");
         std::fs::write(dst.path().join("hello.txt"), "modified").expect("write dst");
 
         stage_bundle(src.path(), dst.path()).expect("stage");
+
+        let content = std::fs::read_to_string(dst.path().join("hello.txt")).expect("read dst");
+        assert_eq!(content, "from bundle");
+    }
+
+    #[test]
+    fn workspace_write_stage_preserves_existing_sandbox_changes() {
+        let src = tempdir().expect("src");
+        let dst = tempdir().expect("dst");
+        std::fs::write(src.path().join("hello.txt"), "from bundle").expect("write src");
+        std::fs::write(dst.path().join("hello.txt"), "modified").expect("write dst");
+
+        stage_bundle_if_needed(src.path(), dst.path(), SandboxMode::WorkspaceWrite)
+            .expect("stage if needed");
 
         let content = std::fs::read_to_string(dst.path().join("hello.txt")).expect("read dst");
         assert_eq!(content, "modified");
@@ -361,10 +547,11 @@ mod tests {
                         exec: vec!["bin/run".to_string()],
                         mounts: BundleSandboxMounts::default(),
                     },
-                    network: vec!["https://example.com".to_string()],
+                    network: vec!["*".to_string()],
                     tools: BundleSandboxTools::default(),
                 },
-                system_tools: Vec::new(),
+                system_tools_mode: BundleSystemToolsMode::Explicit,
+                system_tools: vec!["sh".to_string()],
                 resources: BundleSandboxLimits {
                     cpu: Some(3),
                     memory_mb: Some(64),
@@ -373,15 +560,78 @@ mod tests {
             },
         };
 
-        let policy = build_policy(Path::new("/bundle-root"), &manifest);
+        let policy = build_policy(Path::new("/bundle-root"), &manifest).expect("build policy");
+        let sh = which::which("sh")
+            .expect("resolve sh")
+            .canonicalize()
+            .expect("canonicalize sh");
 
-        assert_eq!(
-            policy.filesystem.exec_roots,
-            vec!["/bundle-root/bin/run".to_string()]
+        assert!(
+            policy
+                .filesystem
+                .exec_roots
+                .contains(&"/bundle-root/bin/run".to_string())
+        );
+        assert!(
+            policy
+                .filesystem
+                .exec_roots
+                .contains(&sh.display().to_string())
         );
         assert_eq!(policy.network.mode, SandboxNetworkMode::AllowAll);
         assert_eq!(policy.limits.cpu_seconds, Some(3));
         assert_eq!(policy.limits.memory_bytes, Some(64 * 1024 * 1024));
+    }
+
+    #[test]
+    fn operator_command_policy_includes_standard_system_exec_roots() {
+        let manifest = BundleManifest {
+            id: "demo".to_string(),
+            version: "0.1.0".to_string(),
+            manifest_version: ManifestVersion::V1,
+            readme: "README.md".to_string(),
+            agent_spec: "agent.yaml".to_string(),
+            executor: BundleExecutor {
+                kind: ProviderKind::Prebuilt,
+                id: "react".to_string(),
+                config: Value::Null,
+            },
+            memory: BundleMemory::default(),
+            skills: Vec::new(),
+            tools: Vec::new(),
+            sandbox: BundleSandbox {
+                mode: SandboxMode::ReadOnly,
+                permissions: BundleSandboxPermissions::default(),
+                system_tools_mode: BundleSystemToolsMode::Explicit,
+                system_tools: Vec::new(),
+                resources: BundleSandboxLimits::default(),
+            },
+        };
+
+        let policy =
+            build_operator_command_policy(Path::new("/bundle-root"), &manifest).expect("policy");
+
+        assert!(
+            policy
+                .filesystem
+                .exec_roots
+                .iter()
+                .any(|path| path == "/usr" || path == "/bin")
+        );
+    }
+
+    #[test]
+    fn build_network_policy_rejects_partial_allowlists() {
+        let error = build_network_policy(&["wttr.in".to_string()]).expect_err("reject allowlist");
+        assert!(error.to_string().contains("only supports [] or [\"*\"]"));
+    }
+
+    #[test]
+    fn validate_provider_support_rejects_host_for_restricted_modes() {
+        let policy = SandboxPolicy::default();
+        let error = validate_provider_support("host", SandboxMode::WorkspaceWrite, &policy)
+            .expect_err("restricted host rejected");
+        assert!(error.to_string().contains("danger_full_access"));
     }
 
     #[test]
@@ -423,6 +673,7 @@ mod tests {
                         ],
                     },
                 },
+                system_tools_mode: BundleSystemToolsMode::Explicit,
                 system_tools: Vec::new(),
                 resources: BundleSandboxLimits::default(),
             },
@@ -442,6 +693,71 @@ mod tests {
         let error = verify_system_tools(&["odyssey-rs-missing-tool".to_string()])
             .expect_err("missing tool rejected");
         assert!(error.to_string().contains("missing system tool"));
+    }
+
+    #[test]
+    fn build_policy_adds_standard_exec_roots_when_requested() {
+        let manifest = BundleManifest {
+            id: "demo".to_string(),
+            version: "0.1.0".to_string(),
+            manifest_version: ManifestVersion::V1,
+            readme: "README.md".to_string(),
+            agent_spec: "agent.yaml".to_string(),
+            executor: BundleExecutor {
+                kind: ProviderKind::Prebuilt,
+                id: "react".to_string(),
+                config: Value::Null,
+            },
+            memory: BundleMemory::default(),
+            skills: Vec::new(),
+            tools: Vec::new(),
+            sandbox: BundleSandbox {
+                mode: SandboxMode::ReadOnly,
+                permissions: BundleSandboxPermissions::default(),
+                system_tools_mode: BundleSystemToolsMode::Standard,
+                system_tools: Vec::new(),
+                resources: BundleSandboxLimits::default(),
+            },
+        };
+
+        let policy = build_policy(Path::new("/bundle-root"), &manifest).expect("build policy");
+        assert!(
+            policy
+                .filesystem
+                .exec_roots
+                .iter()
+                .any(|path| path == "/usr" || path == "/bin")
+        );
+        assert!(!policy.filesystem.exec_allow_all);
+    }
+
+    #[test]
+    fn build_policy_allows_all_exec_paths_when_requested() {
+        let manifest = BundleManifest {
+            id: "demo".to_string(),
+            version: "0.1.0".to_string(),
+            manifest_version: ManifestVersion::V1,
+            readme: "README.md".to_string(),
+            agent_spec: "agent.yaml".to_string(),
+            executor: BundleExecutor {
+                kind: ProviderKind::Prebuilt,
+                id: "react".to_string(),
+                config: Value::Null,
+            },
+            memory: BundleMemory::default(),
+            skills: Vec::new(),
+            tools: Vec::new(),
+            sandbox: BundleSandbox {
+                mode: SandboxMode::ReadOnly,
+                permissions: BundleSandboxPermissions::default(),
+                system_tools_mode: BundleSystemToolsMode::All,
+                system_tools: Vec::new(),
+                resources: BundleSandboxLimits::default(),
+            },
+        };
+
+        let policy = build_policy(Path::new("/bundle-root"), &manifest).expect("build policy");
+        assert!(policy.filesystem.exec_allow_all);
     }
 
     #[test]

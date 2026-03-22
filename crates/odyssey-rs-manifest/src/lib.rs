@@ -8,8 +8,8 @@ pub use agent_spec::{AgentSpec, AgentToolPolicy};
 pub use bundle_manifest::{
     BundleExecutor, BundleManifest, BundleMemory, BundlePermissionAction, BundlePermissionRule,
     BundleSandbox, BundleSandboxFilesystem, BundleSandboxLimits, BundleSandboxMounts,
-    BundleSandboxPermissions, BundleSandboxTools, BundleSkill, BundleTool, ManifestVersion,
-    ProviderKind,
+    BundleSandboxPermissions, BundleSandboxTools, BundleSkill, BundleSystemToolsMode, BundleTool,
+    ManifestVersion, ProviderKind,
 };
 pub use error::ManifestError;
 pub use loader::BundleLoader;

@@ -7,7 +7,7 @@ use pretty_assertions::assert_eq;
 use tempfile::tempdir;
 
 #[tokio::test]
-async fn workspace_mode_blocks_external_paths() {
+async fn host_provider_rejects_workspace_mode() {
     let temp = tempdir().expect("tempdir");
     let ctx = SandboxContext {
         workspace_root: temp.path().to_path_buf(),
@@ -15,50 +15,33 @@ async fn workspace_mode_blocks_external_paths() {
         policy: SandboxPolicy::default(),
     };
     let provider = LocalSandboxProvider::default();
-    let handle = provider.prepare(&ctx).await.expect("prepare");
-
-    let inside = temp.path().join("file.txt");
-    let outside = tempdir().expect("tempdir").path().join("outside.txt");
-
-    assert_eq!(
-        provider.check_access(&handle, &inside, AccessMode::Read),
-        AccessDecision::Allow
-    );
-    assert!(matches!(
-        provider.check_access(&handle, &outside, AccessMode::Write),
-        AccessDecision::Deny(_)
-    ));
+    let error = provider
+        .prepare(&ctx)
+        .await
+        .expect_err("workspace mode rejected");
+    assert!(error.to_string().contains("danger_full_access"));
 }
 
 #[tokio::test]
-async fn read_roots_restrict_access() {
+async fn danger_full_access_still_allows_access_checks() {
     let temp = tempdir().expect("tempdir");
-    let allow_path = temp.path().join("allowed");
-    std::fs::create_dir_all(&allow_path).expect("create allow dir");
-
-    let mut policy = SandboxPolicy::default();
-    policy
-        .filesystem
-        .read_roots
-        .push(allow_path.to_string_lossy().to_string());
-
     let ctx = SandboxContext {
         workspace_root: temp.path().to_path_buf(),
-        mode: SandboxMode::ReadOnly,
-        policy,
+        mode: SandboxMode::DangerFullAccess,
+        policy: SandboxPolicy::default(),
     };
     let provider = LocalSandboxProvider::default();
     let handle = provider.prepare(&ctx).await.expect("prepare");
 
-    let allowed = allow_path.join("file.txt");
-    let denied = temp.path().join("other.txt");
+    let allowed = temp.path().join("file.txt");
+    let denied = tempdir().expect("outside").path().join("outside.txt");
 
     assert_eq!(
         provider.check_access(&handle, &allowed, AccessMode::Read),
         AccessDecision::Allow
     );
-    assert!(matches!(
+    assert_eq!(
         provider.check_access(&handle, &denied, AccessMode::Write),
-        AccessDecision::Deny(_)
-    ));
+        AccessDecision::Allow
+    );
 }

@@ -348,6 +348,16 @@ tools:
             .await
             .expect("send message without session");
         assert_eq!(no_session_app.status, "no active session");
+
+        let mut no_session_command_app = App {
+            input: "!pwd".to_string(),
+            ..App::default()
+        };
+        let (sender, _receiver) = mpsc::channel(16);
+        session::send_command(&client, &mut no_session_command_app, sender)
+            .await
+            .expect("send command without session");
+        assert_eq!(no_session_command_app.status, "no active session");
         abort_stream(&mut stream_handle);
     }
 
@@ -463,6 +473,27 @@ tools:
         .await
         .expect("handle chat scroll");
         assert_eq!(app.scroll, 10);
+
+        app.status = "running".to_string();
+        handle_app_event(
+            AppEvent::Server(EventMsg {
+                id: Uuid::new_v4(),
+                session_id: active_session,
+                created_at: Utc::now(),
+                payload: EventPayload::ExecCommandEnd {
+                    turn_id: Uuid::new_v4(),
+                    exec_id: Uuid::new_v4(),
+                    exit_code: 0,
+                },
+            }),
+            &client,
+            &mut app,
+            sender.clone(),
+            &mut stream_handle,
+        )
+        .await
+        .expect("handle exec end");
+        assert_eq!(app.status, "idle");
 
         handle_app_event(
             AppEvent::Tick,

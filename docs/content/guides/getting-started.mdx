@@ -106,3 +106,10 @@ The TUI embeds the runtime directly:
 ```bash
 cargo run -p odyssey-rs-tui -- --bundle hello-world@latest
 ```
+
+Inside the TUI:
+
+- plain text sends a normal chat turn to the active session
+- slash commands such as `/new` manage sessions and bundle state
+- lines that start with `!` run a direct sandboxed process inside the current session, for example
+  `!ls -la`

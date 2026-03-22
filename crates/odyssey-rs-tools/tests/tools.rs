@@ -16,10 +16,25 @@ use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
 use uuid::Uuid;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct FakeProvider {
     calls: Arc<Mutex<Vec<CommandSpec>>>,
     deny_paths: Arc<Mutex<Vec<String>>>,
+    result_status_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+}
+
+impl Default for FakeProvider {
+    fn default() -> Self {
+        Self {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            deny_paths: Arc::new(Mutex::new(Vec::new())),
+            result_status_code: Some(0),
+            stdout: "line one".to_string(),
+            stderr: "line two".to_string(),
+        }
+    }
 }
 
 #[async_trait]
@@ -35,9 +50,13 @@ impl SandboxProvider for FakeProvider {
     ) -> Result<CommandResult, SandboxError> {
         self.calls.lock().expect("lock calls").push(spec.clone());
         Ok(CommandResult {
-            status_code: Some(0),
-            stdout: format!("ran:{}:{}", spec.command.display(), spec.args.join(" ")),
-            stderr: String::default(),
+            status_code: self.result_status_code,
+            stdout: if self.stdout.is_empty() {
+                format!("ran:{}:{}", spec.command.display(), spec.args.join(" "))
+            } else {
+                self.stdout.clone()
+            },
+            stderr: self.stderr.clone(),
             stdout_truncated: false,
             stderr_truncated: false,
         })
@@ -50,12 +69,16 @@ impl SandboxProvider for FakeProvider {
         sink: &mut dyn CommandOutputSink,
     ) -> Result<CommandResult, SandboxError> {
         self.calls.lock().expect("lock calls").push(spec.clone());
-        sink.stdout("line one");
-        sink.stderr("line two");
+        if !self.stdout.is_empty() {
+            sink.stdout(&self.stdout);
+        }
+        if !self.stderr.is_empty() {
+            sink.stderr(&self.stderr);
+        }
         Ok(CommandResult {
-            status_code: Some(0),
-            stdout: "line one".to_string(),
-            stderr: "line two".to_string(),
+            status_code: self.result_status_code,
+            stdout: self.stdout.clone(),
+            stderr: self.stderr.clone(),
             stdout_truncated: false,
             stderr_truncated: false,
         })
@@ -222,7 +245,7 @@ async fn authorization_and_command_events_are_recorded() {
         .call(
             &ctx,
             json!({
-                "command": "/bin/echo hello world",
+                "command": "echo hello world",
                 "cwd": "."
             }),
         )
@@ -233,14 +256,36 @@ async fn authorization_and_command_events_are_recorded() {
     assert_eq!(result["stdout"], json!("line one"));
     assert_eq!(result["stderr"], json!("line two"));
     assert_eq!(provider.calls.lock().expect("lock calls").len(), 1);
+    let recorded_call = provider.calls.lock().expect("lock calls")[0].clone();
+    assert_eq!(
+        recorded_call.args,
+        vec!["-lc".to_string(), "echo hello world".to_string()]
+    );
+    assert!(
+        matches!(
+            recorded_call
+                .command
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("sh" | "bash" | "dash")
+        ),
+        "expected shell command path, got {}",
+        recorded_call.command.display()
+    );
 
     let recorded = events.events.lock().expect("lock events");
     assert_eq!(recorded.len(), 4);
     assert_eq!(
         matches!(
             &recorded[0],
-            ToolEvent::CommandStarted { tool, command, .. }
-                if tool == "Bash" && command[0] == "/bin/echo"
+            ToolEvent::CommandStarted { tool, command, .. } if tool == "Bash"
+                && matches!(
+                    command
+                        .first()
+                        .and_then(|program| std::path::Path::new(program).file_name())
+                        .and_then(|name| name.to_str()),
+                    Some("sh" | "bash" | "dash")
+                )
         ),
         true
     );
@@ -264,6 +309,35 @@ async fn authorization_and_command_events_are_recorded() {
             ToolEvent::CommandFinished { tool, status, .. } if tool == "Bash" && *status == 0
         ),
         true
+    );
+}
+
+#[tokio::test]
+async fn bash_tool_returns_error_for_non_zero_shell_exit() {
+    let temp = tempdir().expect("tempdir");
+    let provider = FakeProvider {
+        result_status_code: Some(1),
+        stdout: String::new(),
+        stderr: "Permission denied".to_string(),
+        ..FakeProvider::default()
+    };
+    let ctx = test_context(temp.path(), provider, HashMap::new());
+
+    let bash = builtin_registry().get("Bash").expect("bash tool");
+    let error = bash
+        .call(
+            &ctx,
+            json!({
+                "command": "echo hello > blocked.txt",
+                "cwd": "."
+            }),
+        )
+        .await
+        .expect_err("non-zero shell exit should fail");
+
+    assert_eq!(
+        error.to_string(),
+        "execution failed: command `echo hello > blocked.txt` exited with status 1: Permission denied"
     );
 }
 
