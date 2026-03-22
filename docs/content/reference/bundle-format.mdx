@@ -29,16 +29,13 @@ default template:
 {
   id: 'my-bundle',
   version: '0.1.0',
+  manifest_version: 'odyssey.bundle/v1',
+  readme: 'README.md',
   agent_spec: 'agent.yaml',
   executor: { type: 'prebuilt', id: 'react' },
-  memory: {
-    provider: { type: 'prebuilt', id: 'sliding_window' },
-    config: { max_window: 100 }
-  },
+  memory: { type: 'prebuilt', id: 'sliding_window', config: { max_window: 100 } },
   skills: [],
-  resources: [],
   tools: [],
-  server: { enable_http: true },
   sandbox: {
     mode: 'workspace_write',
     permissions: {
@@ -64,13 +61,13 @@ default template:
 | --- | --- | --- |
 | `id` | string | Unique bundle identifier (required) |
 | `version` | string | Semantic version (required) |
+| `manifest_version` | string | Bundle manifest schema identifier (required) |
+| `readme` | string | Relative path to the bundle README file (required) |
 | `agent_spec` | string | Relative path to the agent YAML file (required) |
 | `executor` | object | Executor configuration (required) |
 | `memory` | object | Memory provider configuration |
 | `skills` | array | Skill entries (`{ name, path }`) |
-| `resources` | array | Relative paths to resource files or directories |
 | `tools` | array | Tool entries (`{ name, source }`) |
-| `server` | object | Server configuration (`{ enable_http }`) |
 | `sandbox` | object | Sandbox execution policies |
 
 ### Sandbox fields
@@ -92,16 +89,17 @@ default template:
 ### Validation rules
 
 - `executor.type` must be `prebuilt`
-- `memory.provider.type` must be `prebuilt`
-- `executor.id` and `memory.provider.id` must be non-empty
-- Each resource and skill path must exist inside the project
+- `memory.type` must be `prebuilt`
+- `executor.id` and `memory.id` must be non-empty
+- `readme` must point to an existing file inside the project
+- Each skill path must exist inside the project
 - Host mount paths in `sandbox.permissions.filesystem.mounts.read` and `.write` must be absolute
 - Tool entries must use `source: "builtin"`
 
 ### Current implementation limits
 
 - `executor.id = "react"` is the only executor implemented by the runtime
-- `memory.provider.id = "sliding_window"` is the only memory provider implemented
+- `memory.id = "sliding_window"` is the only memory provider implemented
 - Only `source: "builtin"` tools are supported (no custom tools in v1)
 
 ## Agent Spec
@@ -118,7 +116,6 @@ model:
   name: gpt-4.1-mini
 tools:
   allow: []
-  deny: []
 ```
 
 ### Fields
@@ -133,7 +130,6 @@ tools:
 | `model.name` | string | yes | Model name (e.g. `gpt-4.1-mini`) |
 | `model.config` | object | no | Provider-specific configuration |
 | `tools.allow` | string[] | no | Tool allowlist |
-| `tools.deny` | string[] | no | Tool denylist |
 
 `model` can be overridden at session creation and again per-turn through `TurnContextOverride.model`.
 
@@ -155,6 +151,7 @@ tools:
 Build behavior that matters when authoring bundles:
 
 - The agent spec file is copied into the built layout as `agent.yaml`
+- The README file is copied into the built layout at the manifest-defined `readme` path
 - Each skill entry is copied into `skills/<skill.name>`
-- Each resource entry is copied into `resources/<basename>`
+- The `resources/` directory, when present, is copied into the built layout as `resources/`
 - The manifest (`odyssey.bundle.json5`) is not included in the payload layer

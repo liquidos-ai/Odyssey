@@ -44,6 +44,7 @@ pub async fn publish_layout(
             .clone()
             .unwrap_or_else(|| config.version.clone()),
         digest: manifest_digest.clone(),
+        readme: config.readme.clone(),
         bundle_manifest: config.bundle_manifest.clone(),
         agent_spec: config.agent_spec.clone(),
     };

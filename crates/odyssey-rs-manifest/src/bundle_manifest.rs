@@ -2,23 +2,34 @@ use odyssey_rs_protocol::SandboxMode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderKind {
+    Prebuilt,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ManifestVersion {
+    #[default]
+    #[serde(rename = "odyssey.bundle/v1")]
+    V1,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BundleManifest {
     pub id: String,
     pub version: String,
+    pub manifest_version: ManifestVersion,
+    pub readme: String,
     pub agent_spec: String,
     pub executor: BundleExecutor,
     #[serde(default)]
     pub memory: BundleMemory,
     #[serde(default)]
-    pub resources: Vec<String>,
-    #[serde(default)]
     pub skills: Vec<BundleSkill>,
     #[serde(default)]
     pub tools: Vec<BundleTool>,
-    #[serde(default)]
-    pub server: BundleServer,
     #[serde(default)]
     pub sandbox: BundleSandbox,
 }
@@ -27,7 +38,7 @@ pub struct BundleManifest {
 #[serde(deny_unknown_fields)]
 pub struct BundleExecutor {
     #[serde(rename = "type")]
-    pub kind: String,
+    pub kind: ProviderKind,
     pub id: String,
     #[serde(default)]
     pub config: Value,
@@ -36,8 +47,9 @@ pub struct BundleExecutor {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BundleMemory {
-    #[serde(default)]
-    pub provider: BundleMemoryProvider,
+    #[serde(rename = "type")]
+    pub kind: ProviderKind,
+    pub id: String,
     #[serde(default)]
     pub config: Value,
 }
@@ -45,25 +57,9 @@ pub struct BundleMemory {
 impl Default for BundleMemory {
     fn default() -> Self {
         Self {
-            provider: BundleMemoryProvider::default(),
-            config: Value::Null,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BundleMemoryProvider {
-    #[serde(rename = "type")]
-    pub kind: String,
-    pub id: String,
-}
-
-impl Default for BundleMemoryProvider {
-    fn default() -> Self {
-        Self {
-            kind: "prebuilt".to_string(),
+            kind: ProviderKind::Prebuilt,
             id: "sliding_window".to_string(),
+            config: Value::Null,
         }
     }
 }
@@ -85,13 +81,6 @@ pub struct BundleTool {
 
 fn default_builtin_source() -> String {
     "builtin".to_string()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct BundleServer {
-    #[serde(default)]
-    pub enable_http: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -201,20 +190,22 @@ pub struct BundleSandboxLimits {
 
 #[cfg(test)]
 mod tests {
+    use crate::bundle_manifest::ProviderKind;
+
     use super::{
-        BundleManifest, BundleMemory, BundleMemoryProvider, BundlePermissionAction, BundleSandbox,
-        BundleSandboxTools, default_builtin_source,
+        BundleManifest, BundleMemory, BundlePermissionAction, BundleSandbox, BundleSandboxTools,
+        default_builtin_source,
     };
     use odyssey_rs_protocol::SandboxMode;
     use pretty_assertions::assert_eq;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     #[test]
     fn defaults_match_v1_contract() {
         let memory = BundleMemory::default();
-        assert_eq!(memory.provider.kind, "prebuilt");
-        assert_eq!(memory.provider.id, "sliding_window");
-        assert_eq!(memory.config, serde_json::Value::Null);
+        assert_eq!(memory.kind, ProviderKind::Prebuilt);
+        assert_eq!(memory.id, "sliding_window");
+        assert_eq!(memory.config, Value::Null);
 
         let sandbox = BundleSandbox::default();
         assert_eq!(sandbox.mode, SandboxMode::WorkspaceWrite);
@@ -233,6 +224,8 @@ mod tests {
         let manifest: BundleManifest = serde_json::from_value(json!({
             "id": "demo",
             "version": "0.1.0",
+            "manifest_version": "odyssey.bundle/v1",
+            "readme": "README.md",
             "agent_spec": "agent.yaml",
             "executor": {
                 "type": "prebuilt",
@@ -241,12 +234,10 @@ mod tests {
         }))
         .expect("deserialize bundle manifest");
 
-        assert_eq!(manifest.memory.provider.kind, "prebuilt");
-        assert_eq!(manifest.memory.provider.id, "sliding_window");
-        assert_eq!(manifest.resources, Vec::<String>::new());
+        assert_eq!(manifest.memory.kind, ProviderKind::Prebuilt);
+        assert_eq!(manifest.memory.id, "sliding_window");
         assert_eq!(manifest.skills.len(), 0);
         assert_eq!(manifest.tools.len(), 0);
-        assert!(!manifest.server.enable_http);
         assert_eq!(manifest.sandbox.mode, SandboxMode::WorkspaceWrite);
         assert_eq!(
             manifest.sandbox.permissions.filesystem.exec,
@@ -267,6 +258,8 @@ mod tests {
         let manifest: BundleManifest = serde_json::from_value(json!({
             "id": "demo",
             "version": "0.1.0",
+            "manifest_version": "odyssey.bundle/v1",
+            "readme": "README.md",
             "agent_spec": "agent.yaml",
             "executor": {
                 "type": "prebuilt",
@@ -306,17 +299,5 @@ mod tests {
             manifest.sandbox.permissions.tools.rules[2].action,
             BundlePermissionAction::Deny
         );
-    }
-
-    #[test]
-    fn memory_provider_can_be_overridden() {
-        let provider: BundleMemoryProvider = serde_json::from_value(json!({
-            "type": "custom",
-            "id": "graph"
-        }))
-        .expect("deserialize provider");
-
-        assert_eq!(provider.kind, "custom");
-        assert_eq!(provider.id, "graph");
     }
 }

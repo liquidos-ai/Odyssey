@@ -50,6 +50,7 @@ pub struct BundleConfig {
     pub id: String,
     pub version: String,
     pub namespace: String,
+    pub readme: String,
     pub bundle_manifest: odyssey_rs_manifest::BundleManifest,
     pub agent_spec: odyssey_rs_manifest::AgentSpec,
 }
@@ -348,7 +349,7 @@ mod tests {
     };
     use odyssey_rs_manifest::{
         AgentSpec, AgentToolPolicy, BundleExecutor, BundleManifest, BundleMemory, BundleSandbox,
-        BundleServer,
+        ManifestVersion, ProviderKind,
     };
     use odyssey_rs_protocol::ModelSpec;
     use pretty_assertions::assert_eq;
@@ -362,20 +363,21 @@ mod tests {
             id: "demo".to_string(),
             version: "0.1.0".to_string(),
             namespace: "local".to_string(),
+            readme: "# demo\n".to_string(),
             bundle_manifest: BundleManifest {
                 id: "demo".to_string(),
                 version: "0.1.0".to_string(),
+                manifest_version: ManifestVersion::V1,
+                readme: "README.md".to_string(),
                 agent_spec: "agent.yaml".to_string(),
                 executor: BundleExecutor {
-                    kind: "prebuilt".to_string(),
+                    kind: ProviderKind::Prebuilt,
                     id: "react".to_string(),
                     config: serde_json::Value::Null,
                 },
                 memory: BundleMemory::default(),
-                resources: Vec::new(),
                 skills: Vec::new(),
                 tools: Vec::new(),
-                server: BundleServer::default(),
                 sandbox: BundleSandbox::default(),
             },
             agent_spec: AgentSpec {

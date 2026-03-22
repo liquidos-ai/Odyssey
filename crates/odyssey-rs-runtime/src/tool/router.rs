@@ -19,7 +19,6 @@ pub fn select_tools(
     if !agent.tools.allow.is_empty() && !agent.tools.allow.iter().any(|entry| entry == "*") {
         names.retain(|name| agent.tools.allow.iter().any(|entry| entry == name));
     }
-    names.retain(|name| !agent.tools.deny.iter().any(|entry| entry == name));
     names.sort();
     names.dedup();
     names
@@ -34,7 +33,7 @@ mod tests {
     use async_trait::async_trait;
     use odyssey_rs_manifest::{
         AgentSpec, AgentToolPolicy, BundleExecutor, BundleManifest, BundleMemory, BundleSandbox,
-        BundleServer, BundleTool,
+        BundleTool, ManifestVersion, ProviderKind,
     };
     use odyssey_rs_protocol::ModelSpec;
     use odyssey_rs_tools::{Tool, ToolContext, ToolError, ToolRegistry};
@@ -68,14 +67,15 @@ mod tests {
         BundleManifest {
             id: "demo".to_string(),
             version: "0.1.0".to_string(),
+            manifest_version: ManifestVersion::V1,
+            readme: "README.md".to_string(),
             agent_spec: "agent.yaml".to_string(),
             executor: BundleExecutor {
-                kind: "prebuilt".to_string(),
+                kind: ProviderKind::Prebuilt,
                 id: "react".to_string(),
                 config: Value::Null,
             },
             memory: BundleMemory::default(),
-            resources: Vec::new(),
             skills: Vec::new(),
             tools: tools
                 .into_iter()
@@ -84,12 +84,11 @@ mod tests {
                     source: "builtin".to_string(),
                 })
                 .collect(),
-            server: BundleServer::default(),
             sandbox: BundleSandbox::default(),
         }
     }
 
-    fn agent(allow: Vec<&str>, deny: Vec<&str>) -> AgentSpec {
+    fn agent(allow: Vec<&str>) -> AgentSpec {
         AgentSpec {
             id: "demo".to_string(),
             description: String::default(),
@@ -101,7 +100,6 @@ mod tests {
             },
             tools: AgentToolPolicy {
                 allow: allow.into_iter().map(ToString::to_string).collect(),
-                deny: deny.into_iter().map(ToString::to_string).collect(),
             },
         }
     }
@@ -116,11 +114,7 @@ mod tests {
 
     #[test]
     fn select_tools_uses_registry_when_manifest_tools_are_empty() {
-        let selected = select_tools(
-            &registry(),
-            &manifest(Vec::new()),
-            &agent(vec!["*"], vec![]),
-        );
+        let selected = select_tools(&registry(), &manifest(Vec::new()), &agent(vec!["*"]));
 
         assert_eq!(
             selected
@@ -132,11 +126,11 @@ mod tests {
     }
 
     #[test]
-    fn select_tools_applies_manifest_allow_and_deny_filters() {
+    fn select_tools_applies_manifest_and_agent_allow_filters() {
         let selected = select_tools(
             &registry(),
             &manifest(vec!["Write", "Read", "Write", "Missing"]),
-            &agent(vec!["Read", "Write"], vec!["Read"]),
+            &agent(vec!["Read", "Write"]),
         );
 
         assert_eq!(
@@ -144,7 +138,7 @@ mod tests {
                 .into_iter()
                 .map(|tool| tool.name().to_string())
                 .collect::<Vec<_>>(),
-            vec!["Write".to_string()]
+            vec!["Read".to_string(), "Write".to_string()]
         );
     }
 }

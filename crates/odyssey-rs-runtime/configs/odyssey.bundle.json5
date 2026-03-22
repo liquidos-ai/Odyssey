@@ -1,16 +1,13 @@
 {
   id: '{{ bundle_id }}',
   version: '0.1.0',
+  manifest_version: 'odyssey.bundle/v1',
+  readme: 'README.md',
   agent_spec: 'agent.yaml',
   executor: { type: 'prebuilt', id: 'react' },
-  memory: {
-    provider: { type: 'prebuilt', id: 'sliding_window' },
-    config: { max_window: 100 }
-  },
+  memory: { type: 'prebuilt', id: 'sliding_window', config: { max_window: 100 } },
   skills: [],
-  resources: [],
   tools: [],
-  server: { enable_http: true },
   sandbox: {
     mode: 'workspace_write',
     permissions: {

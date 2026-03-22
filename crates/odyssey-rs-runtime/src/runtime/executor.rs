@@ -81,13 +81,7 @@ impl ScheduleExecutor {
         sender: broadcast::Sender<EventMsg>,
     ) -> Result<String, RuntimeError> {
         let session_id = session.id;
-        let mode_override = self
-            .runtime
-            .config
-            .sandbox_mode_override
-            .or(turn_context_override
-                .as_ref()
-                .and_then(|ctx| ctx.sandbox_mode));
+        let mode_override = self.runtime.config.sandbox_mode_override;
         let mode = effective_sandbox_mode(&resolved.manifest, mode_override);
         let sandbox_runtime = if mode == SandboxMode::DangerFullAccess {
             &self.runtime.host_sandbox
@@ -232,7 +226,8 @@ fn resolve_model_spec(
 mod tests {
     use chrono::Utc;
     use odyssey_rs_manifest::{
-        BundleExecutor, BundleManifest, BundleMemory, BundleSandbox, BundleServer, BundleTool,
+        BundleExecutor, BundleManifest, BundleMemory, BundleSandbox, BundleTool, ManifestVersion,
+        ProviderKind,
     };
     use odyssey_rs_protocol::{EventMsg, EventPayload};
     use odyssey_rs_protocol::{ModelSpec, Task, TurnContextOverride};
@@ -252,20 +247,20 @@ mod tests {
         BundleManifest {
             id: "demo".to_string(),
             version: "0.1.0".to_string(),
+            manifest_version: ManifestVersion::V1,
+            readme: "README.md".to_string(),
             agent_spec: "agent.yaml".to_string(),
             executor: BundleExecutor {
-                kind: "prebuilt".to_string(),
+                kind: ProviderKind::Prebuilt,
                 id: "react".to_string(),
                 config: json!({}),
             },
             memory: BundleMemory::default(),
-            resources: Vec::new(),
             skills: Vec::new(),
             tools: vec![BundleTool {
                 name: "Read".to_string(),
                 source: "builtin".to_string(),
             }],
-            server: BundleServer::default(),
             sandbox: BundleSandbox {
                 mode,
                 ..BundleSandbox::default()
@@ -352,18 +347,18 @@ mod tests {
             },
             SandboxMode::WorkspaceWrite,
             Some(&TurnContextOverride {
-                metadata: json!({ "trace": "abc" }),
+                model: Some(ModelSpec {
+                    provider: "openai".to_string(),
+                    name: "gpt-4o".to_string(),
+                    config: None,
+                }),
                 ..TurnContextOverride::default()
             }),
         );
 
         assert_eq!(context.cwd.as_deref(), Some("/workspace/demo"));
-        assert_eq!(
-            context.metadata,
-            json!({
-                "trace": "abc"
-            })
-        );
+        assert_eq!(context.model.unwrap().name, "gpt-4o");
+        assert_eq!(context.metadata, json!({}));
     }
 
     #[test]

@@ -55,6 +55,7 @@ jobs:
             --timeout 120 \
             --out Xml \
             --ignore-panics
+            --exclude-files "examples/*"
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@v5

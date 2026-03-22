@@ -18,6 +18,4 @@ pub struct AgentSpec {
 pub struct AgentToolPolicy {
     #[serde(default)]
     pub allow: Vec<String>,
-    #[serde(default)]
-    pub deny: Vec<String>,
 }

@@ -273,23 +273,6 @@ impl TurnContext {
         if override_ctx.model.is_some() {
             self.model = override_ctx.model.clone();
         }
-        if override_ctx.sandbox_mode.is_some() {
-            self.sandbox_mode = override_ctx.sandbox_mode;
-        }
-        if override_ctx.approval_policy.is_some() {
-            self.approval_policy = override_ctx.approval_policy;
-        }
-        let Some(override_map) = override_ctx.metadata.as_object() else {
-            return;
-        };
-        if override_map.is_empty() {
-            return;
-        }
-        if let Some(target) = self.metadata.as_object_mut() {
-            target.extend(override_map.clone());
-        } else {
-            self.metadata.clone_from(&override_ctx.metadata);
-        }
     }
 }
 
@@ -299,12 +282,6 @@ pub struct TurnContextOverride {
     pub cwd: Option<String>,
     #[serde(default)]
     pub model: Option<ModelSpec>,
-    #[serde(default)]
-    pub sandbox_mode: Option<SandboxMode>,
-    #[serde(default)]
-    pub approval_policy: Option<ApprovalPolicy>,
-    #[serde(default = "empty_json_object")]
-    pub metadata: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -382,7 +359,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn turn_context_override_merges_metadata() {
+    fn turn_context_override() {
         let mut ctx = TurnContext {
             cwd: Some("/workspace".to_string()),
             model: Some(ModelSpec {
@@ -396,15 +373,12 @@ mod tests {
         };
         let override_ctx = TurnContextOverride {
             cwd: Some("/override".to_string()),
-            approval_policy: Some(ApprovalPolicy::Never),
-            metadata: json!({ "extra": true }),
             ..TurnContextOverride::default()
         };
         ctx.apply_override(&override_ctx);
 
         assert_eq!(ctx.cwd, Some("/override".to_string()));
-        assert_eq!(ctx.approval_policy, Some(ApprovalPolicy::Never));
-        assert_eq!(ctx.metadata, json!({ "existing": 1, "extra": true }));
+        assert_eq!(ctx.approval_policy, Some(ApprovalPolicy::OnRequest));
     }
 
     #[test]

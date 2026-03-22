@@ -1,16 +1,14 @@
 {
   id: 'hello-world',
   version: '0.1.0',
+  manifest_version: "odyssey.bundle/v1",
+  readme: "README.md",
   agent_spec: 'agent.yaml',
   executor: { type: 'prebuilt', id: 'react' },
-  memory: {
-    provider: { type: 'prebuilt', id: 'sliding_window' },
-    config: { max_window: 100 }
-  },
+  memory: { type: 'prebuilt', id: 'sliding_window', config: { max_window: 100 } },
   skills: [
     { name: 'weather', path: 'skills/weather' }
   ],
-  resources: [],
   tools: [
     { name: 'Read', source: 'builtin' },
     { name: 'Write', source: 'builtin' },
@@ -20,7 +18,6 @@
     { name: 'Bash', source: 'builtin' },
     { name: 'Skill', source: 'builtin' }
   ],
-  server: { enable_http: true },
   sandbox: {
     mode: 'read_only',
     permissions: {

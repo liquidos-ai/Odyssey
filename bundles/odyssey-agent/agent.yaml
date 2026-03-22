@@ -37,4 +37,3 @@ model:
 
 tools:
   allow: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'Skill']
-  deny: []

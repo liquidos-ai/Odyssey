@@ -173,20 +173,20 @@ mod tests {
 
     fn write_bundle_project(root: &Path, bundle_id: &str) {
         fs::create_dir_all(root.join("skills").join("repo-hygiene")).expect("create skill dir");
-        fs::create_dir_all(root.join("data")).expect("create data dir");
+        fs::create_dir_all(root.join("resources").join("data")).expect("create data dir");
         fs::write(
             root.join("odyssey.bundle.json5"),
             format!(
                 r#"{{
                     id: "{bundle_id}",
                     version: "0.1.0",
+                    manifest_version: "odyssey.bundle/v1",
+                    readme: "README.md",
                     agent_spec: "agent.yaml",
                     executor: {{ type: "prebuilt", id: "react" }},
-                    memory: {{ provider: {{ type: "prebuilt", id: "sliding_window" }} }},
-                    resources: ["data"],
+                    memory: {{ type: "prebuilt", id: "sliding_window" }},
                     skills: [{{ name: "repo-hygiene", path: "skills/repo-hygiene" }}],
                     tools: [{{ name: "Read", source: "builtin" }}],
-                    server: {{ enable_http: true }},
                     sandbox: {{
                         permissions: {{
                             filesystem: {{ exec: [], mounts: {{ read: [], write: [] }} }},
@@ -211,17 +211,21 @@ model:
   name: gpt-4.1-mini
 tools:
   allow: ["Read", "Skill"]
-  deny: []
 "#
             ),
         )
         .expect("write agent");
+        fs::write(root.join("README.md"), format!("# {bundle_id}\n")).expect("write readme");
         fs::write(
             root.join("skills").join("repo-hygiene").join("SKILL.md"),
             "# Repo Hygiene\n\nKeep commits focused.\n",
         )
         .expect("write skill");
-        fs::write(root.join("data").join("notes.txt"), "hello world\n").expect("write resource");
+        fs::write(
+            root.join("resources").join("data").join("notes.txt"),
+            "hello world\n",
+        )
+        .expect("write resource");
     }
 
     #[test]

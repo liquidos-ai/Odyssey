@@ -363,6 +363,7 @@ impl BundleStore {
             id: config.id.clone(),
             version: config.version.clone(),
             digest: manifest_digest,
+            readme: config.readme.clone(),
             bundle_manifest: config.bundle_manifest.clone(),
             agent_spec: config.agent_spec.clone(),
         };
@@ -546,63 +547,10 @@ fn _artifact_to_install(artifact: BundleArtifact) -> BundleInstall {
 #[cfg(test)]
 mod tests {
     use super::{BundleInstallSummary, BundleStore};
+    use crate::test_support::write_bundle_project;
     use pretty_assertions::assert_eq;
     use std::fs;
-    use std::path::Path;
     use tempfile::tempdir;
-
-    fn write_bundle_project(root: &Path, id: &str, version: &str) {
-        fs::create_dir_all(root.join("skills").join("repo-hygiene")).expect("create skill dir");
-        fs::create_dir_all(root.join("data")).expect("create data dir");
-        fs::write(
-            root.join("odyssey.bundle.json5"),
-            format!(
-                r#"{{
-                    id: "{id}",
-                    version: "{version}",
-                    agent_spec: "agent.yaml",
-                    executor: {{ type: "prebuilt", id: "react" }},
-                    memory: {{ provider: {{ type: "prebuilt", id: "sliding_window" }} }},
-                    resources: ["data"],
-                    skills: [{{ name: "repo-hygiene", path: "skills/repo-hygiene" }}],
-                    tools: [{{ name: "Read", source: "builtin" }}],
-                    server: {{ enable_http: true }},
-                    sandbox: {{
-                        permissions: {{
-                            filesystem: {{ exec: [], mounts: {{ read: [], write: [] }} }},
-                            network: [],
-                            tools: {{ mode: "default", rules: [] }}
-                        }},
-                        system_tools: [],
-                        resources: {{}}
-                    }}
-                }}"#
-            ),
-        )
-        .expect("write manifest");
-        fs::write(
-            root.join("agent.yaml"),
-            format!(
-                r#"id: {id}
-description: test bundle
-prompt: keep responses concise
-model:
-  provider: openai
-  name: gpt-4.1-mini
-tools:
-  allow: ["Read", "Skill"]
-  deny: []
-"#
-            ),
-        )
-        .expect("write agent");
-        fs::write(
-            root.join("skills").join("repo-hygiene").join("SKILL.md"),
-            "# Repo Hygiene\n",
-        )
-        .expect("write skill");
-        fs::write(root.join("data").join("notes.txt"), "hello world\n").expect("write resource");
-    }
 
     #[test]
     fn build_install_and_resolve_variants_round_trip() {
@@ -610,7 +558,13 @@ tools:
         let store = BundleStore::new(temp.path().join("store"));
         let project_root = temp.path().join("project");
         fs::create_dir_all(&project_root).expect("create project root");
-        write_bundle_project(&project_root, "demo", "0.1.0");
+        write_bundle_project(
+            &project_root,
+            "demo",
+            "0.1.0",
+            "data/notes.txt",
+            "hello world\n",
+        );
 
         let install = store
             .build_and_install(&project_root)
@@ -631,7 +585,7 @@ tools:
         assert_eq!(by_digest.metadata.digest, install.metadata.digest);
         assert_eq!(
             fs::read_to_string(install.path.join("agent.yaml")).expect("read agent"),
-            "id: demo\ndescription: test bundle\nprompt: keep responses concise\nmodel:\n  provider: openai\n  name: gpt-4.1-mini\ntools:\n  allow: [\"Read\", \"Skill\"]\n  deny: []\n"
+            "id: demo\ndescription: test bundle\nprompt: keep responses concise\nmodel:\n  provider: openai\n  name: gpt-4.1-mini\ntools:\n  allow: [\"Read\", \"Skill\"]\n"
         );
         assert_eq!(
             fs::read_to_string(
@@ -654,7 +608,13 @@ tools:
         for (name, version) in [("zeta", "0.1.0"), ("alpha", "0.2.0"), ("alpha", "0.1.0")] {
             let project_root = temp.path().join(format!("{name}-{version}"));
             fs::create_dir_all(&project_root).expect("create project");
-            write_bundle_project(&project_root, name, version);
+            write_bundle_project(
+                &project_root,
+                name,
+                version,
+                "data/notes.txt",
+                "hello world\n",
+            );
             store
                 .build_and_install(&project_root)
                 .expect("build and install project");
@@ -690,7 +650,13 @@ tools:
         let store = BundleStore::new(temp.path().join("store"));
         let project_root = temp.path().join("project");
         fs::create_dir_all(&project_root).expect("create project");
-        write_bundle_project(&project_root, "demo", "0.1.0");
+        write_bundle_project(
+            &project_root,
+            "demo",
+            "0.1.0",
+            "data/notes.txt",
+            "hello world\n",
+        );
 
         let install = store
             .build_and_install_with_namespace(&project_root, "odyssey")
@@ -714,7 +680,13 @@ tools:
         let store = BundleStore::new(temp.path().join("store"));
         let project_root = temp.path().join("project");
         fs::create_dir_all(&project_root).expect("create project");
-        write_bundle_project(&project_root, "demo", "0.1.0");
+        write_bundle_project(
+            &project_root,
+            "demo",
+            "0.1.0",
+            "data/notes.txt",
+            "hello world\n",
+        );
 
         let install = store
             .build_and_install(&project_root)

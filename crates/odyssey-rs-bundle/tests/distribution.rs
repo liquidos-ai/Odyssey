@@ -4,74 +4,31 @@ use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, response::IntoResponse};
 use base64::Engine;
+use odyssey_rs_bundle::test_support::write_bundle_project;
 use odyssey_rs_bundle::{BundleMetadata, BundleStore};
 use pretty_assertions::assert_eq;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, sleep};
 
-fn write_bundle_project(root: &Path) {
-    fs::create_dir_all(root.join("skills").join("repo-hygiene")).expect("create skill dir");
-    fs::create_dir_all(root.join("data")).expect("create data dir");
-    fs::write(
-        root.join("odyssey.bundle.json5"),
-        r#"{
-            id: "demo",
-            version: "0.1.0",
-            agent_spec: "agent.yaml",
-            executor: { type: "prebuilt", id: "react" },
-            memory: { provider: { type: "prebuilt", id: "sliding_window" } },
-            resources: ["data"],
-            skills: [{ name: "repo-hygiene", path: "skills/repo-hygiene" }],
-            tools: [{ name: "Read", source: "builtin" }],
-            server: { enable_http: true },
-            sandbox: {
-                permissions: {
-                    filesystem: { exec: [], mounts: { read: [], write: [] } },
-                    network: [],
-                    tools: { mode: "default", rules: [] }
-                },
-                system_tools: [],
-                resources: {}
-            }
-        }"#,
-    )
-    .expect("write manifest");
-    fs::write(
-        root.join("agent.yaml"),
-        r#"id: demo
-description: test bundle
-prompt: keep responses concise
-model:
-  provider: openai
-  name: gpt-4.1-mini
-tools:
-  allow: ["Read", "Skill"]
-  deny: []
-"#,
-    )
-    .expect("write agent");
-    fs::write(
-        root.join("skills").join("repo-hygiene").join("SKILL.md"),
-        "# Repo Hygiene\n",
-    )
-    .expect("write skill");
-    fs::write(root.join("data").join("notes.txt"), "hello world\n").expect("write resource");
-}
-
 #[test]
 fn export_and_import_round_trip_bundle_layout() {
     let temp = tempdir().expect("tempdir");
     let project_root = temp.path().join("project");
     fs::create_dir_all(&project_root).expect("create project");
-    write_bundle_project(&project_root);
+    write_bundle_project(
+        &project_root,
+        "demo",
+        "0.1.0",
+        "data/notes.txt",
+        "hello world\n",
+    );
 
     let store = BundleStore::new(temp.path().join("store"));
     let install = store
@@ -94,7 +51,13 @@ fn export_to_directory_uses_bundle_identity_in_filename() {
     let temp = tempdir().expect("tempdir");
     let project_root = temp.path().join("project");
     fs::create_dir_all(&project_root).expect("create project");
-    write_bundle_project(&project_root);
+    write_bundle_project(
+        &project_root,
+        "demo",
+        "0.1.0",
+        "data/notes.txt",
+        "hello world\n",
+    );
 
     let store = BundleStore::new(temp.path().join("local-store"));
     let install = store
@@ -119,7 +82,13 @@ async fn publish_and_pull_round_trip_through_hub_api() {
     let temp = tempdir().expect("tempdir");
     let project_root = temp.path().join("project");
     fs::create_dir_all(&project_root).expect("create project");
-    write_bundle_project(&project_root);
+    write_bundle_project(
+        &project_root,
+        "demo",
+        "0.1.0",
+        "data/notes.txt",
+        "hello world\n",
+    );
 
     let publisher_store = BundleStore::new(temp.path().join("publisher-store"));
     let install = publisher_store
@@ -169,7 +138,13 @@ async fn publish_requires_namespaced_remote_target_for_project_sources() {
     let temp = tempdir().expect("tempdir");
     let project_root = temp.path().join("project");
     fs::create_dir_all(&project_root).expect("create project");
-    write_bundle_project(&project_root);
+    write_bundle_project(
+        &project_root,
+        "demo",
+        "0.1.0",
+        "data/notes.txt",
+        "hello world\n",
+    );
 
     let store = BundleStore::new(temp.path().join("store"));
     let error = store
@@ -192,7 +167,13 @@ async fn publish_surfaces_hub_http_failures() {
     let temp = tempdir().expect("tempdir");
     let project_root = temp.path().join("project");
     fs::create_dir_all(&project_root).expect("create project");
-    write_bundle_project(&project_root);
+    write_bundle_project(
+        &project_root,
+        "demo",
+        "0.1.0",
+        "data/notes.txt",
+        "hello world\n",
+    );
 
     let store = BundleStore::new(temp.path().join("store"));
     let hub_url =

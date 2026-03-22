@@ -24,7 +24,8 @@ impl RuntimeConfig {
             sandbox_root: root.join("sandbox"),
             bind_addr: "127.0.0.1:8472".to_string(),
             sandbox_mode_override: None,
-            hub_url: "http://127.0.0.1:8473".to_string(),
+            hub_url: "http://127.0.0.1:8473".to_string(), //TODO: Default should be to the actual
+            //URL
             worker_count: 4,
             queue_capacity: 128,
         }

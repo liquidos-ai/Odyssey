@@ -155,6 +155,7 @@ impl HubClient {
             id: config.id.clone(),
             version: config.version.clone(),
             digest: response.version.manifest_digest.clone(),
+            readme: config.readme.clone(),
             bundle_manifest: config.bundle_manifest,
             agent_spec: config.agent_spec,
         };

@@ -10,6 +10,7 @@ members = [
     "crates/odyssey-rs-sandbox",
     "crates/odyssey-rs-server",
     "crates/odyssey-rs-tui",
+    "examples/*",
 ]
 
 default-members = ["crates/odyssey-rs"]

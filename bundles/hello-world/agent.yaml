@@ -10,4 +10,3 @@ model:
     temperature: 0.2
 tools:
   allow: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'Skill']
-  deny: []

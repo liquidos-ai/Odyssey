@@ -220,7 +220,7 @@ mod tests {
     use odyssey_rs_manifest::{
         BundleExecutor, BundleManifest, BundleMemory, BundlePermissionAction, BundlePermissionRule,
         BundleSandbox, BundleSandboxFilesystem, BundleSandboxLimits, BundleSandboxMounts,
-        BundleSandboxPermissions, BundleSandboxTools, BundleServer,
+        BundleSandboxPermissions, BundleSandboxTools, ManifestVersion, ProviderKind,
     };
     use odyssey_rs_protocol::SandboxMode;
     use odyssey_rs_sandbox::{SandboxNetworkMode, SandboxPolicy};
@@ -234,17 +234,17 @@ mod tests {
         let manifest = BundleManifest {
             id: "demo".to_string(),
             version: "0.1.0".to_string(),
+            manifest_version: ManifestVersion::V1,
+            readme: "README.md".to_string(),
             agent_spec: "agent.yaml".to_string(),
             executor: BundleExecutor {
-                kind: "prebuilt".to_string(),
+                kind: ProviderKind::Prebuilt,
                 id: "react".to_string(),
                 config: Value::Null,
             },
             memory: BundleMemory::default(),
-            resources: Vec::new(),
             skills: Vec::new(),
             tools: Vec::new(),
-            server: BundleServer::default(),
             sandbox: BundleSandbox {
                 mode: SandboxMode::ReadOnly,
                 permissions: BundleSandboxPermissions {
@@ -285,17 +285,17 @@ mod tests {
         let manifest = BundleManifest {
             id: "demo".to_string(),
             version: "0.1.0".to_string(),
+            manifest_version: ManifestVersion::V1,
+            readme: "README.md".to_string(),
             agent_spec: "agent.yaml".to_string(),
             executor: BundleExecutor {
-                kind: "prebuilt".to_string(),
+                kind: ProviderKind::Prebuilt,
                 id: "react".to_string(),
                 config: Value::Null,
             },
             memory: BundleMemory::default(),
-            resources: Vec::new(),
             skills: Vec::new(),
             tools: Vec::new(),
-            server: BundleServer::default(),
             sandbox: BundleSandbox {
                 mode: SandboxMode::ReadOnly,
                 permissions: BundleSandboxPermissions::default(),
@@ -343,17 +343,17 @@ mod tests {
         let manifest = BundleManifest {
             id: "demo".to_string(),
             version: "0.1.0".to_string(),
+            manifest_version: ManifestVersion::V1,
+            readme: "README.md".to_string(),
             agent_spec: "agent.yaml".to_string(),
             executor: BundleExecutor {
-                kind: "prebuilt".to_string(),
+                kind: ProviderKind::Prebuilt,
                 id: "react".to_string(),
                 config: Value::Null,
             },
             memory: BundleMemory::default(),
-            resources: Vec::new(),
             skills: Vec::new(),
             tools: Vec::new(),
-            server: BundleServer::default(),
             sandbox: BundleSandbox {
                 mode: SandboxMode::WorkspaceWrite,
                 permissions: BundleSandboxPermissions {
@@ -389,17 +389,17 @@ mod tests {
         let manifest = BundleManifest {
             id: "demo".to_string(),
             version: "0.1.0".to_string(),
+            manifest_version: ManifestVersion::V1,
+            readme: "README.md".to_string(),
             agent_spec: "agent.yaml".to_string(),
             executor: BundleExecutor {
-                kind: "prebuilt".to_string(),
+                kind: ProviderKind::Prebuilt,
                 id: "react".to_string(),
                 config: Value::Null,
             },
             memory: BundleMemory::default(),
-            resources: Vec::new(),
             skills: Vec::new(),
             tools: Vec::new(),
-            server: BundleServer::default(),
             sandbox: BundleSandbox {
                 mode: SandboxMode::ReadOnly,
                 permissions: BundleSandboxPermissions {

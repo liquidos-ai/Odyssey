@@ -11,7 +11,7 @@ pub fn build_memory(
     manifest: &BundleManifest,
     turns: &[TurnRecord],
 ) -> Result<Option<Box<dyn MemoryProvider>>, RuntimeError> {
-    match manifest.memory.provider.id.as_str() {
+    match manifest.memory.id.as_str() {
         "sliding_window" => {
             let window =
                 window_size(&manifest.memory.config).unwrap_or(DEFAULT_SLIDING_WINDOW_SIZE);
@@ -68,7 +68,7 @@ mod tests {
     use autoagents_llm::{FunctionCall, ToolCall};
     use chrono::Utc;
     use odyssey_rs_manifest::{
-        BundleExecutor, BundleManifest, BundleMemory, BundleSandbox, BundleServer,
+        BundleExecutor, BundleManifest, BundleMemory, BundleSandbox, ManifestVersion, ProviderKind,
     };
     use pretty_assertions::assert_eq;
     use serde_json::Value;
@@ -78,17 +78,17 @@ mod tests {
         let manifest = BundleManifest {
             id: "demo".to_string(),
             version: "0.1.0".to_string(),
+            manifest_version: ManifestVersion::V1,
+            readme: "README.md".to_string(),
             agent_spec: "agent.yaml".to_string(),
             executor: BundleExecutor {
-                kind: "prebuilt".to_string(),
+                kind: ProviderKind::Prebuilt,
                 id: "react".to_string(),
                 config: Value::Null,
             },
             memory: BundleMemory::default(),
-            resources: Vec::new(),
             skills: Vec::new(),
             tools: Vec::new(),
-            server: BundleServer::default(),
             sandbox: BundleSandbox::default(),
         };
         let turns = vec![
@@ -125,17 +125,17 @@ mod tests {
         let manifest = BundleManifest {
             id: "demo".to_string(),
             version: "0.1.0".to_string(),
+            manifest_version: ManifestVersion::V1,
+            readme: "README.md".to_string(),
             agent_spec: "agent.yaml".to_string(),
             executor: BundleExecutor {
-                kind: "prebuilt".to_string(),
+                kind: ProviderKind::Prebuilt,
                 id: "react".to_string(),
                 config: Value::Null,
             },
             memory: BundleMemory::default(),
-            resources: Vec::new(),
             skills: Vec::new(),
             tools: Vec::new(),
-            server: BundleServer::default(),
             sandbox: BundleSandbox::default(),
         };
         let turns = vec![TurnRecord {
