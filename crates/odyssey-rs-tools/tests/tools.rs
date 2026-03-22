@@ -569,6 +569,86 @@ async fn write_and_edit_tools_update_writable_mount_sources() {
 }
 
 #[tokio::test]
+async fn write_and_edit_tools_reject_read_only_mounts() {
+    let temp = tempdir().expect("tempdir");
+    let bundle_root = temp.path().join("bundle");
+    let host_mount = temp.path().join("host-project");
+    let visible_mount = bundle_root.join("mount").join("read").join("current");
+
+    fs::create_dir_all(&bundle_root).expect("create bundle root");
+    fs::create_dir_all(&host_mount).expect("create host mount");
+    fs::write(host_mount.join("draft.txt"), "version one\n").expect("write host file");
+
+    let ctx = test_context_with_mounts(
+        &bundle_root,
+        FakeProvider::default(),
+        Vec::new(),
+        vec![WorkspaceMount {
+            visible_root: visible_mount,
+            host_root: host_mount.clone(),
+            writable: false,
+        }],
+    );
+    let registry = builtin_registry();
+
+    let write_error = registry
+        .get("Write")
+        .expect("write tool")
+        .call(
+            &ctx,
+            json!({
+                "path": "mount/read/current/new.txt",
+                "content": "mounted output"
+            }),
+        )
+        .await
+        .expect_err("read-only mount should reject writes");
+    let edit_error = registry
+        .get("Edit")
+        .expect("edit tool")
+        .call(
+            &ctx,
+            json!({
+                "path": "mount/read/current/draft.txt",
+                "old_text": "one",
+                "new_text": "two"
+            }),
+        )
+        .await
+        .expect_err("read-only mount should reject edits");
+
+    assert_eq!(
+        write_error.to_string(),
+        format!(
+            "permission denied: sandbox policy blocks Write access to {}",
+            bundle_root
+                .join("mount")
+                .join("read")
+                .join("current")
+                .join("new.txt")
+                .display()
+        )
+    );
+    assert_eq!(
+        edit_error.to_string(),
+        format!(
+            "permission denied: sandbox policy blocks Write access to {}",
+            bundle_root
+                .join("mount")
+                .join("read")
+                .join("current")
+                .join("draft.txt")
+                .display()
+        )
+    );
+    assert!(!host_mount.join("new.txt").exists());
+    assert_eq!(
+        fs::read_to_string(host_mount.join("draft.txt")).expect("read unedited mount file"),
+        "version one\n"
+    );
+}
+
+#[tokio::test]
 async fn filesystem_tools_respect_gitignore_in_workspace() {
     let temp = tempdir().expect("tempdir");
     fs::create_dir_all(temp.path().join("docs")).expect("create docs");

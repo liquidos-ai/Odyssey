@@ -288,6 +288,21 @@ impl ToolContext {
     }
 
     fn check_access(&self, path: &Path, mode: AccessMode) -> Result<(), ToolError> {
+        if mode == AccessMode::Write
+            && let Some((_, mount)) = self
+                .workspace_mounts
+                .iter()
+                .filter(|mount| path.starts_with(&mount.visible_root))
+                .map(|mount| (mount.visible_root.components().count(), mount))
+                .max_by_key(|(depth, _)| *depth)
+            && !mount.writable
+        {
+            return Err(ToolError::PermissionDenied(format!(
+                "sandbox policy blocks {:?} access to {}",
+                mode,
+                path.display()
+            )));
+        }
         match self
             .sandbox
             .provider

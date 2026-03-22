@@ -1017,7 +1017,7 @@ mod tests {
     fn build_permission_rules_maps_agent_actions() {
         let agent = AgentSpec {
             id: "demo".to_string(),
-            description: String::new(),
+            description: String::default(),
             prompt: "test".to_string(),
             model: odyssey_rs_protocol::ModelSpec {
                 provider: "openai".to_string(),

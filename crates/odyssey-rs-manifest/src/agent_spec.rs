@@ -44,7 +44,7 @@ model:
         )
         .expect("deserialize agent spec");
 
-        assert_eq!(spec.description, String::new());
+        assert_eq!(spec.description, String::default());
         assert_eq!(spec.tools, AgentToolPolicy::default());
     }
 
@@ -79,7 +79,7 @@ tools:
     fn agent_spec_model_shape_is_unchanged() {
         let spec = AgentSpec {
             id: "demo".to_string(),
-            description: String::new(),
+            description: String::default(),
             prompt: "hello".to_string(),
             model: ModelSpec {
                 provider: "openai".to_string(),

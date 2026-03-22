@@ -503,12 +503,10 @@ fn visible_walk_builder(root: &Path) -> WalkBuilder {
 fn classify_entry(file_type: fs::FileType) -> &'static str {
     if file_type.is_dir() {
         "dir"
-    } else if file_type.is_file() {
-        "file"
     } else if file_type.is_symlink() {
         "symlink"
     } else {
-        "other"
+        "file"
     }
 }
 
