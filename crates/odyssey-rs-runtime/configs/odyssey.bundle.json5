@@ -1,30 +1,38 @@
 {
   id: '{{ bundle_id }}',
   version: '0.1.0',
-  manifest_version: 'odyssey.bundle/v1',
-  readme: 'README.md',
+  manifest_version: "odyssey.bundle/v1",
+  readme: "README.md",
   agent_spec: 'agent.yaml',
   executor: { type: 'prebuilt', id: 'react' },
   memory: { type: 'prebuilt', id: 'sliding_window', config: { max_window: 100 } },
   skills: [],
-  tools: [],
+  tools: [
+    { name: 'Read', source: 'builtin' },
+    { name: 'Write', source: 'builtin' },
+    { name: 'Edit', source: 'builtin' },
+    { name: 'Glob', source: 'builtin' },
+    { name: 'Grep', source: 'builtin' },
+    { name: 'Bash', source: 'builtin' },
+    { name: 'Skill', source: 'builtin' }
+  ],
   sandbox: {
-    mode: 'workspace_write',
+    mode: 'read_only',
+    env: {},
     permissions: {
       filesystem: {
         exec: [],
         mounts: { read: [], write: [] }
       },
-      // Empty means sandboxed commands have no network access.
-      // Add a non-empty list to opt bundle command execution into outbound network access.
-      network: [],
+      network: ["*"],
       tools: {
-        mode: 'default',
-        rules: []
+        allow: ['Read', 'Glob', 'Grep', 'Skill'],
+        ask: ['Bash'],
+        deny: []
       }
     },
-    system_tools_mode: 'explicit',
+    system_tools_mode: 'standard',
     system_tools: [],
-    resources: { cpu: 1, memory_mb: 512, gpu: 0 }
+    resources: { cpu: 1, memory_mb: 512 }
   }
 }

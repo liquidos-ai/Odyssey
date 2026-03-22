@@ -440,7 +440,6 @@ mod tests {
     use odyssey_rs_sandbox::{HostExecProvider, SandboxHandle};
     use odyssey_rs_tools::{ToolContext, ToolSandbox};
     use pretty_assertions::assert_eq;
-    use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
     use std::sync::Arc;
@@ -571,7 +570,7 @@ mod tests {
                         permissions: {{
                             filesystem: {{ exec: [], mounts: {{ read: [], write: [] }} }},
                             network: ["*"],
-                            tools: {{ mode: "default", rules: [] }}
+                            tools: {{ allow: [], ask: [], deny: [] }}
                         }},
                         system_tools: ["sh"],
                         resources: {{}}
@@ -622,7 +621,7 @@ tools:
                 handle: SandboxHandle { id: Uuid::new_v4() },
                 lease: None,
             },
-            permission_rules: HashMap::new(),
+            permission_rules: Vec::new(),
             event_sink: Some(Arc::new(super::super::tool_event::RuntimeToolEventSink {
                 session_id: Uuid::new_v4(),
                 turn_id: Uuid::new_v4(),
@@ -651,7 +650,7 @@ tools:
                 handle: SandboxHandle { id: Uuid::new_v4() },
                 lease: None,
             },
-            permission_rules: HashMap::new(),
+            permission_rules: Vec::new(),
             event_sink: Some(Arc::new(super::super::tool_event::RuntimeToolEventSink {
                 session_id: Uuid::new_v4(),
                 turn_id: Uuid::new_v4(),

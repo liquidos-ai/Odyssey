@@ -27,13 +27,16 @@ pub fn write_bundle_project(
                 skills: [{{ name: "repo-hygiene", path: "skills/repo-hygiene" }}],
                 tools: [{{ name: "Read", source: "builtin" }}],
                 sandbox: {{
+                    mode: "workspace_write",
+                    env: {{}},
                     permissions: {{
                         filesystem: {{ exec: [], mounts: {{ read: [], write: [] }} }},
                         network: [],
-                        tools: {{ mode: "default", rules: [] }}
+                        tools: {{ allow: [], ask: [], deny: [] }}
                     }},
+                    system_tools_mode: "explicit",
                     system_tools: [],
-                    resources: {{}}
+                    resources: {{ cpu: 1, memory_mb: 512 }}
                 }}
             }}"#
         ),

@@ -61,6 +61,29 @@ The runtime builds sandbox filesystem policy from the manifest:
 The sandbox cell root itself is always added as a readable root. In `workspace_write` and
 `danger_full_access`, that cell root is also writable.
 
+## Environment Policy
+
+The bundle manifest can inject environment variables into the sandbox with `sandbox.env`.
+Each entry maps the sandbox variable name to the host variable name to read at runtime.
+
+Example:
+
+```json5
+sandbox: {
+  env: {
+    OPENAI_API_KEY: 'OPENAI_API_KEY',
+    MODEL_ENDPOINT: 'OPENAI_BASE_URL'
+  }
+}
+```
+
+At prepare time, Odyssey reads each host variable from the current process environment and injects
+it into the sandbox under the configured key. Missing host variables are silently skipped.
+
+This behaves like a narrow allowlist. Only variables named in `sandbox.env` and Odyssey's built-in
+safe defaults such as `PATH`, `HOME`, `TMPDIR`, and `ODYSSEY_SANDBOX` are present in the final
+sandbox environment.
+
 ## Network Policy
 
 The current network implementation is intentionally narrow:
@@ -77,13 +100,20 @@ bundle sandboxes require the `bubblewrap` backend.
 
 ## Tool Permission Rules
 
-Per-tool rules come from `sandbox.permissions.tools.rules`.
+Per-tool permissions come from `sandbox.permissions.tools.allow`, `.ask`, and `.deny`.
+
+Matcher syntax:
+
+- `Read` matches the whole tool
+- `Bash(find:*)` matches Bash commands whose normalized prefix starts with `find`
+- `Bash(cargo test:*)` matches Bash commands whose normalized prefix starts with `cargo test`
+- future tools can define their own granular matcher targets, for example `WebFetch(domain:liquidos.ai)`
 
 Important details from the current implementation:
 
 - missing rules default to `allow`
-- `sandbox.permissions.tools.mode` is not interpreted by the runtime yet
 - approval prompts are only generated for tools marked `ask`
+- later matching entries win, so you can start broad and override with a more specific rule later in the list
 
 ## System Tools
 

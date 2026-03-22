@@ -210,6 +210,7 @@ Odyssey treats execution policy as part of the runtime contract.
 
 - Bundles declare a sandbox mode such as `read_only` or `workspace_write`.
 - Tool actions can be set to `allow`, `deny`, or `ask`.
+- Tool permissions can be coarse (`Bash`) or granular (`Bash(cargo test:*)`).
 - Filesystem access is controlled through explicit host mounts.
 - Outbound network access is controlled through sandbox policy.
 - Approval flows suspend the active turn and resume it after resolution.

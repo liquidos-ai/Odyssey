@@ -20,6 +20,7 @@
   ],
   sandbox: {
     mode: 'read_only',
+    env: {},
     permissions: {
       filesystem: {
         exec: [],
@@ -27,20 +28,13 @@
       },
       network: ["*"],
       tools: {
-        mode: 'default',
-        rules: [
-          { action: 'allow', tool: 'Read' },
-          { action: 'allow', tool: 'Glob' },
-          { action: 'allow', tool: 'Grep' },
-          { action: 'allow', tool: 'Skill' },
-          { action: 'ask', tool: 'Write' },
-          { action: 'ask', tool: 'Edit' },
-          { action: 'ask', tool: 'Bash' }
-        ]
+        allow: ['Read', 'Glob', 'Grep', 'Skill', 'Bash(curl:*)'],
+        ask: ['Write', 'Edit', 'Bash'],
+        deny: []
       }
     },
     system_tools_mode: 'standard',
     system_tools: [],
-    resources: { cpu: 1, memory_mb: 512, gpu: 0 }
+    resources: { cpu: 1, memory_mb: 512 }
   }
 }

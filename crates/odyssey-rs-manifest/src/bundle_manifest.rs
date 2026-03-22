@@ -1,6 +1,7 @@
 use odyssey_rs_protocol::SandboxMode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -75,12 +76,8 @@ pub struct BundleSkill {
 #[serde(deny_unknown_fields)]
 pub struct BundleTool {
     pub name: String,
-    #[serde(default = "default_builtin_source")]
+    #[serde(default = "builtin_tool_source")]
     pub source: String,
-}
-
-fn default_builtin_source() -> String {
-    "builtin".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +88,8 @@ pub struct BundleSandbox {
     #[serde(default)]
     pub permissions: BundleSandboxPermissions,
     #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
     pub system_tools_mode: BundleSystemToolsMode,
     #[serde(default)]
     pub system_tools: Vec<String>,
@@ -98,15 +97,12 @@ pub struct BundleSandbox {
     pub resources: BundleSandboxLimits,
 }
 
-fn default_sandbox_mode() -> SandboxMode {
-    SandboxMode::WorkspaceWrite
-}
-
 impl Default for BundleSandbox {
     fn default() -> Self {
         Self {
             mode: default_sandbox_mode(),
             permissions: BundleSandboxPermissions::default(),
+            env: BTreeMap::new(),
             system_tools_mode: BundleSystemToolsMode::default(),
             system_tools: Vec::new(),
             resources: BundleSandboxLimits::default(),
@@ -137,67 +133,47 @@ pub struct BundleSandboxPermissions {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct BundleSandboxFilesystem {
-    #[serde(default)]
     pub exec: Vec<String>,
-    #[serde(default)]
     pub mounts: BundleSandboxMounts,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct BundleSandboxMounts {
-    #[serde(default)]
     pub read: Vec<String>,
-    #[serde(default)]
     pub write: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BundleSandboxTools {
-    #[serde(default = "default_mode")]
-    pub mode: String,
-    #[serde(default)]
-    pub rules: Vec<BundlePermissionRule>,
-}
-
-impl Default for BundleSandboxTools {
-    fn default() -> Self {
-        Self {
-            mode: default_mode(),
-            rules: Vec::new(),
-        }
-    }
-}
-
-fn default_mode() -> String {
-    "default".to_string()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BundlePermissionRule {
-    pub action: BundlePermissionAction,
-    pub tool: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum BundlePermissionAction {
-    Allow,
-    Deny,
-    Ask,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
+pub struct BundleSandboxTools {
+    pub allow: Vec<String>,
+    pub ask: Vec<String>,
+    pub deny: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BundleSandboxLimits {
-    #[serde(default)]
     pub cpu: Option<u64>,
-    #[serde(default)]
     pub memory_mb: Option<u64>,
-    #[serde(default)]
-    pub gpu: Option<u64>,
+}
+
+impl Default for BundleSandboxLimits {
+    fn default() -> Self {
+        Self {
+            cpu: Some(1),
+            memory_mb: Some(512),
+        }
+    }
+}
+
+fn builtin_tool_source() -> String {
+    "builtin".to_string()
+}
+
+fn default_sandbox_mode() -> SandboxMode {
+    SandboxMode::WorkspaceWrite
 }
 
 #[cfg(test)]
@@ -205,12 +181,12 @@ mod tests {
     use crate::bundle_manifest::ProviderKind;
 
     use super::{
-        BundleManifest, BundleMemory, BundlePermissionAction, BundleSandbox, BundleSandboxTools,
-        BundleSystemToolsMode, default_builtin_source,
+        BundleManifest, BundleMemory, BundleSandbox, BundleSandboxTools, BundleSystemToolsMode,
     };
     use odyssey_rs_protocol::SandboxMode;
     use pretty_assertions::assert_eq;
     use serde_json::{Value, json};
+    use std::collections::BTreeMap;
 
     #[test]
     fn defaults_match_v1_contract() {
@@ -222,14 +198,14 @@ mod tests {
         let sandbox = BundleSandbox::default();
         assert_eq!(sandbox.mode, SandboxMode::WorkspaceWrite);
         assert_eq!(sandbox.permissions.network, Vec::<String>::new());
+        assert_eq!(sandbox.env, BTreeMap::new());
         assert_eq!(sandbox.system_tools_mode, BundleSystemToolsMode::Explicit);
         assert_eq!(sandbox.system_tools, Vec::<String>::new());
 
         let tools = BundleSandboxTools::default();
-        assert_eq!(tools.mode, "default");
-        assert_eq!(tools.rules.len(), 0);
-
-        assert_eq!(default_builtin_source(), "builtin");
+        assert_eq!(tools.allow.len(), 0);
+        assert_eq!(tools.ask.len(), 0);
+        assert_eq!(tools.deny.len(), 0);
     }
 
     #[test]
@@ -265,13 +241,23 @@ mod tests {
             Vec::<String>::new()
         );
         assert_eq!(
+            manifest.sandbox.permissions.tools.allow,
+            Vec::<String>::new()
+        );
+        assert_eq!(manifest.sandbox.permissions.tools.ask, Vec::<String>::new());
+        assert_eq!(
+            manifest.sandbox.permissions.tools.deny,
+            Vec::<String>::new()
+        );
+        assert_eq!(
             manifest.sandbox.system_tools_mode,
             BundleSystemToolsMode::Explicit
         );
+        assert_eq!(manifest.sandbox.env, BTreeMap::new());
     }
 
     #[test]
-    fn tool_and_permission_action_deserialization_uses_expected_values() {
+    fn tool_permission_groups_deserialize() {
         let manifest: BundleManifest = serde_json::from_value(json!({
             "id": "demo",
             "version": "0.1.0",
@@ -289,33 +275,55 @@ mod tests {
             "sandbox": {
                 "permissions": {
                     "tools": {
-                        "mode": "strict",
-                        "rules": [
-                            { "action": "allow", "tool": "Read" },
-                            { "action": "ask", "tool": "Write" },
-                            { "action": "deny", "tool": "Bash" }
-                        ]
+                        "allow": ["Read", "Bash(find:*)"],
+                        "ask": ["Write", "Bash(cargo test:*)"],
+                        "deny": ["Bash", "WebFetch(domain:example.com)"]
                     }
                 }
             }
         }))
-        .expect("deserialize manifest with tool rules");
+        .expect("deserialize manifest with grouped tool permissions");
 
         assert_eq!(manifest.tools[0].source, "builtin");
         assert_eq!(manifest.tools[1].source, "builtin");
-        assert_eq!(manifest.sandbox.permissions.tools.mode, "strict");
         assert_eq!(
-            manifest.sandbox.permissions.tools.rules[0].action,
-            BundlePermissionAction::Allow
+            manifest.sandbox.permissions.tools.allow,
+            vec!["Read".to_string(), "Bash(find:*)".to_string()]
         );
         assert_eq!(
-            manifest.sandbox.permissions.tools.rules[1].action,
-            BundlePermissionAction::Ask
+            manifest.sandbox.permissions.tools.ask,
+            vec!["Write".to_string(), "Bash(cargo test:*)".to_string()]
         );
         assert_eq!(
-            manifest.sandbox.permissions.tools.rules[2].action,
-            BundlePermissionAction::Deny
+            manifest.sandbox.permissions.tools.deny,
+            vec![
+                "Bash".to_string(),
+                "WebFetch(domain:example.com)".to_string()
+            ]
         );
+    }
+
+    #[test]
+    fn tool_permission_groups_require_explicit_fields_when_present() {
+        let error = serde_json::from_value::<BundleManifest>(json!({
+            "id": "demo",
+            "version": "0.1.0",
+            "manifest_version": "odyssey.bundle/v1",
+            "readme": "README.md",
+            "agent_spec": "agent.yaml",
+            "executor": {
+                "type": "prebuilt",
+                "id": "react"
+            },
+            "sandbox": {
+                "permissions": {
+                    "tools": {}
+                }
+            }
+        }))
+        .expect_err("deserialize manifest with incomplete tool permissions");
+
+        assert!(error.to_string().contains("missing field `allow`"));
     }
 
     #[test]
@@ -339,6 +347,36 @@ mod tests {
         assert_eq!(
             manifest.sandbox.system_tools_mode,
             BundleSystemToolsMode::Standard
+        );
+    }
+
+    #[test]
+    fn manifest_deserialization_accepts_sandbox_env() {
+        let manifest: BundleManifest = serde_json::from_value(json!({
+            "id": "demo",
+            "version": "0.1.0",
+            "manifest_version": "odyssey.bundle/v1",
+            "readme": "README.md",
+            "agent_spec": "agent.yaml",
+            "executor": {
+                "type": "prebuilt",
+                "id": "react"
+            },
+            "sandbox": {
+                "env": {
+                    "OPENAI_API_KEY": "OPENAI_API_KEY",
+                    "GITHUB_TOKEN": "GH_TOKEN"
+                }
+            }
+        }))
+        .expect("deserialize bundle manifest");
+
+        assert_eq!(
+            manifest.sandbox.env,
+            BTreeMap::from([
+                ("GITHUB_TOKEN".to_string(), "GH_TOKEN".to_string()),
+                ("OPENAI_API_KEY".to_string(), "OPENAI_API_KEY".to_string()),
+            ])
         );
     }
 }

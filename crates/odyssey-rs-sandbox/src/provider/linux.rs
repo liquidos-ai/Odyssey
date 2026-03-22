@@ -346,6 +346,11 @@ pub(crate) fn append_etc_mounts(args: &mut Vec<String>) {
     for (source, target) in file_mounts {
         bind_if_exists(args, "--ro-bind", Path::new(source), Path::new(target));
     }
+
+    // HTTPS clients need access to the host CA trust store inside the sandbox.
+    for dir in ["/etc/ssl", "/etc/pki", "/etc/ca-certificates"] {
+        bind_if_exists(args, "--ro-bind", Path::new(dir), Path::new(dir));
+    }
 }
 
 pub(crate) fn append_runtime_mounts(args: &mut Vec<String>) {
@@ -359,9 +364,10 @@ pub(crate) fn append_runtime_mounts(args: &mut Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{append_mount, append_runtime_mounts};
+    use super::{append_etc_mounts, append_mount, append_runtime_mounts};
     use crate::provider::Mount;
     use pretty_assertions::assert_eq;
+    use std::path::Path;
     use tempfile::tempdir;
 
     #[test]
@@ -427,5 +433,20 @@ mod tests {
                 && window[1] == "/run"
                 && window[2] == "/run"
         }));
+    }
+
+    #[test]
+    fn append_etc_mounts_binds_common_certificate_roots_when_present() {
+        let mut args = Vec::new();
+        append_etc_mounts(&mut args);
+
+        for dir in ["/etc/ssl", "/etc/pki", "/etc/ca-certificates"] {
+            if !Path::new(dir).exists() {
+                continue;
+            }
+            assert!(args.windows(3).any(|window| {
+                window[0] == "--ro-bind" && window[1] == dir && window[2] == dir
+            }));
+        }
     }
 }

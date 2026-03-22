@@ -5,11 +5,11 @@ use odyssey_rs_sandbox::{
 };
 use odyssey_rs_tools::{
     PermissionAction, SkillEntry, SkillProvider, ToolApprovalHandler, ToolContext, ToolError,
-    ToolEvent, ToolEventSink, ToolSandbox, ToolSpec, builtin_registry,
+    ToolEvent, ToolEventSink, ToolPermissionMatcher, ToolPermissionRule, ToolSandbox, ToolSpec,
+    builtin_registry,
 };
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -151,7 +151,7 @@ impl SkillProvider for FakeSkills {
 fn test_context(
     bundle_root: &Path,
     provider: FakeProvider,
-    permission_rules: HashMap<String, PermissionAction>,
+    permission_rules: Vec<ToolPermissionRule>,
 ) -> ToolContext {
     ToolContext {
         session_id: Uuid::new_v4(),
@@ -218,9 +218,20 @@ async fn authorization_and_command_events_are_recorded() {
     let provider = FakeProvider::default();
     let events = Arc::new(RecordingEvents::default());
     let approvals = Arc::new(RecordingApproval::default());
-    let mut rules = HashMap::new();
-    rules.insert("Skill".to_string(), PermissionAction::Ask);
-    rules.insert("Denied".to_string(), PermissionAction::Deny);
+    let rules = vec![
+        ToolPermissionRule {
+            action: PermissionAction::Ask,
+            matcher: ToolPermissionMatcher::parse("Skill").expect("skill matcher"),
+        },
+        ToolPermissionRule {
+            action: PermissionAction::Deny,
+            matcher: ToolPermissionMatcher::parse("Denied").expect("deny matcher"),
+        },
+        ToolPermissionRule {
+            action: PermissionAction::Ask,
+            matcher: ToolPermissionMatcher::parse("Bash(cargo test:*)").expect("bash matcher"),
+        },
+    ];
 
     let mut ctx = test_context(temp.path(), provider.clone(), rules);
     ctx.event_sink = Some(events.clone());
@@ -228,9 +239,12 @@ async fn authorization_and_command_events_are_recorded() {
 
     ctx.authorize_tool("Read").await.expect("default allow");
     ctx.authorize_tool("Skill").await.expect("approved");
+    ctx.authorize_tool_with_targets("Bash", &["cargo test:-p odyssey-rs-tools".to_string()])
+        .await
+        .expect("approved granular bash");
     assert_eq!(
         approvals.requested.lock().expect("lock approvals").clone(),
-        vec!["Skill".to_string()]
+        vec!["Skill".to_string(), "Bash(cargo test:*)".to_string()]
     );
     assert_eq!(
         ctx.authorize_tool("Denied")
@@ -321,7 +335,7 @@ async fn bash_tool_returns_error_for_non_zero_shell_exit() {
         stderr: "Permission denied".to_string(),
         ..FakeProvider::default()
     };
-    let ctx = test_context(temp.path(), provider, HashMap::new());
+    let ctx = test_context(temp.path(), provider, Vec::new());
 
     let bash = builtin_registry().get("Bash").expect("bash tool");
     let error = bash
@@ -351,7 +365,7 @@ async fn filesystem_tools_round_trip_and_search() {
     )
     .expect("write file");
 
-    let ctx = test_context(temp.path(), FakeProvider::default(), HashMap::new());
+    let ctx = test_context(temp.path(), FakeProvider::default(), Vec::new());
     let registry = builtin_registry();
 
     let read = call_tool(&registry, "Read", &ctx, json!({ "path": "docs/notes.txt" })).await;
@@ -414,8 +428,10 @@ async fn filesystem_tools_round_trip_and_search() {
 #[tokio::test]
 async fn skill_tool_and_invalid_grep_are_handled() {
     let temp = tempdir().expect("tempdir");
-    let mut rules = HashMap::new();
-    rules.insert("Skill".to_string(), PermissionAction::Allow);
+    let rules = vec![ToolPermissionRule {
+        action: PermissionAction::Allow,
+        matcher: ToolPermissionMatcher::parse("Skill").expect("skill matcher"),
+    }];
     let mut ctx = test_context(temp.path(), FakeProvider::default(), rules);
     ctx.skills = Some(Arc::new(FakeSkills));
 
@@ -433,4 +449,147 @@ async fn skill_tool_and_invalid_grep_are_handled() {
         .await
         .expect_err("invalid regex should fail");
     assert!(matches!(grep_error, ToolError::InvalidArguments(_)));
+}
+
+#[tokio::test]
+async fn granular_bash_permissions_match_prefixes_and_wildcards() {
+    let temp = tempdir().expect("tempdir");
+    let approvals = Arc::new(RecordingApproval::default());
+    let rules = vec![
+        ToolPermissionRule {
+            action: PermissionAction::Ask,
+            matcher: ToolPermissionMatcher::parse("Bash(find:*)").expect("find matcher"),
+        },
+        ToolPermissionRule {
+            action: PermissionAction::Deny,
+            matcher: ToolPermissionMatcher::parse("Bash(cargo build:*)")
+                .expect("cargo build matcher"),
+        },
+    ];
+    let mut ctx = test_context(temp.path(), FakeProvider::default(), rules);
+    ctx.approval_handler = Some(approvals.clone());
+
+    ctx.authorize_tool_with_targets("Bash", &["find:./src -name *.rs".to_string()])
+        .await
+        .expect("find should request and pass");
+    assert_eq!(
+        approvals.requested.lock().expect("lock approvals").clone(),
+        vec!["Bash(find:*)".to_string()]
+    );
+
+    let error = ctx
+        .authorize_tool_with_targets("Bash", &["cargo build:--workspace".to_string()])
+        .await
+        .expect_err("cargo build denied");
+    assert_eq!(
+        error.to_string(),
+        "permission denied: tool Bash(cargo build:*) is denied"
+    );
+
+    ctx.authorize_tool_with_targets("Bash", &["cargo test:-p odyssey-rs-tools".to_string()])
+        .await
+        .expect("cargo test allowed by default");
+}
+
+#[tokio::test]
+async fn granular_bash_allow_overrides_generic_bash_ask() {
+    let temp = tempdir().expect("tempdir");
+    let approvals = Arc::new(RecordingApproval::default());
+    let rules = vec![
+        ToolPermissionRule {
+            action: PermissionAction::Allow,
+            matcher: ToolPermissionMatcher::parse("Bash(curl:*)").expect("curl matcher"),
+        },
+        ToolPermissionRule {
+            action: PermissionAction::Ask,
+            matcher: ToolPermissionMatcher::parse("Bash").expect("bash matcher"),
+        },
+    ];
+    let mut ctx = test_context(temp.path(), FakeProvider::default(), rules);
+    ctx.approval_handler = Some(approvals.clone());
+
+    ctx.authorize_tool_with_targets("Bash", &["curl:-s asdfa".to_string()])
+        .await
+        .expect("specific curl allow should bypass generic ask");
+
+    assert!(
+        approvals
+            .requested
+            .lock()
+            .expect("lock approvals")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn granular_bash_deny_overrides_generic_bash_allow() {
+    let temp = tempdir().expect("tempdir");
+    let rules = vec![
+        ToolPermissionRule {
+            action: PermissionAction::Allow,
+            matcher: ToolPermissionMatcher::parse("Bash").expect("bash matcher"),
+        },
+        ToolPermissionRule {
+            action: PermissionAction::Deny,
+            matcher: ToolPermissionMatcher::parse("Bash(curl:*)").expect("curl matcher"),
+        },
+    ];
+    let ctx = test_context(temp.path(), FakeProvider::default(), rules);
+
+    let error = ctx
+        .authorize_tool_with_targets("Bash", &["curl:-s asdfa".to_string()])
+        .await
+        .expect_err("specific curl deny should override generic allow");
+
+    assert_eq!(
+        error.to_string(),
+        "permission denied: tool Bash(curl:*) is denied"
+    );
+}
+
+#[tokio::test]
+async fn bash_tool_applies_granular_permission_targets() {
+    let temp = tempdir().expect("tempdir");
+    let provider = FakeProvider::default();
+    let rules = vec![ToolPermissionRule {
+        action: PermissionAction::Deny,
+        matcher: ToolPermissionMatcher::parse("Bash(cargo build:*)").expect("cargo build matcher"),
+    }];
+    let ctx = test_context(temp.path(), provider.clone(), rules);
+
+    let bash = builtin_registry().get("Bash").expect("bash tool");
+    let error = bash
+        .call(
+            &ctx,
+            json!({
+                "command": "cargo build --workspace",
+                "cwd": "."
+            }),
+        )
+        .await
+        .expect_err("granular permission should deny bash command");
+
+    assert_eq!(
+        error.to_string(),
+        "permission denied: tool Bash(cargo build:*) is denied"
+    );
+    assert!(provider.calls.lock().expect("lock calls").is_empty());
+}
+
+#[test]
+fn tool_permission_matcher_parses_exact_and_granular_values() {
+    assert_eq!(
+        ToolPermissionMatcher::parse("Read").expect("exact matcher"),
+        ToolPermissionMatcher {
+            tool: "Read".to_string(),
+            target: None,
+        }
+    );
+    assert_eq!(
+        ToolPermissionMatcher::parse("Bash(cargo test:*)").expect("granular matcher"),
+        ToolPermissionMatcher {
+            tool: "Bash".to_string(),
+            target: Some("cargo test:*".to_string()),
+        }
+    );
 }

@@ -16,6 +16,5 @@ pub struct AgentSpec {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct AgentToolPolicy {
-    #[serde(default)]
     pub allow: Vec<String>,
 }

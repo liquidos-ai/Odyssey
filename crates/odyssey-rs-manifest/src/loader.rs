@@ -44,7 +44,7 @@ impl<'a> BundleLoader<'a> {
         })
     }
 
-    fn validate_project(
+    pub fn validate_project(
         &self,
         manifest: &BundleManifest,
         agent: &AgentSpec,
@@ -107,7 +107,23 @@ impl<'a> BundleLoader<'a> {
         for path in &manifest.sandbox.permissions.filesystem.mounts.write {
             ensure_absolute_mount(self.root, path, "write mount")?;
         }
+        validate_sandbox_env(self.root, &manifest.sandbox.env)?;
         validate_network_permissions(self.root, &manifest.sandbox.permissions.network)?;
+        validate_tool_permission_group(
+            self.root,
+            "sandbox.permissions.tools.allow",
+            &manifest.sandbox.permissions.tools.allow,
+        )?;
+        validate_tool_permission_group(
+            self.root,
+            "sandbox.permissions.tools.ask",
+            &manifest.sandbox.permissions.tools.ask,
+        )?;
+        validate_tool_permission_group(
+            self.root,
+            "sandbox.permissions.tools.deny",
+            &manifest.sandbox.permissions.tools.deny,
+        )?;
         Ok(())
     }
 }
@@ -161,6 +177,102 @@ fn validate_network_permissions(root: &Path, values: &[String]) -> Result<(), Ma
     )
 }
 
+fn validate_sandbox_env(
+    root: &Path,
+    env: &std::collections::BTreeMap<String, String>,
+) -> Result<(), ManifestError> {
+    for (target, source) in env {
+        validate_env_name(root, target, "sandbox.env target")?;
+        validate_env_name(root, source, "sandbox.env source")?;
+    }
+    Ok(())
+}
+
+fn validate_tool_permission_group(
+    root: &Path,
+    label: &str,
+    values: &[String],
+) -> Result<(), ManifestError> {
+    for value in values {
+        validate_tool_permission_value(root, label, value)?;
+    }
+    Ok(())
+}
+
+fn validate_tool_permission_value(
+    root: &Path,
+    label: &str,
+    value: &str,
+) -> Result<(), ManifestError> {
+    if value.trim().is_empty() {
+        return invalid(root, &format!("{label} entries cannot be empty"));
+    }
+
+    if let Some(open) = value.find('(') {
+        if !value.ends_with(')') {
+            return invalid(
+                root,
+                &format!("{label} entry `{value}` must end with `)` when using a granular matcher"),
+            );
+        }
+        if value[..open].trim().is_empty() {
+            return invalid(
+                root,
+                &format!("{label} entry `{value}` is missing a tool name"),
+            );
+        }
+        let target = &value[open + 1..value.len() - 1];
+        if target.trim().is_empty() {
+            return invalid(
+                root,
+                &format!("{label} entry `{value}` is missing a matcher target"),
+            );
+        }
+        if target.contains('(') || target.contains(')') {
+            return invalid(
+                root,
+                &format!("{label} entry `{value}` cannot contain nested parentheses"),
+            );
+        }
+        return Ok(());
+    }
+
+    if value.contains(')') {
+        return invalid(
+            root,
+            &format!("{label} entry `{value}` has an unmatched closing parenthesis"),
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_env_name(root: &Path, value: &str, label: &str) -> Result<(), ManifestError> {
+    if value.is_empty() {
+        return invalid(root, &format!("{label} entries cannot be empty"));
+    }
+
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return invalid(root, &format!("{label} entries cannot be empty"));
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return invalid(
+            root,
+            &format!("{label} entry `{value}` must start with an ASCII letter or underscore"),
+        );
+    }
+    if chars.any(|ch| !(ch == '_' || ch.is_ascii_alphanumeric())) {
+        return invalid(
+            root,
+            &format!(
+                "{label} entry `{value}` must contain only ASCII letters, digits, or underscores"
+            ),
+        );
+    }
+    Ok(())
+}
+
 fn invalid(root: &Path, message: &str) -> Result<(), ManifestError> {
     Err(ManifestError::Invalid {
         path: root.display().to_string(),
@@ -195,7 +307,7 @@ mod tests {
                 memory: { type: 'prebuilt', id: 'sliding_window' },
                 skills: [],
                 tools: [{ name: 'Read', source: 'builtin' }],
-                sandbox: { permissions: { filesystem: { exec: [], mounts: { read: [], write: [] } }, network: [], tools: { mode: 'default', rules: [] } }, system_tools: [], resources: {} }
+                sandbox: { permissions: { filesystem: { exec: [], mounts: { read: [], write: [] } }, network: [], tools: { allow: [], ask: [], deny: [] } }, system_tools: [], resources: {} }
             }"#,
         )
         .expect("write manifest");
@@ -229,7 +341,7 @@ mod tests {
                     permissions: {
                         filesystem: { exec: [], mounts: { read: [], write: [] } },
                         network: ['wttr.in'],
-                        tools: { mode: 'default', rules: [] }
+                        tools: { allow: [], ask: [], deny: [] }
                     },
                     system_tools: [],
                     resources: {}
@@ -272,7 +384,7 @@ mod tests {
                             mounts: { read: ['tmp/project'], write: [] }
                         },
                         network: [],
-                        tools: { mode: 'default', rules: [] }
+                        tools: { allow: [], ask: [], deny: [] }
                     },
                     system_tools: [],
                     resources: {}
@@ -298,5 +410,178 @@ mod tests {
                 temp.path().display()
             )
         );
+    }
+
+    #[test]
+    fn load_project_accepts_runtime_env_injection() {
+        let temp = tempdir().expect("tempdir");
+        fs::write(
+            temp.path().join("odyssey.bundle.json5"),
+            r#"{
+                id: 'demo',
+                version: '0.1.0',
+                manifest_version: 'odyssey.bundle/v1',
+                readme: 'README.md',
+                agent_spec: 'agent.yaml',
+                executor: { type: 'prebuilt', id: 'react' },
+                memory: { type: 'prebuilt', id: 'sliding_window' },
+                sandbox: {
+                    env: { OPENAI_API_KEY: 'OPENAI_API_KEY', APP_ENV: 'APP_ENV' },
+                    permissions: {
+                        filesystem: { exec: [], mounts: { read: [], write: [] } },
+                        network: [],
+                        tools: { allow: [], ask: [], deny: [] }
+                    },
+                    system_tools: [],
+                    resources: {}
+                }
+            }"#,
+        )
+        .expect("write manifest");
+        fs::write(temp.path().join("README.md"), "hello").expect("write readme");
+        fs::write(
+            temp.path().join("agent.yaml"),
+            "id: demo\nmodel:\n  provider: openai\n  name: gpt-5\nprompt: hi\n",
+        )
+        .expect("write agent");
+
+        let (manifest, _) = BundleLoader::new(temp.path())
+            .load_project()
+            .expect("runtime env config valid");
+        assert_eq!(
+            manifest.sandbox.env,
+            std::collections::BTreeMap::from([
+                ("APP_ENV".to_string(), "APP_ENV".to_string()),
+                ("OPENAI_API_KEY".to_string(), "OPENAI_API_KEY".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn load_project_rejects_invalid_env_names() {
+        let temp = tempdir().expect("tempdir");
+        fs::write(
+            temp.path().join("odyssey.bundle.json5"),
+            r#"{
+                id: 'demo',
+                version: '0.1.0',
+                manifest_version: 'odyssey.bundle/v1',
+                readme: 'README.md',
+                agent_spec: 'agent.yaml',
+                executor: { type: 'prebuilt', id: 'react' },
+                memory: { type: 'prebuilt', id: 'sliding_window' },
+                sandbox: {
+                    env: { OPENAI_API_KEY: 'NOT-VALID' },
+                    permissions: {
+                        filesystem: { exec: [], mounts: { read: [], write: [] } },
+                        network: [],
+                        tools: { allow: [], ask: [], deny: [] }
+                    },
+                    system_tools: [],
+                    resources: {}
+                }
+            }"#,
+        )
+        .expect("write manifest");
+        fs::write(temp.path().join("README.md"), "hello").expect("write readme");
+        fs::write(
+            temp.path().join("agent.yaml"),
+            "id: demo\nmodel:\n  provider: openai\n  name: gpt-5\nprompt: hi\n",
+        )
+        .expect("write agent");
+
+        let error = BundleLoader::new(temp.path())
+            .load_project()
+            .expect_err("invalid env name rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("ASCII letters, digits, or underscores")
+        );
+    }
+
+    #[test]
+    fn load_project_rejects_invalid_granular_tool_permission() {
+        let temp = tempdir().expect("tempdir");
+        fs::write(
+            temp.path().join("odyssey.bundle.json5"),
+            r#"{
+                id: 'demo',
+                version: '0.1.0',
+                manifest_version: 'odyssey.bundle/v1',
+                readme: 'README.md',
+                agent_spec: 'agent.yaml',
+                executor: { type: 'prebuilt', id: 'react' },
+                memory: { type: 'prebuilt', id: 'sliding_window' },
+                sandbox: {
+                    permissions: {
+                        filesystem: { exec: [], mounts: { read: [], write: [] } },
+                        network: [],
+                        tools: { allow: ['Bash(find:*'], ask: [], deny: [] }
+                    },
+                    system_tools: [],
+                    resources: {}
+                }
+            }"#,
+        )
+        .expect("write manifest");
+        fs::write(temp.path().join("README.md"), "# demo\n").expect("write readme");
+        fs::write(
+            temp.path().join("agent.yaml"),
+            "id: demo\ndescription: test\nprompt: hello\nmodel:\n  provider: openai\n  name: gpt-4.1-mini\ntools:\n  allow: ['Read']\n",
+        )
+        .expect("write agent");
+
+        let bundle_loader = BundleLoader::new(temp.path());
+        let error = bundle_loader
+            .load_project()
+            .expect_err("invalid granular tool permission rejected");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "invalid manifest at {}: sandbox.permissions.tools.allow entry `Bash(find:*` must end with `)` when using a granular matcher",
+                temp.path().display()
+            )
+        );
+    }
+
+    #[test]
+    fn load_project_rejects_legacy_tool_rules() {
+        let temp = tempdir().expect("tempdir");
+        fs::write(
+            temp.path().join("odyssey.bundle.json5"),
+            r#"{
+                id: 'demo',
+                version: '0.1.0',
+                manifest_version: 'odyssey.bundle/v1',
+                readme: 'README.md',
+                agent_spec: 'agent.yaml',
+                executor: { type: 'prebuilt', id: 'react' },
+                memory: { type: 'prebuilt', id: 'sliding_window' },
+                sandbox: {
+                    permissions: {
+                        filesystem: { exec: [], mounts: { read: [], write: [] } },
+                        network: [],
+                        tools: {
+                            rules: [{ action: 'allow', tool: 'Read' }]
+                        }
+                    },
+                    system_tools: [],
+                    resources: {}
+                }
+            }"#,
+        )
+        .expect("write manifest");
+        fs::write(temp.path().join("README.md"), "# demo\n").expect("write readme");
+        fs::write(
+            temp.path().join("agent.yaml"),
+            "id: demo\ndescription: test\nprompt: hello\nmodel:\n  provider: openai\n  name: gpt-4.1-mini\ntools:\n  allow: ['Read']\n",
+        )
+        .expect("write agent");
+
+        let error = BundleLoader::new(temp.path())
+            .load_project()
+            .expect_err("legacy tool rules rejected");
+        assert!(error.to_string().contains("unknown field `rules`"));
     }
 }

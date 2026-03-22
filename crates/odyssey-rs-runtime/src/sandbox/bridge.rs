@@ -1,12 +1,11 @@
 use crate::RuntimeError;
-use odyssey_rs_manifest::{BundleManifest, BundlePermissionAction, BundleSystemToolsMode};
+use odyssey_rs_manifest::{BundleManifest, BundleSystemToolsMode};
 use odyssey_rs_protocol::SandboxMode;
 use odyssey_rs_sandbox::{
     SandboxCellKey, SandboxCellSpec, SandboxLimits, SandboxNetworkMode, SandboxNetworkPolicy,
     SandboxPolicy, SandboxRuntime, standard_system_exec_roots,
 };
-use odyssey_rs_tools::{PermissionAction, ToolSandbox};
-use std::collections::HashMap;
+use odyssey_rs_tools::{PermissionAction, ToolPermissionMatcher, ToolPermissionRule, ToolSandbox};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -78,6 +77,10 @@ fn build_policy_with_exec_roots(
             exec_roots,
             exec_allow_all,
         },
+        env: odyssey_rs_sandbox::SandboxEnvPolicy {
+            inherit: Vec::new(),
+            set: resolve_manifest_env(&manifest.sandbox.env),
+        },
         network: build_network_policy(&manifest.sandbox.permissions.network)?,
         limits: SandboxLimits {
             cpu_seconds: manifest.sandbox.resources.cpu,
@@ -88,30 +91,49 @@ fn build_policy_with_exec_roots(
                 .map(|value| value * 1024 * 1024),
             ..SandboxLimits::default()
         },
-        ..SandboxPolicy::default()
     })
+}
+
+fn resolve_manifest_env(
+    env: &std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    env.iter()
+        .filter_map(|(target, source)| {
+            std::env::var(source)
+                .ok()
+                .map(|value| (target.clone(), value))
+        })
+        .collect()
 }
 
 pub fn build_mode(manifest: &BundleManifest, override_mode: Option<SandboxMode>) -> SandboxMode {
     override_mode.unwrap_or(manifest.sandbox.mode)
 }
 
-pub fn build_permission_rules(manifest: &BundleManifest) -> HashMap<String, PermissionAction> {
-    manifest
-        .sandbox
-        .permissions
-        .tools
-        .rules
-        .iter()
-        .map(|rule| {
-            let action = match rule.action {
-                BundlePermissionAction::Allow => PermissionAction::Allow,
-                BundlePermissionAction::Deny => PermissionAction::Deny,
-                BundlePermissionAction::Ask => PermissionAction::Ask,
-            };
-            (rule.tool.clone(), action)
-        })
-        .collect()
+pub fn build_permission_rules(manifest: &BundleManifest) -> Vec<ToolPermissionRule> {
+    let mut permissions = Vec::new();
+    for rule in &manifest.sandbox.permissions.tools.allow {
+        permissions.push(build_permission_rule(PermissionAction::Allow, rule));
+    }
+    for rule in &manifest.sandbox.permissions.tools.ask {
+        permissions.push(build_permission_rule(PermissionAction::Ask, rule));
+    }
+    for rule in &manifest.sandbox.permissions.tools.deny {
+        permissions.push(build_permission_rule(PermissionAction::Deny, rule));
+    }
+
+    permissions
+}
+
+fn build_permission_rule(action: PermissionAction, value: &str) -> ToolPermissionRule {
+    let matcher = match ToolPermissionMatcher::parse(value) {
+        Ok(matcher) => matcher,
+        Err(_) => ToolPermissionMatcher {
+            tool: value.to_string(),
+            target: None,
+        },
+    };
+    ToolPermissionRule { action, matcher }
 }
 
 pub async fn prepare_cell(
@@ -387,15 +409,15 @@ mod tests {
         target_has_entries, validate_provider_support, verify_system_tools,
     };
     use odyssey_rs_manifest::{
-        BundleExecutor, BundleManifest, BundleMemory, BundlePermissionAction, BundlePermissionRule,
-        BundleSandbox, BundleSandboxFilesystem, BundleSandboxLimits, BundleSandboxMounts,
-        BundleSandboxPermissions, BundleSandboxTools, BundleSystemToolsMode, ManifestVersion,
-        ProviderKind,
+        BundleExecutor, BundleManifest, BundleMemory, BundleSandbox, BundleSandboxFilesystem,
+        BundleSandboxLimits, BundleSandboxMounts, BundleSandboxPermissions, BundleSandboxTools,
+        BundleSystemToolsMode, ManifestVersion, ProviderKind,
     };
     use odyssey_rs_protocol::SandboxMode;
     use odyssey_rs_sandbox::{SandboxNetworkMode, SandboxPolicy};
-    use odyssey_rs_tools::PermissionAction;
+    use odyssey_rs_tools::{PermissionAction, ToolPermissionMatcher, ToolPermissionRule};
     use serde_json::Value;
+    use std::collections::BTreeMap;
     use std::path::Path;
     use tempfile::tempdir;
 
@@ -428,6 +450,7 @@ mod tests {
                     network: Vec::new(),
                     tools: BundleSandboxTools::default(),
                 },
+                env: BTreeMap::new(),
                 system_tools_mode: BundleSystemToolsMode::Explicit,
                 system_tools: Vec::new(),
                 resources: BundleSandboxLimits::default(),
@@ -470,6 +493,7 @@ mod tests {
             sandbox: BundleSandbox {
                 mode: SandboxMode::ReadOnly,
                 permissions: BundleSandboxPermissions::default(),
+                env: BTreeMap::new(),
                 system_tools_mode: BundleSystemToolsMode::Explicit,
                 system_tools: Vec::new(),
                 resources: BundleSandboxLimits::default(),
@@ -550,12 +574,12 @@ mod tests {
                     network: vec!["*".to_string()],
                     tools: BundleSandboxTools::default(),
                 },
+                env: BTreeMap::new(),
                 system_tools_mode: BundleSystemToolsMode::Explicit,
                 system_tools: vec!["sh".to_string()],
                 resources: BundleSandboxLimits {
                     cpu: Some(3),
                     memory_mb: Some(64),
-                    gpu: None,
                 },
             },
         };
@@ -584,6 +608,51 @@ mod tests {
     }
 
     #[test]
+    fn build_policy_maps_manifest_env_into_sandbox_policy() {
+        let manifest = BundleManifest {
+            id: "demo".to_string(),
+            version: "0.1.0".to_string(),
+            manifest_version: ManifestVersion::V1,
+            readme: "README.md".to_string(),
+            agent_spec: "agent.yaml".to_string(),
+            executor: BundleExecutor {
+                kind: ProviderKind::Prebuilt,
+                id: "react".to_string(),
+                config: Value::Null,
+            },
+            memory: BundleMemory::default(),
+            skills: Vec::new(),
+            tools: Vec::new(),
+            sandbox: BundleSandbox {
+                mode: SandboxMode::WorkspaceWrite,
+                permissions: BundleSandboxPermissions::default(),
+                env: BTreeMap::from([
+                    ("OPENAI_API_KEY".to_string(), "ODYSSEY_TEST_ENV".to_string()),
+                    ("APP_ENV".to_string(), "ODYSSEY_TEST_APP_ENV".to_string()),
+                ]),
+                system_tools_mode: BundleSystemToolsMode::Explicit,
+                system_tools: Vec::new(),
+                resources: BundleSandboxLimits::default(),
+            },
+        };
+
+        unsafe {
+            std::env::set_var("ODYSSEY_TEST_ENV", "secret");
+            std::env::set_var("ODYSSEY_TEST_APP_ENV", "development");
+        }
+        let policy = build_policy(Path::new("/bundle-root"), &manifest).expect("build policy");
+        assert!(policy.env.inherit.is_empty());
+        assert_eq!(
+            policy.env.set.get("OPENAI_API_KEY"),
+            Some(&"secret".to_string())
+        );
+        assert_eq!(
+            policy.env.set.get("APP_ENV"),
+            Some(&"development".to_string())
+        );
+    }
+
+    #[test]
     fn operator_command_policy_includes_standard_system_exec_roots() {
         let manifest = BundleManifest {
             id: "demo".to_string(),
@@ -602,6 +671,7 @@ mod tests {
             sandbox: BundleSandbox {
                 mode: SandboxMode::ReadOnly,
                 permissions: BundleSandboxPermissions::default(),
+                env: BTreeMap::new(),
                 system_tools_mode: BundleSystemToolsMode::Explicit,
                 system_tools: Vec::new(),
                 resources: BundleSandboxLimits::default(),
@@ -656,23 +726,15 @@ mod tests {
                     filesystem: BundleSandboxFilesystem::default(),
                     network: Vec::new(),
                     tools: BundleSandboxTools {
-                        mode: "default".to_string(),
-                        rules: vec![
-                            BundlePermissionRule {
-                                action: BundlePermissionAction::Allow,
-                                tool: "read".to_string(),
-                            },
-                            BundlePermissionRule {
-                                action: BundlePermissionAction::Deny,
-                                tool: "write".to_string(),
-                            },
-                            BundlePermissionRule {
-                                action: BundlePermissionAction::Ask,
-                                tool: "bash".to_string(),
-                            },
+                        allow: vec!["read".to_string(), "Bash(find:*)".to_string()],
+                        ask: vec!["bash".to_string(), "Bash(cargo test:*)".to_string()],
+                        deny: vec![
+                            "write".to_string(),
+                            "WebFetch(domain:liquidos.ai)".to_string(),
                         ],
                     },
                 },
+                env: BTreeMap::new(),
                 system_tools_mode: BundleSystemToolsMode::Explicit,
                 system_tools: Vec::new(),
                 resources: BundleSandboxLimits::default(),
@@ -681,9 +743,37 @@ mod tests {
 
         let rules = build_permission_rules(&manifest);
 
-        assert_eq!(rules.get("read"), Some(&PermissionAction::Allow));
-        assert_eq!(rules.get("write"), Some(&PermissionAction::Deny));
-        assert_eq!(rules.get("bash"), Some(&PermissionAction::Ask));
+        assert_eq!(
+            rules,
+            vec![
+                ToolPermissionRule {
+                    action: PermissionAction::Allow,
+                    matcher: ToolPermissionMatcher::parse("read").expect("read matcher"),
+                },
+                ToolPermissionRule {
+                    action: PermissionAction::Allow,
+                    matcher: ToolPermissionMatcher::parse("Bash(find:*)").expect("allow matcher"),
+                },
+                ToolPermissionRule {
+                    action: PermissionAction::Ask,
+                    matcher: ToolPermissionMatcher::parse("bash").expect("bash matcher"),
+                },
+                ToolPermissionRule {
+                    action: PermissionAction::Ask,
+                    matcher: ToolPermissionMatcher::parse("Bash(cargo test:*)")
+                        .expect("ask matcher"),
+                },
+                ToolPermissionRule {
+                    action: PermissionAction::Deny,
+                    matcher: ToolPermissionMatcher::parse("write").expect("write matcher"),
+                },
+                ToolPermissionRule {
+                    action: PermissionAction::Deny,
+                    matcher: ToolPermissionMatcher::parse("WebFetch(domain:liquidos.ai)")
+                        .expect("deny matcher"),
+                },
+            ]
+        );
     }
 
     #[test]
@@ -714,6 +804,7 @@ mod tests {
             sandbox: BundleSandbox {
                 mode: SandboxMode::ReadOnly,
                 permissions: BundleSandboxPermissions::default(),
+                env: BTreeMap::new(),
                 system_tools_mode: BundleSystemToolsMode::Standard,
                 system_tools: Vec::new(),
                 resources: BundleSandboxLimits::default(),
@@ -750,6 +841,7 @@ mod tests {
             sandbox: BundleSandbox {
                 mode: SandboxMode::ReadOnly,
                 permissions: BundleSandboxPermissions::default(),
+                env: BTreeMap::new(),
                 system_tools_mode: BundleSystemToolsMode::All,
                 system_tools: Vec::new(),
                 resources: BundleSandboxLimits::default(),

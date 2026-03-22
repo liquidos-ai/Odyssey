@@ -27,7 +27,6 @@ impl Tool for BashTool {
         json!({"type":"object","required":["command"],"properties":{"command":{"type":"string"},"cwd":{"type":"string"}}})
     }
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<Value, ToolError> {
-        ctx.authorize_tool(self.name()).await?;
         let input: BashArgs = serde_json::from_value(args)
             .map_err(|err| ToolError::InvalidArguments(err.to_string()))?;
         if input.command.trim().is_empty() {
@@ -35,6 +34,9 @@ impl Tool for BashTool {
                 "command cannot be empty".to_string(),
             ));
         }
+        let permission_targets = permission_targets(&input.command)?;
+        ctx.authorize_tool_with_targets(self.name(), &permission_targets)
+            .await?;
         let cwd = input
             .cwd
             .as_deref()
@@ -63,6 +65,24 @@ impl Tool for BashTool {
             "stderr_truncated": output.stderr_truncated
         }))
     }
+}
+
+fn permission_targets(command: &str) -> Result<Vec<String>, ToolError> {
+    let tokens = shell_words::split(command)
+        .map_err(|err| ToolError::InvalidArguments(format!("invalid shell command: {err}")))?;
+    if tokens.is_empty() {
+        return Err(ToolError::InvalidArguments(
+            "command cannot be empty".to_string(),
+        ));
+    }
+
+    Ok((1..=tokens.len())
+        .map(|prefix_len| {
+            let head = tokens[..prefix_len].join(" ");
+            let tail = tokens[prefix_len..].join(" ");
+            format!("{head}:{tail}")
+        })
+        .collect())
 }
 
 fn resolve_shell_path() -> Result<PathBuf, ToolError> {

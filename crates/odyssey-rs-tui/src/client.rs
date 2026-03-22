@@ -225,7 +225,7 @@ mod tests {
                         permissions: {{
                             filesystem: {{ exec: [], mounts: {{ read: [], write: [] }} }},
                             network: ["*"],
-                            tools: {{ mode: "default", rules: [] }}
+                            tools: {{ allow: [], ask: [], deny: [] }}
                         }},
                         system_tools: [],
                         resources: {{}}
