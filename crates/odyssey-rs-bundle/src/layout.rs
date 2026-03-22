@@ -334,7 +334,7 @@ fn payload_target(dst: &Path, path: &str) -> Result<PathBuf, BundleError> {
         )));
     }
 
-    let mut normalized = PathBuf::new();
+    let mut normalized = PathBuf::default();
     for component in relative.components() {
         match component {
             Component::CurDir => {}

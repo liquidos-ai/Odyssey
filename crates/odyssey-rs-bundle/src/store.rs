@@ -704,7 +704,7 @@ fn safe_relative_join(root: &Path, value: &str, label: &str) -> Result<PathBuf, 
         )));
     }
 
-    let mut normalized = PathBuf::new();
+    let mut normalized = PathBuf::default();
     for component in relative.components() {
         match component {
             Component::CurDir => {}
