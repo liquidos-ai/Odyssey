@@ -14,6 +14,7 @@ odyssey-rs-sandbox.workspace = true
 autoagents-core.workspace = true
 
 async-trait.workspace = true
+ignore = "0.4.25"
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

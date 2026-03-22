@@ -97,6 +97,9 @@ fn validate_agent_config(root: &Path, agent: &AgentSpec) -> Result<(), ManifestE
     if agent.model.provider.trim().is_empty() || agent.model.name.trim().is_empty() {
         return invalid(root, "agent model provider and name are required");
     }
+    validate_tool_permission_group(root, "agent.tools.allow", &agent.tools.allow)?;
+    validate_tool_permission_group(root, "agent.tools.ask", &agent.tools.ask)?;
+    validate_tool_permission_group(root, "agent.tools.deny", &agent.tools.deny)?;
     Ok(())
 }
 
@@ -129,22 +132,7 @@ fn validate_mount_points(root: &Path, manifest: &BundleManifest) -> Result<(), M
 
 fn validate_sandbox_config(root: &Path, manifest: &BundleManifest) -> Result<(), ManifestError> {
     validate_sandbox_env(root, &manifest.sandbox.env)?;
-    validate_network_permissions(root, &manifest.sandbox.permissions.network)?;
-    validate_tool_permission_group(
-        root,
-        "sandbox.permissions.tools.allow",
-        &manifest.sandbox.permissions.tools.allow,
-    )?;
-    validate_tool_permission_group(
-        root,
-        "sandbox.permissions.tools.ask",
-        &manifest.sandbox.permissions.tools.ask,
-    )?;
-    validate_tool_permission_group(
-        root,
-        "sandbox.permissions.tools.deny",
-        &manifest.sandbox.permissions.tools.deny,
-    )
+    validate_network_permissions(root, &manifest.sandbox.permissions.network)
 }
 
 fn validate_non_empty(root: &Path, value: &str, message: &str) -> Result<(), ManifestError> {
@@ -182,10 +170,19 @@ fn ensure_absolute_mount(root: &Path, value: &str, label: &str) -> Result<(), Ma
         return invalid(root, &format!("{label} {value} is not supported in v1"));
     }
     let path = Path::new(value);
-    if !path.is_absolute() {
-        return invalid(root, &format!("{label} must be an absolute host path"));
+    if !path.is_absolute() && !is_current_directory_mount(path) {
+        return invalid(
+            root,
+            &format!("{label} must be an absolute host path or `.`"),
+        );
     }
     Ok(())
+}
+
+fn is_current_directory_mount(path: &Path) -> bool {
+    let mut components = path.components();
+    components.next().is_some()
+        && components.all(|component| component == std::path::Component::CurDir)
 }
 
 fn validate_network_permissions(root: &Path, values: &[String]) -> Result<(), ManifestError> {
@@ -333,7 +330,7 @@ mod tests {
                 memory: { type: 'prebuilt', id: 'sliding_window' },
                 skills: [],
                 tools: [{ name: 'Read', source: 'builtin' }],
-                sandbox: { permissions: { filesystem: { exec: [], mounts: { read: [], write: [] } }, network: [], tools: { allow: [], ask: [], deny: [] } }, system_tools: [], resources: {} }
+                sandbox: { permissions: { filesystem: { exec: [], mounts: { read: [], write: [] } }, network: [] }, system_tools: [], resources: {} }
             }"#,
         )
         .expect("write manifest");
@@ -367,7 +364,6 @@ mod tests {
                     permissions: {
                         filesystem: { exec: [], mounts: { read: [], write: [] } },
                         network: ['wttr.in'],
-                        tools: { allow: [], ask: [], deny: [] }
                     },
                     system_tools: [],
                     resources: {}
@@ -410,7 +406,6 @@ mod tests {
                             mounts: { read: ['tmp/project'], write: [] }
                         },
                         network: [],
-                        tools: { allow: [], ask: [], deny: [] }
                     },
                     system_tools: [],
                     resources: {}
@@ -432,10 +427,51 @@ mod tests {
         assert_eq!(
             error.to_string(),
             format!(
-                "invalid manifest at {}: read mount must be an absolute host path",
+                "invalid manifest at {}: read mount must be an absolute host path or `.`",
                 temp.path().display()
             )
         );
+    }
+
+    #[test]
+    fn load_project_accepts_current_directory_mount() {
+        let temp = tempdir().expect("tempdir");
+        fs::write(
+            temp.path().join("odyssey.bundle.json5"),
+            r#"{
+                id: 'demo',
+                version: '0.1.0',
+                manifest_version: 'odyssey.bundle/v1',
+                readme: 'README.md',
+                agent_spec: 'agent.yaml',
+                executor: { type: 'prebuilt', id: 'react' },
+                memory: { type: 'prebuilt', id: 'sliding_window' },
+                skills: [],
+                tools: [{ name: 'Read', source: 'builtin' }],
+                sandbox: {
+                    permissions: {
+                        filesystem: {
+                            exec: [],
+                            mounts: { read: ['.'], write: [] }
+                        },
+                        network: [],
+                    },
+                    system_tools: [],
+                    resources: {}
+                }
+            }"#,
+        )
+        .expect("write manifest");
+        fs::write(temp.path().join("README.md"), "# demo\n").expect("write readme");
+        fs::write(
+            temp.path().join("agent.yaml"),
+            "id: demo\ndescription: test\nprompt: hello\nmodel:\n  provider: openai\n  name: gpt-4.1-mini\ntools:\n  allow: ['Read']\n",
+        )
+        .expect("write agent");
+
+        BundleLoader::new(temp.path())
+            .load_project()
+            .expect("current directory mount should be accepted");
     }
 
     #[test]
@@ -456,7 +492,6 @@ mod tests {
                     permissions: {
                         filesystem: { exec: [], mounts: { read: [], write: [] } },
                         network: [],
-                        tools: { allow: [], ask: [], deny: [] }
                     },
                     system_tools: [],
                     resources: {}
@@ -501,7 +536,6 @@ mod tests {
                     permissions: {
                         filesystem: { exec: [], mounts: { read: [], write: [] } },
                         network: [],
-                        tools: { allow: [], ask: [], deny: [] }
                     },
                     system_tools: [],
                     resources: {}
@@ -542,8 +576,7 @@ mod tests {
                 sandbox: {
                     permissions: {
                         filesystem: { exec: [], mounts: { read: [], write: [] } },
-                        network: [],
-                        tools: { allow: ['Bash(find:*'], ask: [], deny: [] }
+                        network: []
                     },
                     system_tools: [],
                     resources: {}
@@ -554,7 +587,7 @@ mod tests {
         fs::write(temp.path().join("README.md"), "# demo\n").expect("write readme");
         fs::write(
             temp.path().join("agent.yaml"),
-            "id: demo\ndescription: test\nprompt: hello\nmodel:\n  provider: openai\n  name: gpt-4.1-mini\ntools:\n  allow: ['Read']\n",
+            "id: demo\ndescription: test\nprompt: hello\nmodel:\n  provider: openai\n  name: gpt-4.1-mini\ntools:\n  allow: ['Bash(find:*']\n",
         )
         .expect("write agent");
 
@@ -565,14 +598,14 @@ mod tests {
         assert_eq!(
             error.to_string(),
             format!(
-                "invalid manifest at {}: sandbox.permissions.tools.allow entry `Bash(find:*` must end with `)` when using a granular matcher",
+                "invalid manifest at {}: agent.tools.allow entry `Bash(find:*` must end with `)` when using a granular matcher",
                 temp.path().display()
             )
         );
     }
 
     #[test]
-    fn load_project_rejects_legacy_tool_rules() {
+    fn load_project_rejects_bundle_level_tool_permissions() {
         let temp = tempdir().expect("tempdir");
         fs::write(
             temp.path().join("odyssey.bundle.json5"),
@@ -588,9 +621,7 @@ mod tests {
                     permissions: {
                         filesystem: { exec: [], mounts: { read: [], write: [] } },
                         network: [],
-                        tools: {
-                            rules: [{ action: 'allow', tool: 'Read' }]
-                        }
+                        tools: { allow: ['Read'], ask: [], deny: [] }
                     },
                     system_tools: [],
                     resources: {}
@@ -607,7 +638,7 @@ mod tests {
 
         let error = BundleLoader::new(temp.path())
             .load_project()
-            .expect_err("legacy tool rules rejected");
-        assert!(error.to_string().contains("unknown field `rules`"));
+            .expect_err("bundle-level tool permissions rejected");
+        assert!(error.to_string().contains("unknown field `tools`"));
     }
 }

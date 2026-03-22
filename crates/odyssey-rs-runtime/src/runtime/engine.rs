@@ -292,12 +292,13 @@ impl OdysseyRuntime {
             turn_id,
             bundle_root: cell.root.clone(),
             working_dir: cell.work_dir.clone(),
+            workspace_mounts: cell.workspace_mounts.clone(),
             sandbox: ToolSandbox {
                 provider: cell.sandbox.provider,
                 handle: cell.sandbox.handle,
                 lease: cell.sandbox.lease,
             },
-            permission_rules: build_permission_rules(&resolved.manifest),
+            permission_rules: build_permission_rules(&resolved.agent),
             event_sink: Some(event_sink),
             approval_handler: Some(approval_handler),
             skills: None,
@@ -569,8 +570,7 @@ mod tests {
                     sandbox: {{
                         permissions: {{
                             filesystem: {{ exec: [], mounts: {{ read: [], write: [] }} }},
-                            network: ["*"],
-                            tools: {{ allow: [], ask: [], deny: [] }}
+                            network: ["*"]
                         }},
                         system_tools: ["sh"],
                         resources: {{}}
@@ -616,6 +616,7 @@ tools:
             turn_id: Uuid::new_v4(),
             bundle_root: temp.path().to_path_buf(),
             working_dir: temp.path().to_path_buf(),
+            workspace_mounts: Vec::new(),
             sandbox: ToolSandbox {
                 provider: Arc::new(HostExecProvider::default()),
                 handle: SandboxHandle { id: Uuid::new_v4() },
@@ -645,6 +646,7 @@ tools:
             turn_id: Uuid::new_v4(),
             bundle_root: temp.path().to_path_buf(),
             working_dir: temp.path().to_path_buf(),
+            workspace_mounts: Vec::new(),
             sandbox: ToolSandbox {
                 provider: Arc::new(HostExecProvider::default()),
                 handle: SandboxHandle { id: Uuid::new_v4() },

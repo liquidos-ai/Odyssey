@@ -9,4 +9,6 @@ model:
     max_tokens: 1024
     temperature: 0.2
 tools:
-  allow: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'Skill']
+  allow: ['Read', 'LS', 'Glob', 'Grep', 'Skill', 'Bash(curl:*)']
+  ask: ['Write', 'Edit', 'Bash']
+  deny: []

@@ -101,10 +101,10 @@ cargo run -p odyssey-rs -- --remote http://127.0.0.1:8472 run hello-world@latest
 
 ## Start The TUI
 
-The TUI embeds the runtime directly:
+The TUI runs through the main CLI entrypoint:
 
 ```bash
-cargo run -p odyssey-rs-tui -- --bundle hello-world@latest
+cargo run -p odyssey-rs -- tui --bundle hello-world@latest
 ```
 
 Inside the TUI:

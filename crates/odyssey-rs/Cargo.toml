@@ -19,6 +19,7 @@ odyssey-rs-bundle.workspace = true
 odyssey-rs-protocol.workspace = true
 odyssey-rs-runtime.workspace = true
 odyssey-rs-server.workspace = true
+odyssey-rs-tui.workspace = true
 
 anyhow.workspace = true
 clap.workspace = true

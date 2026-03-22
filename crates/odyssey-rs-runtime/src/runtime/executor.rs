@@ -87,7 +87,7 @@ impl ScheduleExecutor {
         let mode_override = self.runtime.config.sandbox_mode_override;
         let mode = effective_sandbox_mode(&resolved.manifest, mode_override);
         let cell = prepare_resolved_agent_cell(&self.runtime, &resolved, session_id).await?;
-        let permissions = build_permission_rules(&resolved.manifest);
+        let permissions = build_permission_rules(&resolved.agent);
         let event_sink = Arc::new(RuntimeToolEventSink {
             session_id,
             turn_id,
@@ -111,6 +111,7 @@ impl ScheduleExecutor {
             turn_id,
             bundle_root: cell.root.clone(),
             working_dir: cell.work_dir.clone(),
+            workspace_mounts: cell.workspace_mounts.clone(),
             sandbox: cell.sandbox,
             permission_rules: permissions,
             event_sink: Some(event_sink),

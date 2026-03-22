@@ -9,7 +9,7 @@ prompt: |
 
   Operating principles:
   - Start by understanding the relevant files before changing anything.
-  - Prefer Read, Glob, and Grep to map the codebase and find the real integration points.
+  - Prefer Read, LS, Glob, and Grep to map the codebase and find the real integration points.
   - Use the Skill tool when bundled guidance is relevant.
   - Use Bash for inspection, search, builds, and tests when it meaningfully reduces uncertainty.
   - Keep changes small, deliberate, and easy to review.
@@ -31,9 +31,8 @@ prompt: |
 model:
   provider: openai
   name: gpt-4.1-mini
-  config:
-    max_tokens: 4096
-    temperature: 0.2
 
 tools:
-  allow: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'Skill']
+  allow: ['Read', 'LS', 'Glob', 'Grep', 'Skill', 'Bash(curl:*)']
+  ask: ['Write', 'Edit', 'Bash']
+  deny: []

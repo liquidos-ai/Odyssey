@@ -6,7 +6,7 @@ use crate::ToolRegistry;
 use std::sync::Arc;
 
 pub use bash::BashTool;
-pub use filesystem::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
+pub use filesystem::{EditTool, GlobTool, GrepTool, LsTool, ReadTool, WriteTool};
 pub use skill::SkillTool;
 
 pub fn builtin_registry() -> ToolRegistry {
@@ -14,6 +14,7 @@ pub fn builtin_registry() -> ToolRegistry {
     registry.register(Arc::new(ReadTool));
     registry.register(Arc::new(WriteTool));
     registry.register(Arc::new(EditTool));
+    registry.register(Arc::new(LsTool));
     registry.register(Arc::new(GlobTool));
     registry.register(Arc::new(GrepTool));
     registry.register(Arc::new(BashTool));

@@ -9,7 +9,7 @@ pub use adaptor::{tool_to_adaptor, tools_to_adaptors};
 pub use builtins::builtin_registry;
 pub use context::{
     PermissionAction, SkillEntry, SkillProvider, ToolApprovalHandler, ToolContext, ToolEvent,
-    ToolEventSink, ToolPermissionMatcher, ToolPermissionRule, ToolSandbox,
+    ToolEventSink, ToolPermissionMatcher, ToolPermissionRule, ToolSandbox, WorkspaceMount,
 };
 pub use error::ToolError;
 pub use registry::ToolRegistry;

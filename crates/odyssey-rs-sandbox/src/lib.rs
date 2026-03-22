@@ -17,7 +17,7 @@ pub use runtime::{
 };
 pub use types::{
     AccessDecision, AccessMode, CommandResult, CommandSpec, SandboxContext, SandboxEnvPolicy,
-    SandboxFilesystemPolicy, SandboxHandle, SandboxLimits, SandboxNetworkMode,
+    SandboxFilesystemPolicy, SandboxHandle, SandboxLimits, SandboxMountBinding, SandboxNetworkMode,
     SandboxNetworkPolicy, SandboxPolicy, SandboxRunRequest, SandboxRunResult, SandboxSupport,
 };
 

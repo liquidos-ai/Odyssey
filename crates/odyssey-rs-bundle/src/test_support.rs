@@ -31,8 +31,7 @@ pub fn write_bundle_project(
                     env: {{}},
                     permissions: {{
                         filesystem: {{ exec: [], mounts: {{ read: [], write: [] }} }},
-                        network: [],
-                        tools: {{ allow: [], ask: [], deny: [] }}
+                        network: []
                     }},
                     system_tools_mode: "explicit",
                     system_tools: [],

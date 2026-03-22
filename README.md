@@ -84,8 +84,8 @@ At execution time, Odyssey resolves an `AgentRef` to an installed bundle, create
 The same runtime is available through:
 
 - `odyssey-rs` for CLI workflows
+- `odyssey-rs` `tui` for terminal-native operation
 - `odyssey-rs-server` for HTTP access
-- `odyssey-rs-tui` for terminal-native operation
 
 ## Quickstart
 
@@ -121,11 +121,12 @@ cargo run -p odyssey-rs -- build ./hello-world --output ./dist
 export OPENAI_API_KEY="your-key"
 cargo run -p odyssey-rs -- run hello-world@latest --prompt "Hey, What are your capabilities?"
 ```
-Run the agent in the TUI - The TUI Automatically loads the installed bundles, TUI Gives ability to run tools with "ASK" policy
+Run the agent in the TUI. The TUI automatically loads installed bundles and handles tools with
+`ASK` policy through the same `odyssey-rs` CLI entrypoint.
 
 ```bash
 export OPENAI_API_KEY="your-key"
-cargo run --release -p odyssey-rs-tui
+cargo run --release -p odyssey-rs -- tui --bundle hello-world@latest
 ```
 
 ### 4. Inspect installed metadata
@@ -219,7 +220,7 @@ For local debugging, the CLI and server support `--dangerous-sandbox-mode`, whic
 
 ## Repository Layout
 
-- `crates/odyssey-rs`: CLI entrypoint and facade crate
+- `crates/odyssey-rs`: CLI entrypoint and facade crate, including the `tui` command
 - `crates/odyssey-rs-manifest`: bundle manifest parsing and validation
 - `crates/odyssey-rs-bundle`: build, install, inspect, export, import, push, and pull
 - `crates/odyssey-rs-protocol`: shared runtime protocol types
@@ -227,7 +228,7 @@ For local debugging, the CLI and server support `--dangerous-sandbox-mode`, whic
 - `crates/odyssey-rs-tools`: built-in tools and tool adaptors
 - `crates/odyssey-rs-sandbox`: sandbox runtime and providers
 - `crates/odyssey-rs-server`: Axum-based HTTP API
-- `crates/odyssey-rs-tui`: Ratatui-based terminal UI
+- `crates/odyssey-rs-tui`: Ratatui-based terminal UI implementation used by `odyssey-rs tui`
 - `bundles/hello-world`: minimal example bundle
 - `bundles/odyssey-agent`: Odyssey general purpose agent
 

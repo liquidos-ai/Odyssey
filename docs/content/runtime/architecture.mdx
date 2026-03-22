@@ -70,7 +70,7 @@ Three entry points sit on top of the same runtime contract:
 
 - the CLI constructs `OdysseyRuntime` directly for local commands
 - the HTTP server constructs `OdysseyRuntime` once and exposes bundle and session routes
-- the TUI constructs `OdysseyRuntime` directly and subscribes to its session event stream
+- the `odyssey-rs tui` command constructs `OdysseyRuntime` directly and subscribes to its session event stream
 
 The server is not a separate execution engine. It is a thin network wrapper over the same runtime
 type.

@@ -6,7 +6,7 @@ use odyssey_rs_sandbox::{
 use odyssey_rs_tools::{
     PermissionAction, SkillEntry, SkillProvider, ToolApprovalHandler, ToolContext, ToolError,
     ToolEvent, ToolEventSink, ToolPermissionMatcher, ToolPermissionRule, ToolSandbox, ToolSpec,
-    builtin_registry,
+    WorkspaceMount, builtin_registry,
 };
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -153,11 +153,21 @@ fn test_context(
     provider: FakeProvider,
     permission_rules: Vec<ToolPermissionRule>,
 ) -> ToolContext {
+    test_context_with_mounts(bundle_root, provider, permission_rules, Vec::new())
+}
+
+fn test_context_with_mounts(
+    bundle_root: &Path,
+    provider: FakeProvider,
+    permission_rules: Vec<ToolPermissionRule>,
+    workspace_mounts: Vec<WorkspaceMount>,
+) -> ToolContext {
     ToolContext {
         session_id: Uuid::new_v4(),
         turn_id: Uuid::new_v4(),
         bundle_root: bundle_root.to_path_buf(),
         working_dir: bundle_root.to_path_buf(),
+        workspace_mounts,
         sandbox: ToolSandbox {
             provider: Arc::new(provider),
             handle: SandboxHandle { id: Uuid::new_v4() },
@@ -197,6 +207,7 @@ fn builtin_registry_exposes_expected_tools() {
             "Edit".to_string(),
             "Glob".to_string(),
             "Grep".to_string(),
+            "LS".to_string(),
             "Read".to_string(),
             "Skill".to_string(),
             "Write".to_string(),
@@ -400,9 +411,17 @@ async fn filesystem_tools_round_trip_and_search() {
         "updated file"
     );
 
+    let ls = call_tool(&registry, "LS", &ctx, json!({ "path": "docs" })).await;
     let glob = call_tool(&registry, "Glob", &ctx, json!({ "pattern": "docs/*.txt" })).await;
     let grep = call_tool(&registry, "Grep", &ctx, json!({ "pattern": "hello" })).await;
 
+    assert_eq!(
+        ls["entries"],
+        json!([
+            { "name": "new.txt", "path": "docs/new.txt", "type": "file" },
+            { "name": "notes.txt", "path": "docs/notes.txt", "type": "file" }
+        ])
+    );
     assert_eq!(glob["matches"], json!(["docs/new.txt", "docs/notes.txt"]));
     assert_eq!(grep["matches"].as_array().expect("grep matches").len(), 2);
 
@@ -422,6 +441,290 @@ async fn filesystem_tools_round_trip_and_search() {
     assert_eq!(
         edit_error.to_string(),
         "execution failed: old_text not found"
+    );
+}
+
+#[tokio::test]
+async fn filesystem_tools_use_mounted_filesystem_view() {
+    let temp = tempdir().expect("tempdir");
+    let bundle_root = temp.path().join("bundle");
+    let host_mount = temp.path().join("host-project");
+    let visible_mount = bundle_root.join("mount").join("read").join("current");
+
+    fs::create_dir_all(&bundle_root).expect("create bundle root");
+    fs::create_dir_all(host_mount.join("docs")).expect("create host docs");
+    fs::write(
+        host_mount.join("docs").join("notes.txt"),
+        "hello from mount\n",
+    )
+    .expect("write mounted file");
+
+    let ctx = test_context_with_mounts(
+        &bundle_root,
+        FakeProvider::default(),
+        Vec::new(),
+        vec![WorkspaceMount {
+            visible_root: visible_mount,
+            host_root: host_mount.clone(),
+            writable: false,
+        }],
+    );
+    let registry = builtin_registry();
+
+    let read = call_tool(
+        &registry,
+        "Read",
+        &ctx,
+        json!({ "path": "mount/read/current/docs/notes.txt" }),
+    )
+    .await;
+    let ls = call_tool(
+        &registry,
+        "LS",
+        &ctx,
+        json!({ "path": "mount/read/current/docs" }),
+    )
+    .await;
+    let glob = call_tool(
+        &registry,
+        "Glob",
+        &ctx,
+        json!({ "pattern": "mount/read/current/**/*.txt" }),
+    )
+    .await;
+    let grep = call_tool(&registry, "Grep", &ctx, json!({ "pattern": "hello" })).await;
+
+    assert_eq!(read["content"], json!("hello from mount\n"));
+    assert_eq!(
+        ls["entries"],
+        json!([{ "name": "notes.txt", "path": "mount/read/current/docs/notes.txt", "type": "file" }])
+    );
+    assert_eq!(
+        glob["matches"],
+        json!(["mount/read/current/docs/notes.txt"])
+    );
+    assert_eq!(
+        grep["matches"],
+        json!([{
+            "path": "mount/read/current/docs/notes.txt",
+            "line": 1,
+            "text": "hello from mount"
+        }])
+    );
+}
+
+#[tokio::test]
+async fn write_and_edit_tools_update_writable_mount_sources() {
+    let temp = tempdir().expect("tempdir");
+    let bundle_root = temp.path().join("bundle");
+    let host_mount = temp.path().join("host-project");
+    let visible_mount = bundle_root.join("mount").join("write").join("current");
+
+    fs::create_dir_all(&bundle_root).expect("create bundle root");
+    fs::create_dir_all(&host_mount).expect("create host mount");
+    fs::write(host_mount.join("draft.txt"), "version one\n").expect("write host file");
+
+    let ctx = test_context_with_mounts(
+        &bundle_root,
+        FakeProvider::default(),
+        Vec::new(),
+        vec![WorkspaceMount {
+            visible_root: visible_mount,
+            host_root: host_mount.clone(),
+            writable: true,
+        }],
+    );
+    let registry = builtin_registry();
+
+    call_tool(
+        &registry,
+        "Write",
+        &ctx,
+        json!({
+            "path": "mount/write/current/new.txt",
+            "content": "mounted output"
+        }),
+    )
+    .await;
+    call_tool(
+        &registry,
+        "Edit",
+        &ctx,
+        json!({
+            "path": "mount/write/current/draft.txt",
+            "old_text": "one",
+            "new_text": "two"
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        fs::read_to_string(host_mount.join("new.txt")).expect("read written mount file"),
+        "mounted output"
+    );
+    assert_eq!(
+        fs::read_to_string(host_mount.join("draft.txt")).expect("read edited mount file"),
+        "version two\n"
+    );
+}
+
+#[tokio::test]
+async fn filesystem_tools_respect_gitignore_in_workspace() {
+    let temp = tempdir().expect("tempdir");
+    fs::create_dir_all(temp.path().join("docs")).expect("create docs");
+    fs::create_dir_all(temp.path().join("node_modules")).expect("create ignored dir");
+    fs::write(
+        temp.path().join(".gitignore"),
+        "ignored.txt\nnode_modules/\n",
+    )
+    .expect("write gitignore");
+    fs::write(
+        temp.path().join("docs").join("notes.txt"),
+        "hello visible\n",
+    )
+    .expect("write visible file");
+    fs::write(temp.path().join("ignored.txt"), "secret\n").expect("write ignored file");
+    fs::write(
+        temp.path().join("node_modules").join("package.json"),
+        "{\"name\":\"ignored\"}\n",
+    )
+    .expect("write ignored package");
+
+    let ctx = test_context(temp.path(), FakeProvider::default(), Vec::new());
+    let registry = builtin_registry();
+
+    let ls = call_tool(&registry, "LS", &ctx, json!({})).await;
+    let glob = call_tool(&registry, "Glob", &ctx, json!({ "pattern": "*.txt" })).await;
+    let grep = call_tool(
+        &registry,
+        "Grep",
+        &ctx,
+        json!({ "pattern": "visible|secret" }),
+    )
+    .await;
+    let read_visible =
+        call_tool(&registry, "Read", &ctx, json!({ "path": "docs/notes.txt" })).await;
+
+    assert_eq!(read_visible["content"], json!("hello visible\n"));
+    assert_eq!(
+        ls["entries"],
+        json!([
+            { "name": "docs", "path": "docs", "type": "dir" },
+            { "name": ".gitignore", "path": ".gitignore", "type": "file" }
+        ])
+    );
+    assert_eq!(glob["matches"], json!(["docs/notes.txt"]));
+    assert_eq!(
+        grep["matches"],
+        json!([{
+            "path": "docs/notes.txt",
+            "line": 1,
+            "text": "hello visible"
+        }])
+    );
+
+    let read_ignored = registry
+        .get("Read")
+        .expect("read tool")
+        .call(&ctx, json!({ "path": "ignored.txt" }))
+        .await
+        .expect_err("ignored file should be hidden");
+    let ls_ignored = registry
+        .get("LS")
+        .expect("ls tool")
+        .call(&ctx, json!({ "path": "node_modules" }))
+        .await
+        .expect_err("ignored directory should be hidden");
+
+    assert_eq!(
+        read_ignored.to_string(),
+        "permission denied: path `ignored.txt` is ignored by .gitignore"
+    );
+    assert_eq!(
+        ls_ignored.to_string(),
+        "permission denied: path `node_modules` is ignored by .gitignore"
+    );
+}
+
+#[tokio::test]
+async fn filesystem_tools_respect_gitignore_in_mounts() {
+    let temp = tempdir().expect("tempdir");
+    let bundle_root = temp.path().join("bundle");
+    let host_mount = temp.path().join("host-project");
+    let visible_mount = bundle_root.join("mount").join("write").join("current");
+
+    fs::create_dir_all(&bundle_root).expect("create bundle root");
+    fs::create_dir_all(host_mount.join("src")).expect("create visible dir");
+    fs::create_dir_all(host_mount.join("target")).expect("create ignored dir");
+    fs::write(host_mount.join(".gitignore"), "ignored.txt\ntarget/\n").expect("write gitignore");
+    fs::write(host_mount.join("src").join("main.rs"), "fn main() {}\n").expect("write source");
+    fs::write(host_mount.join("ignored.txt"), "skip me\n").expect("write ignored file");
+    fs::write(
+        host_mount.join("target").join("output.txt"),
+        "skip me too\n",
+    )
+    .expect("write ignored target file");
+
+    let ctx = test_context_with_mounts(
+        &bundle_root,
+        FakeProvider::default(),
+        Vec::new(),
+        vec![WorkspaceMount {
+            visible_root: visible_mount,
+            host_root: host_mount.clone(),
+            writable: true,
+        }],
+    );
+    let registry = builtin_registry();
+
+    let ls = call_tool(
+        &registry,
+        "LS",
+        &ctx,
+        json!({ "path": "mount/write/current" }),
+    )
+    .await;
+    let ls_root = call_tool(&registry, "LS", &ctx, json!({})).await;
+    let ls_mount = call_tool(&registry, "LS", &ctx, json!({ "path": "mount" })).await;
+    let ls_mount_write = call_tool(&registry, "LS", &ctx, json!({ "path": "mount/write" })).await;
+    let glob = call_tool(
+        &registry,
+        "Glob",
+        &ctx,
+        json!({ "pattern": "mount/write/current/**/*.txt" }),
+    )
+    .await;
+
+    assert_eq!(
+        ls["entries"],
+        json!([
+            { "name": "src", "path": "mount/write/current/src", "type": "dir" },
+            { "name": ".gitignore", "path": "mount/write/current/.gitignore", "type": "file" }
+        ])
+    );
+    assert_eq!(
+        ls_root["entries"],
+        json!([{ "name": "mount", "path": "mount", "type": "dir" }])
+    );
+    assert_eq!(
+        ls_mount["entries"],
+        json!([{ "name": "write", "path": "mount/write", "type": "dir" }])
+    );
+    assert_eq!(
+        ls_mount_write["entries"],
+        json!([{ "name": "current", "path": "mount/write/current", "type": "dir" }])
+    );
+    assert_eq!(glob["matches"], json!([]));
+
+    let read_ignored = registry
+        .get("Read")
+        .expect("read tool")
+        .call(&ctx, json!({ "path": "mount/write/current/ignored.txt" }))
+        .await
+        .expect_err("ignored mount file should be hidden");
+    assert_eq!(
+        read_ignored.to_string(),
+        "permission denied: path `mount/write/current/ignored.txt` is ignored by .gitignore"
     );
 }
 

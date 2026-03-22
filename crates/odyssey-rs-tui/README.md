@@ -1,3 +1,9 @@
-# Odyssey Testing TUI
+# Odyssey TUI
 
-TUI to test the Odyssey SDK
+Ratatui-based terminal UI implementation for Odyssey.
+
+User-facing entrypoint:
+
+```bash
+cargo run -p odyssey-rs -- tui --bundle hello-world@latest
+```

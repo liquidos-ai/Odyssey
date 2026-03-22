@@ -5,7 +5,11 @@ use log::info;
 use odyssey_rs_bundle::{BundleBuilder, BundleProject, BundleStore};
 use odyssey_rs_protocol::{ExecutionRequest, SandboxMode, SessionSpec, Task};
 use odyssey_rs_runtime::{OdysseyRuntime, RuntimeConfig};
-use std::path::{Path, PathBuf};
+use odyssey_rs_tui::{TuiRunConfig, resolve_bundle_ref};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -81,6 +85,15 @@ pub enum Command {
         id: Uuid,
         #[arg(long)]
         delete: bool,
+    },
+    #[command(about = "Run the TUI")]
+    Tui {
+        /// Bundle reference to run, such as `hello-world@latest`.
+        #[arg(long, short = 'b')]
+        bundle: Option<String>,
+        /// Optional working directory label shown in the header.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
     },
 }
 
@@ -177,6 +190,7 @@ async fn execute_command(
         Command::Bundles => handle_bundles(bundles, remote).await,
         Command::Sessions => handle_sessions(runtime, remote).await,
         Command::Session { id, delete } => handle_session(runtime, remote, id, delete).await,
+        Command::Tui { bundle, cwd } => handle_tui(bundle, cwd).await,
     }
 }
 
@@ -388,6 +402,14 @@ async fn handle_session(
         };
         println!("{}", serde_json::to_string_pretty(&session)?);
     }
+    Ok(())
+}
+
+async fn handle_tui(bundle: Option<String>, cwd: Option<PathBuf>) -> Result<()> {
+    let _ = env_logger::builder().format_timestamp_millis().try_init();
+    let runtime = Arc::new(OdysseyRuntime::new(RuntimeConfig::default())?);
+    let bundle_ref = resolve_bundle_ref(&runtime, bundle)?;
+    odyssey_rs_tui::run(runtime, TuiRunConfig { bundle_ref, cwd }).await?;
     Ok(())
 }
 

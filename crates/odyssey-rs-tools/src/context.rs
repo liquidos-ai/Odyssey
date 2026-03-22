@@ -171,6 +171,13 @@ pub struct ToolSandbox {
     pub lease: Option<Arc<SandboxCellLease>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceMount {
+    pub visible_root: PathBuf,
+    pub host_root: PathBuf,
+    pub writable: bool,
+}
+
 #[async_trait]
 pub trait ToolApprovalHandler: Send + Sync {
     async fn request_tool_approval(&self, permission: &str) -> Result<(), ToolError>;
@@ -189,6 +196,7 @@ pub struct ToolContext {
     pub turn_id: Uuid,
     pub bundle_root: PathBuf,
     pub working_dir: PathBuf,
+    pub workspace_mounts: Vec<WorkspaceMount>,
     pub sandbox: ToolSandbox,
     pub permission_rules: Vec<ToolPermissionRule>,
     pub event_sink: Option<Arc<dyn ToolEventSink>>,
@@ -244,6 +252,27 @@ impl ToolContext {
             self.bundle_root.join(path)
         };
         Ok(candidate)
+    }
+
+    pub fn resolve_host_path(&self, path: &Path) -> PathBuf {
+        self.workspace_mounts
+            .iter()
+            .filter_map(|mount| {
+                path.strip_prefix(&mount.visible_root)
+                    .ok()
+                    .map(|suffix| (suffix.components().count(), mount, suffix))
+            })
+            .max_by_key(|(depth, _, _)| *depth)
+            .map_or_else(
+                || path.to_path_buf(),
+                |(_, mount, suffix)| mount.host_root.join(suffix),
+            )
+    }
+
+    pub fn is_within_mount(&self, path: &Path) -> bool {
+        self.workspace_mounts
+            .iter()
+            .any(|mount| path.starts_with(&mount.visible_root))
     }
 
     pub fn check_read(&self, path: &Path) -> Result<(), ToolError> {

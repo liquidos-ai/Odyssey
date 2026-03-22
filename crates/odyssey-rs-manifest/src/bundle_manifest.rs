@@ -126,8 +126,6 @@ pub struct BundleSandboxPermissions {
     pub filesystem: BundleSandboxFilesystem,
     #[serde(default)]
     pub network: Vec<String>,
-    #[serde(default)]
-    pub tools: BundleSandboxTools,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -142,14 +140,6 @@ pub struct BundleSandboxFilesystem {
 pub struct BundleSandboxMounts {
     pub read: Vec<String>,
     pub write: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct BundleSandboxTools {
-    pub allow: Vec<String>,
-    pub ask: Vec<String>,
-    pub deny: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,9 +170,7 @@ fn default_sandbox_mode() -> SandboxMode {
 mod tests {
     use crate::bundle_manifest::ProviderKind;
 
-    use super::{
-        BundleManifest, BundleMemory, BundleSandbox, BundleSandboxTools, BundleSystemToolsMode,
-    };
+    use super::{BundleManifest, BundleMemory, BundleSandbox, BundleSystemToolsMode};
     use odyssey_rs_protocol::SandboxMode;
     use pretty_assertions::assert_eq;
     use serde_json::{Value, json};
@@ -201,11 +189,6 @@ mod tests {
         assert_eq!(sandbox.env, BTreeMap::new());
         assert_eq!(sandbox.system_tools_mode, BundleSystemToolsMode::Explicit);
         assert_eq!(sandbox.system_tools, Vec::<String>::new());
-
-        let tools = BundleSandboxTools::default();
-        assert_eq!(tools.allow.len(), 0);
-        assert_eq!(tools.ask.len(), 0);
-        assert_eq!(tools.deny.len(), 0);
     }
 
     #[test]
@@ -241,15 +224,6 @@ mod tests {
             Vec::<String>::new()
         );
         assert_eq!(
-            manifest.sandbox.permissions.tools.allow,
-            Vec::<String>::new()
-        );
-        assert_eq!(manifest.sandbox.permissions.tools.ask, Vec::<String>::new());
-        assert_eq!(
-            manifest.sandbox.permissions.tools.deny,
-            Vec::<String>::new()
-        );
-        assert_eq!(
             manifest.sandbox.system_tools_mode,
             BundleSystemToolsMode::Explicit
         );
@@ -257,7 +231,32 @@ mod tests {
     }
 
     #[test]
-    fn tool_permission_groups_deserialize() {
+    fn manifest_rejects_legacy_sandbox_tool_permissions() {
+        let error = serde_json::from_value::<BundleManifest>(json!({
+            "id": "demo",
+            "version": "0.1.0",
+            "manifest_version": "odyssey.bundle/v1",
+            "readme": "README.md",
+            "agent_spec": "agent.yaml",
+            "executor": {
+                "type": "prebuilt",
+                "id": "react"
+            },
+            "sandbox": {
+                "permissions": {
+                    "tools": {
+                        "allow": ["Read"]
+                    }
+                }
+            }
+        }))
+        .expect_err("deserialize manifest with legacy sandbox tool permissions");
+
+        assert!(error.to_string().contains("unknown field `tools`"));
+    }
+
+    #[test]
+    fn manifest_deserialization_accepts_builtin_tools() {
         let manifest: BundleManifest = serde_json::from_value(json!({
             "id": "demo",
             "version": "0.1.0",
@@ -271,59 +270,12 @@ mod tests {
             "tools": [
                 { "name": "Read" },
                 { "name": "Write", "source": "builtin" }
-            ],
-            "sandbox": {
-                "permissions": {
-                    "tools": {
-                        "allow": ["Read", "Bash(find:*)"],
-                        "ask": ["Write", "Bash(cargo test:*)"],
-                        "deny": ["Bash", "WebFetch(domain:example.com)"]
-                    }
-                }
-            }
+            ]
         }))
-        .expect("deserialize manifest with grouped tool permissions");
+        .expect("deserialize manifest with builtin tools");
 
         assert_eq!(manifest.tools[0].source, "builtin");
         assert_eq!(manifest.tools[1].source, "builtin");
-        assert_eq!(
-            manifest.sandbox.permissions.tools.allow,
-            vec!["Read".to_string(), "Bash(find:*)".to_string()]
-        );
-        assert_eq!(
-            manifest.sandbox.permissions.tools.ask,
-            vec!["Write".to_string(), "Bash(cargo test:*)".to_string()]
-        );
-        assert_eq!(
-            manifest.sandbox.permissions.tools.deny,
-            vec![
-                "Bash".to_string(),
-                "WebFetch(domain:example.com)".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn tool_permission_groups_require_explicit_fields_when_present() {
-        let error = serde_json::from_value::<BundleManifest>(json!({
-            "id": "demo",
-            "version": "0.1.0",
-            "manifest_version": "odyssey.bundle/v1",
-            "readme": "README.md",
-            "agent_spec": "agent.yaml",
-            "executor": {
-                "type": "prebuilt",
-                "id": "react"
-            },
-            "sandbox": {
-                "permissions": {
-                    "tools": {}
-                }
-            }
-        }))
-        .expect_err("deserialize manifest with incomplete tool permissions");
-
-        assert!(error.to_string().contains("missing field `allow`"));
     }
 
     #[test]

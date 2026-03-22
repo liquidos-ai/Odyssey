@@ -11,6 +11,7 @@
     { name: 'Read', source: 'builtin' },
     { name: 'Write', source: 'builtin' },
     { name: 'Edit', source: 'builtin' },
+    { name: 'LS', source: 'builtin' },
     { name: 'Glob', source: 'builtin' },
     { name: 'Grep', source: 'builtin' },
     { name: 'Bash', source: 'builtin' },
@@ -24,12 +25,7 @@
         exec: [],
         mounts: { read: [], write: [] }
       },
-      network: ["*"],
-      tools: {
-        allow: ['Read', 'Glob', 'Grep', 'Skill'],
-        ask: ['Bash'],
-        deny: []
-      }
+      network: ["*"]
     },
     system_tools_mode: 'standard',
     system_tools: [],

@@ -1,7 +1,6 @@
 //! Reusable library API for launching the Odyssey Ratatui client.
 
 mod app;
-pub mod cli;
 mod client;
 mod event;
 mod handlers;
@@ -27,8 +26,6 @@ use tokio::task::JoinHandle;
 pub struct TuiRunConfig {
     /// Bundle reference used for all sessions in the UI.
     pub bundle_ref: String,
-    /// Optional user name shown in the header.
-    pub user_name: Option<String>,
     /// Optional working directory shown in the header.
     pub cwd: Option<PathBuf>,
 }
@@ -37,11 +34,7 @@ pub const DEFAULT_BUNDLE_REF: &str = "odyssey@latest";
 
 /// Launch the Odyssey TUI against a pre-configured [`OdysseyRuntime`].
 pub async fn run(runtime: Arc<OdysseyRuntime>, config: TuiRunConfig) -> anyhow::Result<()> {
-    let TuiRunConfig {
-        bundle_ref,
-        user_name,
-        cwd,
-    } = config;
+    let TuiRunConfig { bundle_ref, cwd } = config;
     let cwd = cwd
         .clone()
         .or_else(|| std::env::current_dir().ok())
@@ -61,7 +54,7 @@ pub async fn run(runtime: Arc<OdysseyRuntime>, config: TuiRunConfig) -> anyhow::
         app.set_bundles(bundles);
     }
 
-    app.set_user_name(user_name.unwrap_or_else(terminal::resolve_user_name));
+    app.set_user_name(terminal::resolve_user_name());
     app.cwd = cwd.display().to_string();
     if app.bundle_ref.is_empty() {
         app.open_viewer(app::ViewerKind::Bundles);
@@ -190,8 +183,7 @@ mod tests {
                     sandbox: {{
                         permissions: {{
                             filesystem: {{ exec: [], mounts: {{ read: [], write: [] }} }},
-                            network: [],
-                            tools: {{ allow: [], ask: [], deny: [] }}
+                            network: []
                         }},
                         system_tools: [],
                         resources: {{}}

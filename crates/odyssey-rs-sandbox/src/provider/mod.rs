@@ -9,7 +9,7 @@ use tokio::process::Command;
 use crate::error::SandboxError;
 use crate::types::{
     AccessDecision, AccessMode, CommandResult, CommandSpec, SandboxContext, SandboxHandle,
-    SandboxLimits, SandboxNetworkMode, SandboxPolicy,
+    SandboxLimits, SandboxMountBinding, SandboxNetworkMode, SandboxPolicy,
 };
 use odyssey_rs_protocol::SandboxMode;
 
@@ -666,7 +666,11 @@ pub(crate) fn resolve_command_path(
     )))
 }
 
-fn build_mounts_from_access(access: &AccessPolicy, mode: SandboxMode) -> Vec<Mount> {
+fn build_mounts_from_access(
+    access: &AccessPolicy,
+    mode: SandboxMode,
+    mount_bindings: &[SandboxMountBinding],
+) -> Vec<Mount> {
     if matches!(mode, SandboxMode::DangerFullAccess) {
         return Vec::new();
     }
@@ -676,20 +680,31 @@ fn build_mounts_from_access(access: &AccessPolicy, mode: SandboxMode) -> Vec<Mou
     mount_modes.insert(access.workspace_root.clone(), workspace_writable);
 
     for path in access.read.roots.iter().chain(access.exec.roots.iter()) {
-        mount_modes.entry(path.clone()).or_insert(false);
+        if !path.starts_with(&access.workspace_root) {
+            mount_modes.entry(path.clone()).or_insert(false);
+        }
     }
     for path in &access.write.roots {
-        mount_modes.insert(path.clone(), true);
+        if !path.starts_with(&access.workspace_root) {
+            mount_modes.insert(path.clone(), true);
+        }
     }
 
-    mount_modes
+    let mut mounts = mount_modes
         .into_iter()
         .map(|(path, writable)| Mount {
             source: path.clone(),
             target: path,
             writable,
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    mounts.extend(mount_bindings.iter().map(|binding| Mount {
+        source: PathBuf::from(&binding.source),
+        target: PathBuf::from(&binding.target),
+        writable: binding.writable,
+    }));
+    mounts
 }
 
 pub fn build_prepared_sandbox(ctx: &SandboxContext) -> Result<PreparedSandbox, SandboxError> {
@@ -697,7 +712,7 @@ pub fn build_prepared_sandbox(ctx: &SandboxContext) -> Result<PreparedSandbox, S
     std::fs::create_dir_all(workspace_root.join(".tmp")).map_err(SandboxError::Io)?;
     let access = AccessPolicy::new(ctx.mode, &ctx.policy, &workspace_root)?;
     let (env, allowed_env_keys) = build_env(&ctx.policy, &workspace_root);
-    let mounts = build_mounts_from_access(&access, ctx.mode);
+    let mounts = build_mounts_from_access(&access, ctx.mode, &ctx.policy.filesystem.mount_bindings);
     info!(
         "prepared sandbox (mode={:?}, mounts={}, env_keys={})",
         ctx.mode,
@@ -791,7 +806,8 @@ mod tests {
     };
     use crate::{
         AccessDecision, AccessMode, CommandSpec, SandboxContext, SandboxFilesystemPolicy,
-        SandboxLimits, SandboxNetworkMode, SandboxNetworkPolicy, SandboxPolicy,
+        SandboxLimits, SandboxMountBinding, SandboxNetworkMode, SandboxNetworkPolicy,
+        SandboxPolicy,
     };
     use odyssey_rs_protocol::SandboxMode;
     use pretty_assertions::assert_eq;
@@ -988,40 +1004,61 @@ mod tests {
     #[test]
     fn build_mounts_from_access_tracks_writable_roots_by_mode() {
         let temp = tempdir().expect("tempdir");
-        let extra_read = temp.path().join("read");
-        let extra_write = temp.path().join("write");
-        std::fs::create_dir_all(&extra_read).expect("create read");
-        std::fs::create_dir_all(&extra_write).expect("create write");
+        let host_root = tempdir().expect("host root");
+        let host_read = host_root.path().join("host-read");
+        let host_write = host_root.path().join("host-write");
+        std::fs::create_dir_all(&host_read).expect("create host read");
+        std::fs::create_dir_all(&host_write).expect("create host write");
+        let target_read = temp.path().join("mount").join("read").join("current");
+        let target_write = temp.path().join("mount").join("write").join("current");
+        std::fs::create_dir_all(&target_read).expect("create target read");
+        std::fs::create_dir_all(&target_write).expect("create target write");
         let policy = SandboxPolicy {
             filesystem: SandboxFilesystemPolicy {
-                read_roots: vec![extra_read.display().to_string()],
-                write_roots: vec![extra_write.display().to_string()],
+                read_roots: vec![target_read.display().to_string()],
+                write_roots: vec![target_write.display().to_string()],
                 exec_roots: Vec::new(),
                 exec_allow_all: false,
+                mount_bindings: vec![
+                    SandboxMountBinding {
+                        source: host_read.display().to_string(),
+                        target: target_read.display().to_string(),
+                        writable: false,
+                    },
+                    SandboxMountBinding {
+                        source: host_write.display().to_string(),
+                        target: target_write.display().to_string(),
+                        writable: true,
+                    },
+                ],
             },
             ..SandboxPolicy::default()
         };
         let access =
             AccessPolicy::new(SandboxMode::WorkspaceWrite, &policy, temp.path()).expect("access");
 
-        let mounts = build_mounts_from_access(&access, SandboxMode::WorkspaceWrite);
+        let mounts = build_mounts_from_access(
+            &access,
+            SandboxMode::WorkspaceWrite,
+            &policy.filesystem.mount_bindings,
+        );
         assert!(
             mounts
                 .iter()
                 .any(|mount| mount.source == temp.path() && mount.writable)
         );
-        assert!(
-            mounts
-                .iter()
-                .any(|mount| mount.source == extra_read && !mount.writable)
-        );
-        assert!(
-            mounts
-                .iter()
-                .any(|mount| mount.source == extra_write && mount.writable)
-        );
+        assert!(mounts.iter().any(|mount| mount.source == host_read
+            && mount.target == target_read
+            && !mount.writable));
+        assert!(mounts.iter().any(|mount| mount.source == host_write
+            && mount.target == target_write
+            && mount.writable));
 
-        let no_mounts = build_mounts_from_access(&access, SandboxMode::DangerFullAccess);
+        let no_mounts = build_mounts_from_access(
+            &access,
+            SandboxMode::DangerFullAccess,
+            &policy.filesystem.mount_bindings,
+        );
         assert!(no_mounts.is_empty());
     }
 

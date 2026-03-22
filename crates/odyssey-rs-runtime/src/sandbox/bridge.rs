@@ -1,40 +1,66 @@
 use crate::RuntimeError;
-use odyssey_rs_manifest::{BundleManifest, BundleSystemToolsMode};
+use odyssey_rs_manifest::{AgentSpec, BundleManifest, BundleSystemToolsMode};
 use odyssey_rs_protocol::SandboxMode;
 use odyssey_rs_sandbox::{
-    SandboxCellKey, SandboxCellSpec, SandboxLimits, SandboxNetworkMode, SandboxNetworkPolicy,
-    SandboxPolicy, SandboxRuntime, standard_system_exec_roots,
+    SandboxCellKey, SandboxCellSpec, SandboxLimits, SandboxMountBinding, SandboxNetworkMode,
+    SandboxNetworkPolicy, SandboxPolicy, SandboxRuntime, standard_system_exec_roots,
 };
-use odyssey_rs_tools::{PermissionAction, ToolPermissionMatcher, ToolPermissionRule, ToolSandbox};
-use std::path::{Path, PathBuf};
+use odyssey_rs_tools::{
+    PermissionAction, ToolPermissionMatcher, ToolPermissionRule, ToolSandbox, WorkspaceMount,
+};
+use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
 pub(crate) struct PreparedToolSandbox {
     pub sandbox: ToolSandbox,
     pub root: PathBuf,
     pub work_dir: PathBuf,
+    pub workspace_mounts: Vec<WorkspaceMount>,
 }
 
 pub fn build_policy(
     bundle_root: &Path,
     manifest: &BundleManifest,
 ) -> Result<SandboxPolicy, RuntimeError> {
-    build_policy_with_env_resolver(bundle_root, manifest, &[], false, read_process_env)
+    let current_dir = std::env::current_dir().map_err(|err| RuntimeError::Io {
+        path: ".".to_string(),
+        message: err.to_string(),
+    })?;
+    build_policy_with_resolvers(
+        bundle_root,
+        manifest,
+        &[],
+        false,
+        read_process_env,
+        &current_dir,
+    )
 }
 
 pub fn build_operator_command_policy(
     bundle_root: &Path,
     manifest: &BundleManifest,
 ) -> Result<SandboxPolicy, RuntimeError> {
-    build_policy_with_env_resolver(bundle_root, manifest, &[], true, read_process_env)
+    let current_dir = std::env::current_dir().map_err(|err| RuntimeError::Io {
+        path: ".".to_string(),
+        message: err.to_string(),
+    })?;
+    build_policy_with_resolvers(
+        bundle_root,
+        manifest,
+        &[],
+        true,
+        read_process_env,
+        &current_dir,
+    )
 }
 
-fn build_policy_with_env_resolver<F>(
+fn build_policy_with_resolvers<F>(
     bundle_root: &Path,
     manifest: &BundleManifest,
     extra_exec_roots: &[String],
     force_standard_exec_roots: bool,
     env_resolver: F,
+    current_dir: &Path,
 ) -> Result<SandboxPolicy, RuntimeError>
 where
     F: FnMut(&str) -> Option<String>,
@@ -45,7 +71,23 @@ where
             .map(|entry| bundle_root.join(entry).display().to_string())
             .collect()
     };
-    let map_host_paths = |entries: &[String]| -> Vec<String> { entries.to_vec() };
+    let read_mounts = build_mount_bindings(
+        bundle_root,
+        current_dir,
+        &manifest.sandbox.permissions.filesystem.mounts.read,
+        false,
+    );
+    let write_mounts = build_mount_bindings(
+        bundle_root,
+        current_dir,
+        &manifest.sandbox.permissions.filesystem.mounts.write,
+        true,
+    );
+    let mount_bindings = read_mounts
+        .iter()
+        .chain(&write_mounts)
+        .cloned()
+        .collect::<Vec<_>>();
     let explicit_system_tools = resolve_system_tools(&manifest.sandbox.system_tools)?;
     let mut exec_roots = map_bundle_paths(&manifest.sandbox.permissions.filesystem.exec);
     exec_roots.extend(explicit_system_tools);
@@ -76,10 +118,17 @@ where
 
     Ok(SandboxPolicy {
         filesystem: odyssey_rs_sandbox::SandboxFilesystemPolicy {
-            read_roots: map_host_paths(&manifest.sandbox.permissions.filesystem.mounts.read),
-            write_roots: map_host_paths(&manifest.sandbox.permissions.filesystem.mounts.write),
+            read_roots: read_mounts
+                .iter()
+                .map(|mount| mount.target.clone())
+                .collect(),
+            write_roots: write_mounts
+                .iter()
+                .map(|mount| mount.target.clone())
+                .collect(),
             exec_roots,
             exec_allow_all,
+            mount_bindings,
         },
         env: odyssey_rs_sandbox::SandboxEnvPolicy {
             inherit: Vec::new(),
@@ -98,6 +147,26 @@ where
     })
 }
 
+fn build_mount_bindings(
+    bundle_root: &Path,
+    current_dir: &Path,
+    values: &[String],
+    writable: bool,
+) -> Vec<SandboxMountBinding> {
+    values
+        .iter()
+        .map(|value| {
+            let source = resolve_host_mount_path(value, current_dir);
+            let target = mount_target_path(bundle_root, writable, value, Path::new(&source));
+            SandboxMountBinding {
+                source,
+                target: target.display().to_string(),
+                writable,
+            }
+        })
+        .collect()
+}
+
 fn resolve_manifest_env(
     env: &std::collections::BTreeMap<String, String>,
     mut env_resolver: impl FnMut(&str) -> Option<String>,
@@ -111,19 +180,32 @@ fn read_process_env(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
+fn resolve_host_mount_path(value: &str, current_dir: &Path) -> String {
+    if is_current_directory_mount(value) {
+        return current_dir.display().to_string();
+    }
+    value.to_string()
+}
+
+fn is_current_directory_mount(value: &str) -> bool {
+    let mut components = Path::new(value).components();
+    components.next().is_some()
+        && components.all(|component| component == std::path::Component::CurDir)
+}
+
 pub fn build_mode(manifest: &BundleManifest, override_mode: Option<SandboxMode>) -> SandboxMode {
     override_mode.unwrap_or(manifest.sandbox.mode)
 }
 
-pub fn build_permission_rules(manifest: &BundleManifest) -> Vec<ToolPermissionRule> {
+pub fn build_permission_rules(agent: &AgentSpec) -> Vec<ToolPermissionRule> {
     let mut permissions = Vec::new();
-    for rule in &manifest.sandbox.permissions.tools.allow {
+    for rule in &agent.tools.allow {
         permissions.push(build_permission_rule(PermissionAction::Allow, rule));
     }
-    for rule in &manifest.sandbox.permissions.tools.ask {
+    for rule in &agent.tools.ask {
         permissions.push(build_permission_rule(PermissionAction::Ask, rule));
     }
-    for rule in &manifest.sandbox.permissions.tools.deny {
+    for rule in &agent.tools.deny {
         permissions.push(build_permission_rule(PermissionAction::Deny, rule));
     }
 
@@ -197,6 +279,7 @@ async fn prepare_cell_with_policy(
     let policy = policy_builder(&root, manifest)?;
     validate_provider_support(sandbox.provider_name(), mode, &policy)?;
     stage_bundle_if_needed(bundle_root, &root, mode)?;
+    prepare_host_mount_targets(&policy.filesystem.mount_bindings)?;
     let work_dir = root.clone();
 
     let (read_roots, write_roots, exec_roots) =
@@ -212,6 +295,7 @@ async fn prepare_cell_with_policy(
                     write_roots,
                     exec_roots,
                     exec_allow_all: policy.filesystem.exec_allow_all,
+                    mount_bindings: policy.filesystem.mount_bindings.clone(),
                 },
                 env: policy.env.clone(),
                 network: policy.network.clone(),
@@ -228,6 +312,16 @@ async fn prepare_cell_with_policy(
         },
         root,
         work_dir,
+        workspace_mounts: policy
+            .filesystem
+            .mount_bindings
+            .iter()
+            .map(|binding| WorkspaceMount {
+                visible_root: PathBuf::from(&binding.target),
+                host_root: PathBuf::from(&binding.source),
+                writable: binding.writable,
+            })
+            .collect(),
     })
 }
 
@@ -241,6 +335,106 @@ fn stage_bundle_if_needed(
     }
 
     stage_bundle(source, target)
+}
+
+fn prepare_host_mount_targets(mount_bindings: &[SandboxMountBinding]) -> Result<(), RuntimeError> {
+    for binding in mount_bindings {
+        prepare_host_mount_target(Path::new(&binding.source), Path::new(&binding.target))?;
+    }
+    Ok(())
+}
+
+fn prepare_host_mount_target(source: &Path, target: &Path) -> Result<(), RuntimeError> {
+    let metadata = std::fs::metadata(source).map_err(|err| RuntimeError::Io {
+        path: source.display().to_string(),
+        message: err.to_string(),
+    })?;
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| RuntimeError::Io {
+            path: parent.display().to_string(),
+            message: err.to_string(),
+        })?;
+    }
+    reset_mount_target(target)?;
+    if metadata.is_dir() {
+        std::fs::create_dir_all(target).map_err(|err| RuntimeError::Io {
+            path: target.display().to_string(),
+            message: err.to_string(),
+        })?;
+    } else {
+        std::fs::File::create(target).map_err(|err| RuntimeError::Io {
+            path: target.display().to_string(),
+            message: err.to_string(),
+        })?;
+    }
+    Ok(())
+}
+
+fn reset_mount_target(path: &Path) -> Result<(), RuntimeError> {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+
+    let result = if metadata.file_type().is_symlink() || metadata.is_file() {
+        std::fs::remove_file(path)
+    } else {
+        std::fs::remove_dir_all(path)
+    };
+    result.map_err(|err| RuntimeError::Io {
+        path: path.display().to_string(),
+        message: err.to_string(),
+    })
+}
+
+fn mount_target_path(
+    bundle_root: &Path,
+    writable: bool,
+    raw_value: &str,
+    source: &Path,
+) -> PathBuf {
+    let base = bundle_root
+        .join("mount")
+        .join(if writable { "write" } else { "read" });
+    if is_current_directory_mount(raw_value) {
+        return base.join("current");
+    }
+
+    let mut path = base.join("abs");
+    for component in source.components() {
+        match component {
+            Component::Prefix(prefix) => {
+                path.push(format!(
+                    "prefix-{}",
+                    sanitize_mount_segment(&prefix.as_os_str().to_string_lossy())
+                ));
+            }
+            Component::RootDir => {}
+            Component::CurDir => path.push("current"),
+            Component::ParentDir => path.push("parent"),
+            Component::Normal(part) => path.push(part),
+        }
+    }
+    path
+}
+
+fn sanitize_mount_segment(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if sanitized.is_empty() {
+        "mount".to_string()
+    } else {
+        sanitized
+    }
 }
 
 fn extend_cell_filesystem_policy(
@@ -410,16 +604,17 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
 mod tests {
     use super::{
         build_mode, build_network_policy, build_operator_command_policy, build_permission_rules,
-        build_policy, build_policy_with_env_resolver, extend_cell_filesystem_policy, stage_bundle,
-        stage_bundle_if_needed, target_has_entries, validate_provider_support, verify_system_tools,
+        build_policy, build_policy_with_resolvers, extend_cell_filesystem_policy,
+        prepare_host_mount_targets, stage_bundle, stage_bundle_if_needed, target_has_entries,
+        validate_provider_support, verify_system_tools,
     };
     use odyssey_rs_manifest::{
-        BundleExecutor, BundleManifest, BundleMemory, BundleSandbox, BundleSandboxFilesystem,
-        BundleSandboxLimits, BundleSandboxMounts, BundleSandboxPermissions, BundleSandboxTools,
-        BundleSystemToolsMode, ManifestVersion, ProviderKind,
+        AgentSpec, AgentToolPolicy, BundleExecutor, BundleManifest, BundleMemory, BundleSandbox,
+        BundleSandboxFilesystem, BundleSandboxLimits, BundleSandboxMounts,
+        BundleSandboxPermissions, BundleSystemToolsMode, ManifestVersion, ProviderKind,
     };
     use odyssey_rs_protocol::SandboxMode;
-    use odyssey_rs_sandbox::{SandboxNetworkMode, SandboxPolicy};
+    use odyssey_rs_sandbox::{SandboxMountBinding, SandboxNetworkMode, SandboxPolicy};
     use odyssey_rs_tools::{PermissionAction, ToolPermissionMatcher, ToolPermissionRule};
     use serde_json::Value;
     use std::collections::BTreeMap;
@@ -453,7 +648,6 @@ mod tests {
                         },
                     },
                     network: Vec::new(),
-                    tools: BundleSandboxTools::default(),
                 },
                 env: BTreeMap::new(),
                 system_tools_mode: BundleSystemToolsMode::Explicit,
@@ -468,15 +662,118 @@ mod tests {
             policy
                 .filesystem
                 .read_roots
-                .contains(&"/sandbox-test/host-read".into())
+                .contains(&"/bundle/mount/read/abs/sandbox-test/host-read".into())
         );
         assert!(
             policy
                 .filesystem
                 .write_roots
-                .contains(&"/sandbox-test/host-write".into())
+                .contains(&"/bundle/mount/write/abs/sandbox-test/host-write".into())
+        );
+        assert!(policy.filesystem.mount_bindings.iter().any(|binding| {
+            binding.source == "/sandbox-test/host-read"
+                && binding.target == "/bundle/mount/read/abs/sandbox-test/host-read"
+                && !binding.writable
+        }));
+        assert!(policy.filesystem.mount_bindings.iter().any(|binding| {
+            binding.source == "/sandbox-test/host-write"
+                && binding.target == "/bundle/mount/write/abs/sandbox-test/host-write"
+                && binding.writable
+        }));
+        assert!(
+            !policy
+                .filesystem
+                .read_roots
+                .contains(&"/sandbox-test/host-read".into())
         );
         assert_eq!(policy.network.mode, SandboxNetworkMode::Disabled);
+    }
+
+    #[test]
+    fn build_policy_resolves_current_directory_mounts() {
+        let temp = tempdir().expect("tempdir");
+        let manifest = BundleManifest {
+            id: "demo".to_string(),
+            version: "0.1.0".to_string(),
+            manifest_version: ManifestVersion::V1,
+            readme: "README.md".to_string(),
+            agent_spec: "agent.yaml".to_string(),
+            executor: BundleExecutor {
+                kind: ProviderKind::Prebuilt,
+                id: "react".to_string(),
+                config: Value::Null,
+            },
+            memory: BundleMemory::default(),
+            skills: Vec::new(),
+            tools: Vec::new(),
+            sandbox: BundleSandbox {
+                mode: SandboxMode::ReadOnly,
+                permissions: BundleSandboxPermissions {
+                    filesystem: BundleSandboxFilesystem {
+                        exec: Vec::new(),
+                        mounts: BundleSandboxMounts {
+                            read: vec![".".to_string()],
+                            write: Vec::new(),
+                        },
+                    },
+                    network: Vec::new(),
+                },
+                env: BTreeMap::new(),
+                system_tools_mode: BundleSystemToolsMode::Explicit,
+                system_tools: Vec::new(),
+                resources: BundleSandboxLimits::default(),
+            },
+        };
+
+        let policy = build_policy_with_resolvers(
+            Path::new("/bundle"),
+            &manifest,
+            &[],
+            false,
+            |_| None,
+            temp.path(),
+        )
+        .expect("build policy");
+
+        assert!(
+            policy
+                .filesystem
+                .read_roots
+                .contains(&"/bundle/mount/read/current".to_string())
+        );
+        assert!(policy.filesystem.mount_bindings.iter().any(|binding| {
+            binding.source == temp.path().display().to_string()
+                && binding.target == "/bundle/mount/read/current"
+                && !binding.writable
+        }));
+    }
+
+    #[test]
+    fn prepare_host_mount_targets_creates_mount_placeholder() {
+        let bundle_root = tempdir().expect("bundle root");
+        let current_dir = tempdir().expect("current dir");
+        let target_path = bundle_root
+            .path()
+            .join("mount")
+            .join("read")
+            .join("current");
+
+        prepare_host_mount_targets(&[SandboxMountBinding {
+            source: current_dir.path().display().to_string(),
+            target: target_path.display().to_string(),
+            writable: false,
+        }])
+        .expect("prepare mount targets");
+
+        let metadata = std::fs::metadata(&target_path).expect("target metadata");
+        assert!(metadata.is_dir());
+        assert!(
+            !target_path
+                .symlink_metadata()
+                .expect("symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]
@@ -577,7 +874,6 @@ mod tests {
                         mounts: BundleSandboxMounts::default(),
                     },
                     network: vec!["*".to_string()],
-                    tools: BundleSandboxTools::default(),
                 },
                 env: BTreeMap::new(),
                 system_tools_mode: BundleSystemToolsMode::Explicit,
@@ -641,7 +937,7 @@ mod tests {
             },
         };
 
-        let policy = build_policy_with_env_resolver(
+        let policy = build_policy_with_resolvers(
             Path::new("/bundle-root"),
             &manifest,
             &[],
@@ -651,6 +947,7 @@ mod tests {
                 "ODYSSEY_TEST_APP_ENV" => Some("development".to_string()),
                 _ => None,
             },
+            Path::new("/runtime-cwd"),
         )
         .expect("build policy");
         assert!(policy.env.inherit.is_empty());
@@ -717,43 +1014,27 @@ mod tests {
     }
 
     #[test]
-    fn build_permission_rules_maps_manifest_actions() {
-        let manifest = BundleManifest {
+    fn build_permission_rules_maps_agent_actions() {
+        let agent = AgentSpec {
             id: "demo".to_string(),
-            version: "0.1.0".to_string(),
-            manifest_version: ManifestVersion::V1,
-            readme: "README.md".to_string(),
-            agent_spec: "agent.yaml".to_string(),
-            executor: BundleExecutor {
-                kind: ProviderKind::Prebuilt,
-                id: "react".to_string(),
-                config: Value::Null,
+            description: String::new(),
+            prompt: "test".to_string(),
+            model: odyssey_rs_protocol::ModelSpec {
+                provider: "openai".to_string(),
+                name: "gpt-4.1-mini".to_string(),
+                config: None,
             },
-            memory: BundleMemory::default(),
-            skills: Vec::new(),
-            tools: Vec::new(),
-            sandbox: BundleSandbox {
-                mode: SandboxMode::ReadOnly,
-                permissions: BundleSandboxPermissions {
-                    filesystem: BundleSandboxFilesystem::default(),
-                    network: Vec::new(),
-                    tools: BundleSandboxTools {
-                        allow: vec!["read".to_string(), "Bash(find:*)".to_string()],
-                        ask: vec!["bash".to_string(), "Bash(cargo test:*)".to_string()],
-                        deny: vec![
-                            "write".to_string(),
-                            "WebFetch(domain:liquidos.ai)".to_string(),
-                        ],
-                    },
-                },
-                env: BTreeMap::new(),
-                system_tools_mode: BundleSystemToolsMode::Explicit,
-                system_tools: Vec::new(),
-                resources: BundleSandboxLimits::default(),
+            tools: AgentToolPolicy {
+                allow: vec!["read".to_string(), "Bash(find:*)".to_string()],
+                ask: vec!["bash".to_string(), "Bash(cargo test:*)".to_string()],
+                deny: vec![
+                    "write".to_string(),
+                    "WebFetch(domain:liquidos.ai)".to_string(),
+                ],
             },
         };
 
-        let rules = build_permission_rules(&manifest);
+        let rules = build_permission_rules(&agent);
 
         assert_eq!(
             rules,

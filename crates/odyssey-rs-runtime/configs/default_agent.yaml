@@ -7,3 +7,5 @@ model:
   name: gpt-4.1-mini
 tools:
   allow: []
+  ask: []
+  deny: []

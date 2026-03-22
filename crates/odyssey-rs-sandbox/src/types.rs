@@ -42,6 +42,14 @@ pub struct SandboxFilesystemPolicy {
     pub write_roots: Vec<String>,
     pub exec_roots: Vec<String>,
     pub exec_allow_all: bool,
+    pub mount_bindings: Vec<SandboxMountBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxMountBinding {
+    pub source: String,
+    pub target: String,
+    pub writable: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

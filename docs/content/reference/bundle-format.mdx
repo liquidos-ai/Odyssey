@@ -44,12 +44,7 @@ default template:
         exec: [],
         mounts: { read: [], write: [] }
       },
-      network: [],
-      tools: {
-        allow: [],
-        ask: [],
-        deny: []
-      }
+      network: []
     },
     system_tools_mode: 'explicit',
     system_tools: [],
@@ -80,12 +75,9 @@ default template:
 | `mode` | string | `"workspace_write"` | Isolation mode: `read_only`, `workspace_write`, or `danger_full_access` |
 | `env` | object | `{}` | Map of sandbox env var name to host env var name to read at runtime |
 | `permissions.filesystem.exec` | string[] | `[]` | Executable paths under the staged bundle root |
-| `permissions.filesystem.mounts.read` | string[] | `[]` | Read-only host mount paths (must be absolute) |
-| `permissions.filesystem.mounts.write` | string[] | `[]` | Read-write host mount paths (must be absolute) |
+| `permissions.filesystem.mounts.read` | string[] | `[]` | Read-only host mount paths; absolute paths are allowed, and `.` resolves to the current working directory |
+| `permissions.filesystem.mounts.write` | string[] | `[]` | Read-write host mount paths; absolute paths are allowed, and `.` resolves to the current working directory |
 | `permissions.network` | string[] | `[]` | `[]` disables network; `["*"]` enables unrestricted outbound network |
-| `permissions.tools.allow` | string[] | `[]` | Tool allowlist entries such as `Read` or `Bash(cargo test:*)` |
-| `permissions.tools.ask` | string[] | `[]` | Approval-required entries using the same matcher syntax as `allow` |
-| `permissions.tools.deny` | string[] | `[]` | Tool denylist entries using the same matcher syntax as `allow` |
 | `system_tools_mode` | string | `"explicit"` | Host executable policy: `explicit`, `standard`, or `all` |
 | `system_tools` | string[] | `[]` | Host executable names that process-execution tools may run via `PATH` |
 | `resources.cpu` | number | `1` | CPU limit |
@@ -98,12 +90,11 @@ default template:
 - `executor.id` and `memory.id` must be non-empty
 - `readme` must point to an existing file inside the project
 - Each skill path must exist inside the project
-- Host mount paths in `sandbox.permissions.filesystem.mounts.read` and `.write` must be absolute
+- Host mount paths in `sandbox.permissions.filesystem.mounts.read` and `.write` must be absolute, except `.` which resolves to the current working directory
 - `sandbox.env` keys and values must be valid environment variable names using ASCII letters, digits, and underscores, and must not start with a digit
 - `sandbox.permissions.network` only supports `[]` or `["*"]` in v1
 - `sandbox.system_tools_mode` must be one of `explicit`, `standard`, or `all`
 - Tool entries must use `source: "builtin"`
-- Tool permission entries may be coarse (`Read`) or granular (`Bash(cargo test:*)`), and granular entries must use a single outer `(...)` matcher suffix
 
 ### Current implementation limits
 
@@ -128,6 +119,8 @@ model:
   name: gpt-4.1-mini
 tools:
   allow: []
+  ask: []
+  deny: []
 ```
 
 ### Fields
@@ -141,9 +134,13 @@ tools:
 | `model.provider` | string | yes | Provider name (e.g. `openai`, `anthropic`) |
 | `model.name` | string | yes | Model name (e.g. `gpt-4.1-mini`) |
 | `model.config` | object | no | Provider-specific configuration |
-| `tools.allow` | string[] | no | Tool allowlist |
+| `tools.allow` | string[] | no | Tool permissions granted without approval; entries may be coarse like `Read` or granular like `Bash(curl:*)` |
+| `tools.ask` | string[] | no | Tool permissions that require approval before execution |
+| `tools.deny` | string[] | no | Tool permissions that are always denied |
 
 `model` can be overridden at session creation and again per-turn through `TurnContextOverride.model`.
+
+Agent tool permission entries may be coarse (`Read`) or granular (`Bash(cargo test:*)`), and granular entries must use a single outer `(...)` matcher suffix.
 
 ## Build Output Layout
 
@@ -181,5 +178,6 @@ Build behavior that matters when authoring bundles:
 - The README file is copied into the built layout at the manifest-defined `readme` path
 - Each skill entry is copied into `skills/<skill.name>`
 - The `resources/` directory, when present, is copied into the built layout as `resources/`
+- Host mounts are also exposed inside the staged app workspace under `mount/read/...` and `mount/write/...` so the agent can reference them with workspace-relative paths
 - Installed bundles keep OCI metadata and blobs under `.odyssey/` so the install root stays focused on runtime-visible files
 - The manifest (`odyssey.bundle.json5`) is not included in the payload layer
