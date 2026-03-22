@@ -422,21 +422,45 @@ impl BundleStore {
         config_bytes: Vec<u8>,
         layers: Vec<(String, Vec<u8>)>,
     ) -> Result<BundleInstall, BundleError> {
-        let manifest_digest = sha256_digest(&manifest_bytes);
+        let validated =
+            self.validate_remote_layout_metadata(metadata, &manifest_bytes, &config_bytes)?;
+        let validated_layers = validate_remote_layers(&validated.manifest, layers)?;
+        self.persist_remote_layout_blobs(
+            &validated.manifest_digest,
+            &validated.config_digest,
+            &manifest_bytes,
+            &config_bytes,
+            &validated_layers,
+        )?;
+        self.materialize_remote_layout_install(
+            index_bytes,
+            validated.config_digest,
+            validated.expected_metadata,
+            validated_layers,
+        )
+    }
+
+    fn validate_remote_layout_metadata(
+        &self,
+        metadata: BundleMetadata,
+        manifest_bytes: &[u8],
+        config_bytes: &[u8],
+    ) -> Result<ValidatedRemoteLayout, BundleError> {
+        let manifest_digest = sha256_digest(manifest_bytes);
         if metadata.digest != manifest_digest {
             return Err(BundleError::Invalid(
                 "hub returned metadata inconsistent with manifest digest".to_string(),
             ));
         }
-        let manifest: OciImageManifest = serde_json::from_slice(&manifest_bytes)
+        let manifest: OciImageManifest = serde_json::from_slice(manifest_bytes)
             .map_err(|err| BundleError::Invalid(err.to_string()))?;
-        let config_digest = sha256_digest(&config_bytes);
+        let config_digest = sha256_digest(config_bytes);
         if manifest.config.digest != config_digest {
             return Err(BundleError::Invalid(
                 "hub returned config bytes that do not match manifest digest".to_string(),
             ));
         }
-        let config = parse_config_bytes(&config_bytes)?;
+        let config = parse_config_bytes(config_bytes)?;
         let expected_metadata = BundleMetadata {
             namespace: config.namespace.clone(),
             id: config.id.clone(),
@@ -446,89 +470,52 @@ impl BundleStore {
             bundle_manifest: config.bundle_manifest.clone(),
             agent_spec: config.agent_spec.clone(),
         };
-        if metadata.namespace != expected_metadata.namespace
-            || metadata.id != expected_metadata.id
-            || metadata.version != expected_metadata.version
-            || metadata.readme != expected_metadata.readme
-            || metadata.digest != expected_metadata.digest
-        {
-            return Err(BundleError::Invalid(
-                "hub returned metadata inconsistent with bundle config".to_string(),
-            ));
+        if metadata_matches_config(&metadata, &expected_metadata) {
+            return Ok(ValidatedRemoteLayout {
+                manifest,
+                manifest_digest,
+                config_digest,
+                expected_metadata,
+            });
         }
+        Err(BundleError::Invalid(
+            "hub returned metadata inconsistent with bundle config".to_string(),
+        ))
+    }
 
-        let mut layer_bytes_by_digest = BTreeMap::new();
-        for (digest, bytes) in layers {
-            if layer_bytes_by_digest
-                .insert(digest.clone(), bytes)
-                .is_some()
-            {
-                return Err(BundleError::Invalid(format!(
-                    "hub returned duplicate layer digest {digest}"
-                )));
-            }
-        }
-        let mut validated_layers = Vec::with_capacity(manifest.layers.len());
-        for layer in &manifest.layers {
-            let Some(bytes) = layer_bytes_by_digest.remove(&layer.digest) else {
-                return Err(BundleError::Invalid(format!(
-                    "hub response missing layer {}",
-                    layer.digest
-                )));
-            };
-            if sha256_digest(&bytes) != layer.digest {
-                return Err(BundleError::Invalid(format!(
-                    "hub returned layer bytes that do not match digest {}",
-                    layer.digest
-                )));
-            }
-            validated_layers.push((layer.digest.clone(), bytes));
-        }
-        if let Some(extra_digest) = layer_bytes_by_digest.keys().next() {
-            return Err(BundleError::Invalid(format!(
-                "hub returned unexpected layer {extra_digest}"
-            )));
-        }
-
-        self.persist_blob_bytes(&manifest_digest, &manifest_bytes)?;
-        self.persist_blob_bytes(&config_digest, &config_bytes)?;
-        for (digest, bytes) in &validated_layers {
+    fn persist_remote_layout_blobs(
+        &self,
+        manifest_digest: &str,
+        config_digest: &str,
+        manifest_bytes: &[u8],
+        config_bytes: &[u8],
+        validated_layers: &[(String, Vec<u8>)],
+    ) -> Result<(), BundleError> {
+        self.persist_blob_bytes(manifest_digest, manifest_bytes)?;
+        self.persist_blob_bytes(config_digest, config_bytes)?;
+        for (digest, bytes) in validated_layers {
             self.persist_blob_bytes(digest, bytes)?;
         }
+        Ok(())
+    }
 
-        let install_root = self.validated_install_path(
-            &expected_metadata.namespace,
-            &expected_metadata.id,
-            &expected_metadata.version,
-        )?;
+    fn materialize_remote_layout_install(
+        &self,
+        index_bytes: Vec<u8>,
+        config_digest: String,
+        metadata: BundleMetadata,
+        validated_layers: Vec<(String, Vec<u8>)>,
+    ) -> Result<BundleInstall, BundleError> {
+        let install_root =
+            self.validated_install_path(&metadata.namespace, &metadata.id, &metadata.version)?;
         let layout_root = install_layout_root(&install_root);
-        if install_root.exists() {
-            fs::remove_dir_all(&install_root).map_err(|err| BundleError::Io {
-                path: install_root.display().to_string(),
-                message: err.to_string(),
-            })?;
-        }
-        fs::create_dir_all(&install_root).map_err(|err| BundleError::Io {
-            path: install_root.display().to_string(),
-            message: err.to_string(),
-        })?;
+        recreate_install_root(&install_root)?;
         fs::create_dir_all(&layout_root).map_err(|err| BundleError::Io {
             path: layout_root.display().to_string(),
             message: err.to_string(),
         })?;
-        fs::write(
-            layout_root.join("oci-layout"),
-            format!("{{\"imageLayoutVersion\":\"{}\"}}\n", OCI_LAYOUT_VERSION),
-        )
-        .map_err(|err| BundleError::Io {
-            path: layout_root.join("oci-layout").display().to_string(),
-            message: err.to_string(),
-        })?;
-        fs::write(layout_root.join("index.json"), index_bytes).map_err(|err| BundleError::Io {
-            path: layout_root.join("index.json").display().to_string(),
-            message: err.to_string(),
-        })?;
-        copy_blob_into_layout(&self.root, &layout_root, &manifest_digest)?;
+        write_install_layout_files(&layout_root, index_bytes)?;
+        copy_blob_into_layout(&self.root, &layout_root, &metadata.digest)?;
         copy_blob_into_layout(&self.root, &layout_root, &config_digest)?;
         for (digest, _) in &validated_layers {
             copy_blob_into_layout(&self.root, &layout_root, digest)?;
@@ -536,10 +523,10 @@ impl BundleStore {
         for (_, bytes) in &validated_layers {
             unpack_payload(bytes, &install_root)?;
         }
-        self.write_metadata(&install_root, &expected_metadata)?;
+        self.write_metadata(&install_root, &metadata)?;
         Ok(BundleInstall {
             path: install_root,
-            metadata: expected_metadata,
+            metadata,
         })
     }
 
@@ -739,6 +726,94 @@ fn metadata_root(path: &Path) -> Option<PathBuf> {
 
 fn has_bundle_metadata(path: &Path) -> bool {
     metadata_root(path).is_some()
+}
+
+struct ValidatedRemoteLayout {
+    manifest: OciImageManifest,
+    manifest_digest: String,
+    config_digest: String,
+    expected_metadata: BundleMetadata,
+}
+
+fn metadata_matches_config(actual: &BundleMetadata, expected: &BundleMetadata) -> bool {
+    actual.namespace == expected.namespace
+        && actual.id == expected.id
+        && actual.version == expected.version
+        && actual.readme == expected.readme
+        && actual.digest == expected.digest
+}
+
+fn validate_remote_layers(
+    manifest: &OciImageManifest,
+    layers: Vec<(String, Vec<u8>)>,
+) -> Result<Vec<(String, Vec<u8>)>, BundleError> {
+    let mut layer_bytes_by_digest = BTreeMap::new();
+    for (digest, bytes) in layers {
+        if layer_bytes_by_digest
+            .insert(digest.clone(), bytes)
+            .is_some()
+        {
+            return Err(BundleError::Invalid(format!(
+                "hub returned duplicate layer digest {digest}"
+            )));
+        }
+    }
+
+    let mut validated_layers = Vec::with_capacity(manifest.layers.len());
+    for layer in &manifest.layers {
+        let Some(bytes) = layer_bytes_by_digest.remove(&layer.digest) else {
+            return Err(BundleError::Invalid(format!(
+                "hub response missing layer {}",
+                layer.digest
+            )));
+        };
+        if sha256_digest(&bytes) != layer.digest {
+            return Err(BundleError::Invalid(format!(
+                "hub returned layer bytes that do not match digest {}",
+                layer.digest
+            )));
+        }
+        validated_layers.push((layer.digest.clone(), bytes));
+    }
+
+    if let Some(extra_digest) = layer_bytes_by_digest.keys().next() {
+        return Err(BundleError::Invalid(format!(
+            "hub returned unexpected layer {extra_digest}"
+        )));
+    }
+
+    Ok(validated_layers)
+}
+
+fn recreate_install_root(install_root: &Path) -> Result<(), BundleError> {
+    if install_root.exists() {
+        fs::remove_dir_all(install_root).map_err(|err| BundleError::Io {
+            path: install_root.display().to_string(),
+            message: err.to_string(),
+        })?;
+    }
+    fs::create_dir_all(install_root).map_err(|err| BundleError::Io {
+        path: install_root.display().to_string(),
+        message: err.to_string(),
+    })
+}
+
+fn write_install_layout_files(layout_root: &Path, index_bytes: Vec<u8>) -> Result<(), BundleError> {
+    let oci_layout_path = layout_root.join("oci-layout");
+    fs::write(
+        &oci_layout_path,
+        format!("{{\"imageLayoutVersion\":\"{}\"}}\n", OCI_LAYOUT_VERSION),
+    )
+    .map_err(|err| BundleError::Io {
+        path: oci_layout_path.display().to_string(),
+        message: err.to_string(),
+    })?;
+
+    let index_path = layout_root.join("index.json");
+    fs::write(&index_path, index_bytes).map_err(|err| BundleError::Io {
+        path: index_path.display().to_string(),
+        message: err.to_string(),
+    })
 }
 
 fn validate_store_component(value: &str, label: &str) -> Result<(), BundleError> {

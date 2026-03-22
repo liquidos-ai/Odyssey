@@ -59,73 +59,99 @@ impl<'a> BundleLoader<'a> {
         manifest: &BundleManifest,
         agent: &AgentSpec,
     ) -> Result<(), ManifestError> {
-        if manifest.id.trim().is_empty() {
-            return invalid(self.root, "bundle id cannot be empty");
-        }
-        if manifest.version.trim().is_empty() {
-            return invalid(self.root, "bundle version cannot be empty");
-        }
-        if manifest.readme.trim().is_empty() {
-            return invalid(self.root, "bundle readme cannot be empty");
-        }
-        if manifest.executor.kind != ProviderKind::Prebuilt {
-            return invalid(self.root, "only prebuilt executors are supported in v1");
-        }
-        if manifest.memory.kind != ProviderKind::Prebuilt {
-            return invalid(
-                self.root,
-                "only prebuilt memory providers are supported in v1",
-            );
-        }
-        if manifest.executor.id.trim().is_empty() {
-            return invalid(self.root, "executor id cannot be empty");
-        }
-        if manifest.memory.id.trim().is_empty() {
-            return invalid(self.root, "memory provider id cannot be empty");
-        }
-        if agent.id.trim().is_empty() {
-            return invalid(self.root, "agent id cannot be empty");
-        }
-        if agent.prompt.trim().is_empty() {
-            return invalid(self.root, "agent prompt cannot be empty");
-        }
-        if agent.model.provider.trim().is_empty() || agent.model.name.trim().is_empty() {
-            return invalid(self.root, "agent model provider and name are required");
-        }
-        ensure_relative_file(self.root, &manifest.readme, "readme path")?;
-        for skill in &manifest.skills {
-            ensure_relative_entry(self.root, &skill.path, "skill path")?;
-        }
-        for tool in &manifest.tools {
-            if tool.source != "builtin" {
-                return invalid(self.root, "only builtin tools are supported in v1");
-            }
-        }
-        for path in &manifest.sandbox.permissions.filesystem.mounts.read {
-            ensure_absolute_mount(self.root, path, "read mount")?;
-        }
-        for path in &manifest.sandbox.permissions.filesystem.mounts.write {
-            ensure_absolute_mount(self.root, path, "write mount")?;
-        }
-        validate_sandbox_env(self.root, &manifest.sandbox.env)?;
-        validate_network_permissions(self.root, &manifest.sandbox.permissions.network)?;
-        validate_tool_permission_group(
-            self.root,
-            "sandbox.permissions.tools.allow",
-            &manifest.sandbox.permissions.tools.allow,
-        )?;
-        validate_tool_permission_group(
-            self.root,
-            "sandbox.permissions.tools.ask",
-            &manifest.sandbox.permissions.tools.ask,
-        )?;
-        validate_tool_permission_group(
-            self.root,
-            "sandbox.permissions.tools.deny",
-            &manifest.sandbox.permissions.tools.deny,
-        )?;
+        validate_manifest_identity(self.root, manifest)?;
+        validate_provider_config(self.root, manifest)?;
+        validate_agent_config(self.root, agent)?;
+        validate_project_entries(self.root, manifest)?;
+        validate_manifest_tools(self.root, manifest)?;
+        validate_mount_points(self.root, manifest)?;
+        validate_sandbox_config(self.root, manifest)?;
         Ok(())
     }
+}
+
+fn validate_manifest_identity(root: &Path, manifest: &BundleManifest) -> Result<(), ManifestError> {
+    validate_non_empty(root, &manifest.id, "bundle id cannot be empty")?;
+    validate_non_empty(root, &manifest.version, "bundle version cannot be empty")?;
+    validate_non_empty(root, &manifest.readme, "bundle readme cannot be empty")
+}
+
+fn validate_provider_config(root: &Path, manifest: &BundleManifest) -> Result<(), ManifestError> {
+    if manifest.executor.kind != ProviderKind::Prebuilt {
+        return invalid(root, "only prebuilt executors are supported in v1");
+    }
+    if manifest.memory.kind != ProviderKind::Prebuilt {
+        return invalid(root, "only prebuilt memory providers are supported in v1");
+    }
+    validate_non_empty(root, &manifest.executor.id, "executor id cannot be empty")?;
+    validate_non_empty(
+        root,
+        &manifest.memory.id,
+        "memory provider id cannot be empty",
+    )
+}
+
+fn validate_agent_config(root: &Path, agent: &AgentSpec) -> Result<(), ManifestError> {
+    validate_non_empty(root, &agent.id, "agent id cannot be empty")?;
+    validate_non_empty(root, &agent.prompt, "agent prompt cannot be empty")?;
+    if agent.model.provider.trim().is_empty() || agent.model.name.trim().is_empty() {
+        return invalid(root, "agent model provider and name are required");
+    }
+    Ok(())
+}
+
+fn validate_project_entries(root: &Path, manifest: &BundleManifest) -> Result<(), ManifestError> {
+    ensure_relative_file(root, &manifest.readme, "readme path")?;
+    for skill in &manifest.skills {
+        ensure_relative_entry(root, &skill.path, "skill path")?;
+    }
+    Ok(())
+}
+
+fn validate_manifest_tools(root: &Path, manifest: &BundleManifest) -> Result<(), ManifestError> {
+    for tool in &manifest.tools {
+        if tool.source != "builtin" {
+            return invalid(root, "only builtin tools are supported in v1");
+        }
+    }
+    Ok(())
+}
+
+fn validate_mount_points(root: &Path, manifest: &BundleManifest) -> Result<(), ManifestError> {
+    for path in &manifest.sandbox.permissions.filesystem.mounts.read {
+        ensure_absolute_mount(root, path, "read mount")?;
+    }
+    for path in &manifest.sandbox.permissions.filesystem.mounts.write {
+        ensure_absolute_mount(root, path, "write mount")?;
+    }
+    Ok(())
+}
+
+fn validate_sandbox_config(root: &Path, manifest: &BundleManifest) -> Result<(), ManifestError> {
+    validate_sandbox_env(root, &manifest.sandbox.env)?;
+    validate_network_permissions(root, &manifest.sandbox.permissions.network)?;
+    validate_tool_permission_group(
+        root,
+        "sandbox.permissions.tools.allow",
+        &manifest.sandbox.permissions.tools.allow,
+    )?;
+    validate_tool_permission_group(
+        root,
+        "sandbox.permissions.tools.ask",
+        &manifest.sandbox.permissions.tools.ask,
+    )?;
+    validate_tool_permission_group(
+        root,
+        "sandbox.permissions.tools.deny",
+        &manifest.sandbox.permissions.tools.deny,
+    )
+}
+
+fn validate_non_empty(root: &Path, value: &str, message: &str) -> Result<(), ManifestError> {
+    if value.trim().is_empty() {
+        return invalid(root, message);
+    }
+    Ok(())
 }
 
 fn ensure_relative_entry(root: &Path, value: &str, label: &str) -> Result<(), ManifestError> {

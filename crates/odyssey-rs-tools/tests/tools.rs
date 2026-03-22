@@ -331,7 +331,7 @@ async fn bash_tool_returns_error_for_non_zero_shell_exit() {
     let temp = tempdir().expect("tempdir");
     let provider = FakeProvider {
         result_status_code: Some(1),
-        stdout: String::new(),
+        stdout: String::default(),
         stderr: "Permission denied".to_string(),
         ..FakeProvider::default()
     };

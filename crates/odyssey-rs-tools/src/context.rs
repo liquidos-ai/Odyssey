@@ -219,9 +219,10 @@ impl ToolContext {
                 )
             })
             .map(|(_, rule)| rule);
-        let (action, permission) = matched
-            .map(|rule| (rule.action, rule.matcher.display()))
-            .unwrap_or((PermissionAction::Allow, name.to_string()));
+        let (action, permission) = matched.map_or_else(
+            || (PermissionAction::Allow, name.to_string()),
+            |rule| (rule.action, rule.matcher.display()),
+        );
         match action {
             PermissionAction::Allow => Ok(()),
             PermissionAction::Deny => Err(ToolError::PermissionDenied(format!(

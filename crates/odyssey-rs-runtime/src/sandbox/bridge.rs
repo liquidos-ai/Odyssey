@@ -19,22 +19,26 @@ pub fn build_policy(
     bundle_root: &Path,
     manifest: &BundleManifest,
 ) -> Result<SandboxPolicy, RuntimeError> {
-    build_policy_with_exec_roots(bundle_root, manifest, &[], false)
+    build_policy_with_env_resolver(bundle_root, manifest, &[], false, read_process_env)
 }
 
 pub fn build_operator_command_policy(
     bundle_root: &Path,
     manifest: &BundleManifest,
 ) -> Result<SandboxPolicy, RuntimeError> {
-    build_policy_with_exec_roots(bundle_root, manifest, &[], true)
+    build_policy_with_env_resolver(bundle_root, manifest, &[], true, read_process_env)
 }
 
-fn build_policy_with_exec_roots(
+fn build_policy_with_env_resolver<F>(
     bundle_root: &Path,
     manifest: &BundleManifest,
     extra_exec_roots: &[String],
     force_standard_exec_roots: bool,
-) -> Result<SandboxPolicy, RuntimeError> {
+    env_resolver: F,
+) -> Result<SandboxPolicy, RuntimeError>
+where
+    F: FnMut(&str) -> Option<String>,
+{
     let map_bundle_paths = |entries: &[String]| -> Vec<String> {
         entries
             .iter()
@@ -79,7 +83,7 @@ fn build_policy_with_exec_roots(
         },
         env: odyssey_rs_sandbox::SandboxEnvPolicy {
             inherit: Vec::new(),
-            set: resolve_manifest_env(&manifest.sandbox.env),
+            set: resolve_manifest_env(&manifest.sandbox.env, env_resolver),
         },
         network: build_network_policy(&manifest.sandbox.permissions.network)?,
         limits: SandboxLimits {
@@ -96,14 +100,15 @@ fn build_policy_with_exec_roots(
 
 fn resolve_manifest_env(
     env: &std::collections::BTreeMap<String, String>,
+    mut env_resolver: impl FnMut(&str) -> Option<String>,
 ) -> std::collections::BTreeMap<String, String> {
     env.iter()
-        .filter_map(|(target, source)| {
-            std::env::var(source)
-                .ok()
-                .map(|value| (target.clone(), value))
-        })
+        .filter_map(|(target, source)| env_resolver(source).map(|value| (target.clone(), value)))
         .collect()
+}
+
+fn read_process_env(name: &str) -> Option<String> {
+    std::env::var(name).ok()
 }
 
 pub fn build_mode(manifest: &BundleManifest, override_mode: Option<SandboxMode>) -> SandboxMode {
@@ -405,8 +410,8 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
 mod tests {
     use super::{
         build_mode, build_network_policy, build_operator_command_policy, build_permission_rules,
-        build_policy, extend_cell_filesystem_policy, stage_bundle, stage_bundle_if_needed,
-        target_has_entries, validate_provider_support, verify_system_tools,
+        build_policy, build_policy_with_env_resolver, extend_cell_filesystem_policy, stage_bundle,
+        stage_bundle_if_needed, target_has_entries, validate_provider_support, verify_system_tools,
     };
     use odyssey_rs_manifest::{
         BundleExecutor, BundleManifest, BundleMemory, BundleSandbox, BundleSandboxFilesystem,
@@ -636,11 +641,18 @@ mod tests {
             },
         };
 
-        unsafe {
-            std::env::set_var("ODYSSEY_TEST_ENV", "secret");
-            std::env::set_var("ODYSSEY_TEST_APP_ENV", "development");
-        }
-        let policy = build_policy(Path::new("/bundle-root"), &manifest).expect("build policy");
+        let policy = build_policy_with_env_resolver(
+            Path::new("/bundle-root"),
+            &manifest,
+            &[],
+            false,
+            |name| match name {
+                "ODYSSEY_TEST_ENV" => Some("secret".to_string()),
+                "ODYSSEY_TEST_APP_ENV" => Some("development".to_string()),
+                _ => None,
+            },
+        )
+        .expect("build policy");
         assert!(policy.env.inherit.is_empty());
         assert_eq!(
             policy.env.set.get("OPENAI_API_KEY"),
