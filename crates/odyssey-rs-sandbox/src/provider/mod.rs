@@ -85,6 +85,7 @@ pub struct PreparedSandbox {
     pub(crate) allowed_env_keys: BTreeSet<String>,
     pub(crate) limits: SandboxLimits,
     pub(crate) network: SandboxNetworkMode,
+    pub(crate) private_tmp_dir: Option<PathBuf>,
     pub(crate) working_dir: PathBuf,
     pub(crate) mounts: Vec<Mount>,
 }
@@ -363,6 +364,7 @@ impl CommandOutputSink for BufferingSink {
 fn build_env(
     policy: &SandboxPolicy,
     workspace_root: &Path,
+    private_tmp_dir: Option<&Path>,
 ) -> (BTreeMap<String, String>, BTreeSet<String>) {
     let inherit_keys = if policy.env.inherit.is_empty() {
         SAFE_ENV_VARS
@@ -385,11 +387,10 @@ fn build_env(
 
     allowed.insert("HOME".to_string());
     env.insert("HOME".to_string(), workspace_root.display().to_string());
-    allowed.insert("TMPDIR".to_string());
-    env.insert(
-        "TMPDIR".to_string(),
-        default_tmp_dir().display().to_string(),
-    );
+    if let Some(private_tmp_dir) = private_tmp_dir {
+        allowed.insert("TMPDIR".to_string());
+        env.insert("TMPDIR".to_string(), private_tmp_dir.display().to_string());
+    }
     allowed.insert("ODYSSEY_SANDBOX".to_string());
     env.insert("ODYSSEY_SANDBOX".to_string(), "1".to_string());
 
@@ -406,16 +407,40 @@ fn build_env(
     (env, allowed)
 }
 
-fn default_tmp_dir() -> PathBuf {
+fn create_private_tmp_dir() -> Result<PathBuf, SandboxError> {
+    let base = std::env::temp_dir().join("odyssey-rs");
+    std::fs::create_dir_all(&base).map_err(SandboxError::Io)?;
+
     #[cfg(unix)]
     {
-        PathBuf::from("/tmp")
+        use std::os::unix::fs::PermissionsExt;
+
+        let _ = std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700));
     }
 
-    #[cfg(not(unix))]
+    let candidate = base.join(uuid::Uuid::new_v4().to_string());
+    std::fs::create_dir(&candidate).map_err(SandboxError::Io)?;
+
+    #[cfg(unix)]
     {
-        std::env::temp_dir()
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o700))
+            .map_err(SandboxError::Io)?;
     }
+
+    Ok(candidate)
+}
+
+pub(crate) fn cleanup_private_tmp_dir(path: Option<&Path>) {
+    if let Some(path) = path {
+        let _ = std::fs::remove_dir_all(path);
+    }
+}
+
+#[cfg(test)]
+fn default_tmp_dir_for_tests() -> PathBuf {
+    std::env::temp_dir()
 }
 
 pub(crate) fn merge_command_env(
@@ -729,7 +754,13 @@ fn build_mounts_from_access(
 pub fn build_prepared_sandbox(ctx: &SandboxContext) -> Result<PreparedSandbox, SandboxError> {
     let workspace_root = canonicalize_existing_path(&ctx.workspace_root)?;
     let access = AccessPolicy::new(ctx.mode, &ctx.policy, &workspace_root)?;
-    let (env, allowed_env_keys) = build_env(&ctx.policy, &workspace_root);
+    let private_tmp_dir = if ctx.policy.env.set.contains_key("TMPDIR") {
+        None
+    } else {
+        Some(create_private_tmp_dir()?)
+    };
+    let (env, allowed_env_keys) =
+        build_env(&ctx.policy, &workspace_root, private_tmp_dir.as_deref());
     let mounts = build_mounts_from_access(&access, ctx.mode, &ctx.policy.filesystem.mount_bindings);
     info!(
         "prepared sandbox (mode={:?}, mounts={}, env_keys={})",
@@ -743,6 +774,7 @@ pub fn build_prepared_sandbox(ctx: &SandboxContext) -> Result<PreparedSandbox, S
         allowed_env_keys,
         limits: ctx.policy.limits.clone(),
         network: ctx.policy.network.mode,
+        private_tmp_dir,
         working_dir: workspace_root,
         mounts,
     })
@@ -959,7 +991,10 @@ mod tests {
         );
         assert!(prepared.env.contains_key("PATH"));
         assert!(prepared.env.contains_key("TMPDIR"));
-        assert!(!temp.path().join(".tmp").exists());
+        let tmpdir = PathBuf::from(prepared.env.get("TMPDIR").expect("tmpdir"));
+        assert!(tmpdir.exists());
+        assert!(tmpdir.starts_with(super::default_tmp_dir_for_tests()));
+        assert_eq!(prepared.private_tmp_dir.as_deref(), Some(tmpdir.as_path()));
     }
 
     #[test]

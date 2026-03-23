@@ -3,7 +3,7 @@ use crate::{
     SandboxError, SandboxHandle, SandboxProvider,
     provider::{
         BufferingSink, PreparedSandbox, build_host_child_command, build_prepared_sandbox,
-        run_host_process, validate_host_execution_context,
+        cleanup_private_tmp_dir, run_host_process, validate_host_execution_context,
     },
 };
 use async_trait::async_trait;
@@ -93,7 +93,12 @@ impl SandboxProvider for HostExecProvider {
 
     async fn shutdown(&self, handle: SandboxHandle) {
         info!("host execution provider shutdown (handle_id={})", handle.id);
-        self.state.write().remove(&handle.id);
+        let removed = self.state.write().remove(&handle.id);
+        cleanup_private_tmp_dir(
+            removed
+                .as_ref()
+                .and_then(|prepared| prepared.private_tmp_dir.as_deref()),
+        );
     }
 }
 
@@ -150,7 +155,16 @@ mod tests {
             AccessDecision::Allow
         );
 
+        let private_tmp_dir = provider
+            .state
+            .read()
+            .get(&handle.id)
+            .and_then(|prepared| prepared.private_tmp_dir.clone())
+            .expect("private tmp dir");
+        assert!(private_tmp_dir.exists());
+
         provider.shutdown(handle).await;
+        assert!(!private_tmp_dir.exists());
         match provider.check_access(&handle_clone, &inside, AccessMode::Read) {
             AccessDecision::Deny(message) => assert!(message.contains("unknown")),
             other => panic!("unexpected decision: {other:?}"),

@@ -11,8 +11,8 @@ use crate::{
     SandboxError, SandboxHandle, SandboxLimits, SandboxProvider,
     provider::{
         BufferingSink, DependencyReport, Mount, PreparedSandbox, bind_if_exists,
-        build_prepared_sandbox, collect_child_result, command_display, configure_child_unix,
-        merge_command_env, resolve_command_path, resolve_working_dir,
+        build_prepared_sandbox, cleanup_private_tmp_dir, collect_child_result, command_display,
+        configure_child_unix, merge_command_env, resolve_command_path, resolve_working_dir,
     },
     types::SandboxNetworkMode,
 };
@@ -254,7 +254,12 @@ impl SandboxProvider for BubblewrapProvider {
 
     async fn shutdown(&self, handle: SandboxHandle) {
         info!("bubblewrap sandbox shutdown (handle_id={})", handle.id);
-        self.state.write().remove(&handle.id);
+        let removed = self.state.write().remove(&handle.id);
+        cleanup_private_tmp_dir(
+            removed
+                .as_ref()
+                .and_then(|prepared| prepared.private_tmp_dir.as_deref()),
+        );
     }
 }
 
