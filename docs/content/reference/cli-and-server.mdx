@@ -6,7 +6,14 @@ description: Command-line and HTTP reference for Odyssey bundle and session work
 
 ## CLI Commands
 
-Install the CLI from crates.io:
+Install the CLI with the bootstrap script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/liquidos-ai/odyssey/main/install.sh | bash
+```
+
+The installer downloads the prebuilt release archive for the current platform and installs
+`odyssey-rs` into `~/.local/bin` by default. You can also install it directly with Cargo:
 
 ```bash
 cargo install odyssey-rs

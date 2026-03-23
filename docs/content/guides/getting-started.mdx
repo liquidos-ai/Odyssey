@@ -15,13 +15,18 @@ If you are developing on macOS or Windows, confined bundle sandboxes are not ava
 
 ## Install Odyssey
 
-Install the CLI from crates.io:
+Install the CLI with the bootstrap script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/liquidos-ai/odyssey/main/install.sh | bash
+```
+
+The installer downloads the prebuilt release archive for the current platform and installs
+`odyssey-rs` into `~/.local/bin` by default. You can also install it directly with Cargo:
 
 ```bash
 cargo install odyssey-rs
 ```
-
-This installs the `odyssey-rs` binary used in the examples below.
 
 ```bash
 odyssey-rs --help

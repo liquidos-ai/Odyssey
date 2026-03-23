@@ -89,7 +89,16 @@ The same runtime is available through:
 
 ## Installation
 
-Install the Odyssey CLI from crates.io:
+Install the Odyssey CLI with the bootstrap script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/liquidos-ai/odyssey/main/install.sh | bash
+```
+
+The installer downloads the prebuilt release archive for the current platform and installs the
+`odyssey-rs` binary into `~/.local/bin` by default.
+
+If you prefer the direct crates.io path, install it with Cargo:
 
 ```bash
 cargo install odyssey-rs

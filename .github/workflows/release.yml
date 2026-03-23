@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing tag to publish assets for, for example v0.1.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    name: Release ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive_ext: tar.gz
+            binary_name: odyssey-rs
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive_ext: tar.gz
+            binary_name: odyssey-rs
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive_ext: tar.gz
+            binary_name: odyssey-rs
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_ext: zip
+            binary_name: odyssey-rs.exe
+
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux deps
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap cmake pkg-config libasound2-dev
+
+      - name: Build CLI
+        run: cargo build --release -p odyssey-rs --locked --target ${{ matrix.target }}
+
+      - name: Compute release metadata
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            raw_tag="${{ inputs.release_tag }}"
+          else
+            raw_tag="${GITHUB_REF_NAME}"
+          fi
+          version="${raw_tag#v}"
+          archive="odyssey-rs-${version}-${{ matrix.target }}.${{ matrix.archive_ext }}"
+          checksum="${archive}.sha256"
+          echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+          echo "ARCHIVE_NAME=${archive}" >> "$GITHUB_ENV"
+          echo "CHECKSUM_NAME=${checksum}" >> "$GITHUB_ENV"
+
+      - name: Package archive (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist/package
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" dist/package/
+          cp README.md dist/package/
+          cp APACHE_LICENSE dist/package/
+          tar -C dist/package -czf "dist/${ARCHIVE_NAME}" .
+          shasum -a 256 "dist/${ARCHIVE_NAME}" > "dist/${CHECKSUM_NAME}"
+
+      - name: Package archive (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist/package -Force | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "dist/package/"
+          Copy-Item README.md "dist/package/"
+          Copy-Item APACHE_LICENSE "dist/package/"
+          Compress-Archive -Path dist/package/* -DestinationPath "dist/${env:ARCHIVE_NAME}" -Force
+          $hash = (Get-FileHash "dist/${env:ARCHIVE_NAME}" -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "dist/${env:CHECKSUM_NAME}" -Value "$hash  $env:ARCHIVE_NAME"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          files: |
+            dist/${{ env.ARCHIVE_NAME }}
+            dist/${{ env.CHECKSUM_NAME }}

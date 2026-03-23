@@ -5,10 +5,15 @@ This is a starter Odyssey bundle.
 ## Install Odyssey
 
 ```bash
-cargo install odyssey-rs
+curl -fsSL https://raw.githubusercontent.com/liquidos-ai/odyssey/main/install.sh | bash
 ```
 
-This installs the `odyssey-rs` CLI used in the commands below.
+The installer downloads the prebuilt release archive for the current platform and installs
+`odyssey-rs` into `~/.local/bin` by default. You can also install it directly with Cargo:
+
+```bash
+cargo install odyssey-rs
+```
 
 ## Build
 
