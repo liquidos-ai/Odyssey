@@ -1276,7 +1276,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hello-world-example"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "odyssey-rs-protocol",
@@ -1998,7 +1998,7 @@ dependencies = [
 
 [[package]]
 name = "odyssey-rs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2021,7 +2021,7 @@ dependencies = [
 
 [[package]]
 name = "odyssey-rs-bundle"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum",
  "base64",
@@ -2042,7 +2042,7 @@ dependencies = [
 
 [[package]]
 name = "odyssey-rs-manifest"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "json5",
  "odyssey-rs-protocol",
@@ -2056,7 +2056,7 @@ dependencies = [
 
 [[package]]
 name = "odyssey-rs-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "autoagents-protocol",
@@ -2070,7 +2070,7 @@ dependencies = [
 
 [[package]]
 name = "odyssey-rs-runtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "autoagents-core",
@@ -2101,7 +2101,7 @@ dependencies = [
 
 [[package]]
 name = "odyssey-rs-sandbox"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "hex",
@@ -2121,7 +2121,7 @@ dependencies = [
 
 [[package]]
 name = "odyssey-rs-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum",
  "chrono",
@@ -2142,7 +2142,7 @@ dependencies = [
 
 [[package]]
 name = "odyssey-rs-tools"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "autoagents-core",
@@ -2163,7 +2163,7 @@ dependencies = [
 
 [[package]]
 name = "odyssey-rs-tui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
