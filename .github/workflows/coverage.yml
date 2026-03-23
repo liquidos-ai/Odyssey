@@ -54,7 +54,7 @@ jobs:
             --all-features \
             --timeout 120 \
             --out Xml \
-            --ignore-panics
+            --ignore-panics \
             --exclude-files "examples/*"
 
       - name: Upload to Codecov
