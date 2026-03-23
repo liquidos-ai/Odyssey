@@ -285,7 +285,7 @@ impl Default for App {
             input_inner_width: 80,
             history: crate::history::load(),
             history_index: None,
-            history_draft: String::new(),
+            history_draft: String::default(),
             show_slash_commands: false,
             slash_selected: 0,
             theme: ODYSSEY,

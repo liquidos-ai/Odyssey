@@ -37,7 +37,7 @@ into sessions, turns, events, approvals, and persisted history.
 | Surface | Best for | Notes |
 | --- | --- | --- |
 | `odyssey-rs run` | One-shot prompts | Creates a fresh session, runs one turn, prints the final response. |
-| `odyssey-rs tui` | Local operator workflows | Uses the same local runtime and supports direct operator commands with `!`. |
+| `odyssey-rs tui` | Local operator workflows | Uses the same local runtime and support tool approvals, session selection. |
 | `odyssey-rs serve` | Shared runtime access | Exposes bundle and session APIs over HTTP plus SSE event streaming. |
 | `OdysseyRuntime` | Embedded Rust apps | Gives direct access to bundle, session, execution, and approval APIs. |
 
@@ -51,15 +51,12 @@ into sessions, turns, events, approvals, and persisted history.
 - Manifest tool entries currently support builtin tools only.
 - Cloud model providers currently wired into the runtime are Anthropic, Azure OpenAI, DeepSeek,
   Google or Gemini, Groq, MiniMax, OpenAI, OpenRouter, Phind, and xAI.
-- Local provider names such as `llama_cpp` are recognized by the resolver, but local model
-  execution is not implemented yet.
 
 ## Platform Notes
 
 - Restricted sandboxes are currently Linux-only and use `bubblewrap`.
 - On macOS and Windows, local execution currently requires `--dangerous-sandbox-mode` or a Linux
   container if you want confined execution.
-- The project is still pre-release, so prefer the docs here and the code over older examples.
 
 ## Workspace Crates
 

@@ -868,7 +868,12 @@ tools:
     }
 
     #[tokio::test]
+    #[cfg(target_os = "linux")]
     async fn run_session_command_executes_and_streams_exec_events() {
+        if which::which("bwrap").is_err() {
+            return;
+        }
+
         let temp = tempdir().expect("tempdir");
         let runtime = Arc::new(OdysseyRuntime::new(runtime_config(temp.path())).expect("runtime"));
         let project = temp.path().join("alpha-project");
@@ -906,8 +911,12 @@ tools:
     }
 
     #[tokio::test]
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     async fn run_session_command_exposes_host_mount_aliases_in_danger_mode() {
+        if which::which("bwrap").is_err() {
+            return;
+        }
+
         let temp = tempdir().expect("tempdir");
         let runtime = Arc::new(OdysseyRuntime::new(runtime_config(temp.path())).expect("runtime"));
         let host_read = temp.path().join("host-read");

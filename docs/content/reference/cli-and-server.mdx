@@ -4,20 +4,6 @@ slug: /cli-and-server
 description: Command-line and HTTP reference for Odyssey bundle and session workflows.
 ---
 
-## Bundle Reference Forms
-
-Most bundle-facing commands accept the same reference syntax:
-
-| Example | Meaning |
-| --- | --- |
-| `hello-world` | Latest installed local bundle with id `hello-world` |
-| `hello-world@latest` | Explicit latest installed local bundle |
-| `local/hello-world:0.1.0` | Namespaced bundle reference with version |
-| `team/demo@0.2.0` | Namespaced bundle reference using `@version` |
-| `team/demo@sha256:...` | Digest reference |
-| `./dist/demo` | Direct path to a bundle layout directory |
-| `./dist/demo.odyssey` | Archive file that must be imported before use |
-
 ## CLI Commands
 
 Odyssey's main entrypoint is `odyssey-rs`.

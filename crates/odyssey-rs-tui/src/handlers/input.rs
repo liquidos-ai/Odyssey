@@ -175,98 +175,185 @@ async fn handle_normal_input(
         return Ok(false);
     }
 
+    if handle_normal_shortcut_key(key, client, app, &sender, stream_handle).await? {
+        return Ok(false);
+    }
+
+    if handle_navigation_key(key, app) {
+        return Ok(false);
+    }
+
+    if key.code == KeyCode::Enter {
+        handle_enter(key, client, app, sender, stream_handle).await?;
+        return Ok(false);
+    }
+
+    if handle_edit_key(key, app) {
+        return Ok(false);
+    }
+
+    Ok(false)
+}
+
+async fn handle_normal_shortcut_key(
+    key: KeyEvent,
+    client: &Arc<AgentRuntimeClient>,
+    app: &mut App,
+    sender: &mpsc::Sender<AppEvent>,
+    stream_handle: &mut Option<JoinHandle<()>>,
+) -> anyhow::Result<bool> {
     match key.code {
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            session::create_session(client, app, sender, stream_handle).await?;
+            session::create_session(client, app, sender.clone(), stream_handle).await?;
+            Ok(true)
         }
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             session::refresh_sessions(client, app).await?;
+            Ok(true)
         }
         KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            session::activate_selected_session(client, app, sender, stream_handle).await?;
+            session::activate_selected_session(client, app, sender.clone(), stream_handle).await?;
+            Ok(true)
         }
+        _ => Ok(false),
+    }
+}
+
+fn handle_navigation_key(key: KeyEvent, app: &mut App) -> bool {
+    match key.code {
         KeyCode::Tab => {
             app.open_viewer(ViewerKind::Agents);
+            true
         }
-        KeyCode::PageUp => app.scroll_up(5),
-        KeyCode::PageDown => app.scroll_down(5),
-
-        // Arrow keys: navigate cursor when input has text, otherwise scroll chat.
+        KeyCode::PageUp => {
+            app.scroll_up(5);
+            true
+        }
+        KeyCode::PageDown => {
+            app.scroll_down(5);
+            true
+        }
         KeyCode::Left => {
-            if !app.input.is_empty() {
-                move_cursor_left(app);
-            }
+            handle_left_key(app);
+            true
         }
         KeyCode::Right => {
-            if !app.input.is_empty() {
-                move_cursor_right(app);
-            }
+            handle_right_key(app);
+            true
         }
         KeyCode::Up => {
-            if app.input.is_empty() || app.history_index.is_some() && cursor_on_first_line(app) {
-                // Browse history: go to previous entry.
-                history_up(app);
-            } else if !app.input.is_empty() {
-                move_cursor_up(app);
-            } else {
-                app.scroll_up(1);
-            }
+            handle_up_key(app);
+            true
         }
         KeyCode::Down => {
-            if app.history_index.is_some() && cursor_on_last_line(app) {
-                // Browse history: go to next entry (or back to draft).
-                history_down(app);
-            } else if !app.input.is_empty() {
-                move_cursor_down(app);
-            } else {
-                app.scroll_down(1);
-            }
+            handle_down_key(app);
+            true
         }
-
         KeyCode::Home => {
-            if !app.input.is_empty() {
-                app.input_cursor = 0;
-            } else {
-                app.scroll_to_top();
-            }
+            handle_home_key(app);
+            true
         }
         KeyCode::End => {
-            if !app.input.is_empty() {
-                app.input_cursor = app.input.len();
-            } else {
-                app.enable_auto_scroll();
-            }
+            handle_end_key(app);
+            true
         }
+        _ => false,
+    }
+}
 
-        KeyCode::Enter => handle_enter(key, client, app, sender, stream_handle).await?,
+fn handle_left_key(app: &mut App) {
+    if !app.input.is_empty() {
+        move_cursor_left(app);
+    }
+}
+
+fn handle_right_key(app: &mut App) {
+    if !app.input.is_empty() {
+        move_cursor_right(app);
+    }
+}
+
+fn handle_up_key(app: &mut App) {
+    if app.input.is_empty() || (app.history_index.is_some() && cursor_on_first_line(app)) {
+        history_up(app);
+    } else {
+        move_cursor_up(app);
+    }
+}
+
+fn handle_down_key(app: &mut App) {
+    if app.history_index.is_some() && cursor_on_last_line(app) {
+        history_down(app);
+    } else if !app.input.is_empty() {
+        move_cursor_down(app);
+    } else {
+        app.scroll_down(1);
+    }
+}
+
+fn handle_home_key(app: &mut App) {
+    if !app.input.is_empty() {
+        app.input_cursor = 0;
+    } else {
+        app.scroll_to_top();
+    }
+}
+
+fn handle_end_key(app: &mut App) {
+    if !app.input.is_empty() {
+        app.input_cursor = app.input.len();
+    } else {
+        app.enable_auto_scroll();
+    }
+}
+
+fn handle_edit_key(key: KeyEvent, app: &mut App) -> bool {
+    match key.code {
         KeyCode::Backspace => {
-            if app.input_cursor > 0 {
-                let prev = prev_char_boundary(&app.input, app.input_cursor);
-                app.input.drain(prev..app.input_cursor);
-                app.input_cursor = prev;
-                app.show_slash_commands = app.input.trim_start().starts_with('/');
-                app.slash_selected = 0;
-                app.history_index = None;
-            }
+            handle_backspace(app);
+            true
         }
         KeyCode::Delete => {
-            if app.input_cursor < app.input.len() {
-                let next = next_char_boundary(&app.input, app.input_cursor);
-                app.input.drain(app.input_cursor..next);
-                app.show_slash_commands = app.input.trim_start().starts_with('/');
-                app.slash_selected = 0;
-            }
+            handle_delete(app);
+            true
         }
         KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.input.insert(app.input_cursor, ch);
-            app.input_cursor += ch.len_utf8();
-            app.show_slash_commands = app.input.trim_start().starts_with('/');
-            app.slash_selected = 0;
-            app.history_index = None;
+            insert_input_char(app, ch);
+            true
         }
-        _ => {}
+        _ => false,
     }
-    Ok(false)
+}
+
+fn handle_backspace(app: &mut App) {
+    if app.input_cursor > 0 {
+        let prev = prev_char_boundary(&app.input, app.input_cursor);
+        app.input.drain(prev..app.input_cursor);
+        app.input_cursor = prev;
+        refresh_input_edit_state(app, true);
+    }
+}
+
+fn handle_delete(app: &mut App) {
+    if app.input_cursor < app.input.len() {
+        let next = next_char_boundary(&app.input, app.input_cursor);
+        app.input.drain(app.input_cursor..next);
+        refresh_input_edit_state(app, false);
+    }
+}
+
+fn insert_input_char(app: &mut App, ch: char) {
+    app.input.insert(app.input_cursor, ch);
+    app.input_cursor += ch.len_utf8();
+    refresh_input_edit_state(app, true);
+}
+
+fn refresh_input_edit_state(app: &mut App, clear_history_index: bool) {
+    app.show_slash_commands = app.input.trim_start().starts_with('/');
+    app.slash_selected = 0;
+    if clear_history_index {
+        app.history_index = None;
+    }
 }
 
 /// Handle a key press while the slash palette is visible.
@@ -350,7 +437,7 @@ fn history_up(app: &mut App) {
         Some(0) => return, // already at oldest
         None => {
             // Start browsing: save current input as draft.
-            app.history_draft = app.input.clone();
+            app.history_draft.clone_from(&app.input);
             app.history.len() - 1
         }
         _ => return,
@@ -571,7 +658,7 @@ pub async fn handle_permission_input(
 
 #[cfg(test)]
 mod tests {
-    use super::handle_input;
+    use super::{handle_input, history_down, history_up};
     use crate::app::App;
     use crate::client::AgentRuntimeClient;
     use crate::event::AppEvent;
@@ -653,6 +740,40 @@ tools:
             "hello world\n",
         )
         .expect("write resource");
+    }
+
+    #[test]
+    fn history_up_saves_draft_and_loads_latest_entry() {
+        let mut app = App {
+            input: "draft".to_string(),
+            history: vec!["oldest".to_string(), "latest".to_string()],
+            ..App::default()
+        };
+
+        history_up(&mut app);
+
+        assert_eq!(app.history_index, Some(1));
+        assert_eq!(app.history_draft, "draft");
+        assert_eq!(app.input, "latest");
+        assert_eq!(app.input_cursor, app.input.len());
+    }
+
+    #[test]
+    fn history_down_restores_saved_draft_after_newest_entry() {
+        let mut app = App {
+            input: "latest".to_string(),
+            history: vec!["oldest".to_string(), "latest".to_string()],
+            history_index: Some(1),
+            history_draft: "draft".to_string(),
+            ..App::default()
+        };
+
+        history_down(&mut app);
+
+        assert_eq!(app.history_index, None);
+        assert_eq!(app.history_draft, "");
+        assert_eq!(app.input, "draft");
+        assert_eq!(app.input_cursor, app.input.len());
     }
 
     #[tokio::test]
