@@ -1,7 +1,7 @@
 use crate::BundleError;
 use crate::constants::{
-    AGENT_SPEC_FILE_NAME, BUNDLE_CONFIG_SCHEMA_VERSION, BUNDLE_LOCAL_NAMESPACE, RESOURCES_DIR_NAME,
-    SKILLS_DIR_NAME,
+    AGENT_SPEC_FILE_NAME, BUNDLE_CONFIG_SCHEMA_VERSION, BUNDLE_INSTALL_LAYOUT_DIR_NAME,
+    BUNDLE_LOCAL_NAMESPACE, RESOURCES_DIR_NAME, SKILLS_DIR_NAME,
 };
 use crate::constants::{
     BUNDLE_CONFIG_MEDIA_TYPE, BUNDLE_LAYER_MEDIA_TYPE, OCI_INDEX_MEDIA_TYPE, OCI_LAYOUT_VERSION,
@@ -87,6 +87,7 @@ impl BundleBuilder {
         validate_path_component(&self.namespace, "bundle namespace")?;
         validate_path_component(&self.project.manifest.id, "bundle id")?;
         validate_path_component(&self.project.manifest.version, "bundle version")?;
+        //Create a bundle directory structure -> <namespace>/<manifest_id>/<manifest_version>/
         let bundle_dir = output_root
             .join(&self.namespace)
             .join(&self.project.manifest.id)
@@ -98,11 +99,14 @@ impl BundleBuilder {
 
         fs::create_dir_all(&bundle_dir).map_err(|err| io_err(&bundle_dir, err))?;
 
+        //Create and copy files into the bundle dir
         materialize_payload(&self.project, &bundle_dir)?;
+        let layout_dir = bundle_dir.join(BUNDLE_INSTALL_LAYOUT_DIR_NAME);
+        fs::create_dir_all(&layout_dir).map_err(|err| io_err(&layout_dir, err))?;
 
         // The payload layer contains the runtime files a bundle install needs to unpack.
         let payload_bytes = pack_payload(&bundle_dir)?;
-        let layer_digest = write_blob(&bundle_dir, &payload_bytes)?;
+        let layer_digest = write_blob(&layout_dir, &payload_bytes)?;
         let layer_descriptor =
             descriptor(BUNDLE_LAYER_MEDIA_TYPE, &layer_digest, payload_bytes.len());
 
@@ -118,7 +122,7 @@ impl BundleBuilder {
         };
         let config_bytes = serde_json::to_vec_pretty(&config)
             .map_err(|err| BundleError::Invalid(err.to_string()))?;
-        let config_digest = write_blob(&bundle_dir, &config_bytes)?;
+        let config_digest = write_blob(&layout_dir, &config_bytes)?;
         let config_descriptor =
             descriptor(BUNDLE_CONFIG_MEDIA_TYPE, &config_digest, config_bytes.len());
 
@@ -143,7 +147,7 @@ impl BundleBuilder {
         };
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)
             .map_err(|err| BundleError::Invalid(err.to_string()))?;
-        let manifest_digest = write_blob(&bundle_dir, &manifest_bytes)?;
+        let manifest_digest = write_blob(&layout_dir, &manifest_bytes)?;
 
         // index.json is the OCI layout entrypoint; it points readers to the bundle manifest blob.
         let index = OciImageIndex {
@@ -160,12 +164,12 @@ impl BundleBuilder {
             .map_err(|err| BundleError::Invalid(err.to_string()))?;
 
         fs::write(
-            bundle_dir.join("oci-layout"),
+            layout_dir.join("oci-layout"),
             format!("{{\"imageLayoutVersion\":\"{OCI_LAYOUT_VERSION}\"}}\n"),
         )
-        .map_err(|err| io_err(&bundle_dir.join("oci-layout"), err))?;
-        fs::write(bundle_dir.join("index.json"), index_bytes)
-            .map_err(|err| io_err(&bundle_dir.join("index.json"), err))?;
+        .map_err(|err| io_err(&layout_dir.join("oci-layout"), err))?;
+        fs::write(layout_dir.join("index.json"), index_bytes)
+            .map_err(|err| io_err(&layout_dir.join("index.json"), err))?;
 
         let metadata = BundleMetadata {
             namespace: self.namespace,
@@ -177,11 +181,11 @@ impl BundleBuilder {
             agent_spec: self.project.agent,
         };
         fs::write(
-            bundle_dir.join("bundle.json"),
+            layout_dir.join("bundle.json"),
             serde_json::to_vec_pretty(&metadata)
                 .map_err(|err| BundleError::Invalid(err.to_string()))?,
         )
-        .map_err(|err| io_err(&bundle_dir.join("bundle.json"), err))?;
+        .map_err(|err| io_err(&layout_dir.join("bundle.json"), err))?;
 
         Ok(BundleArtifact {
             path: bundle_dir,
@@ -229,6 +233,7 @@ fn materialize_payload(project: &BundleProject, bundle_dir: &Path) -> Result<(),
     Ok(())
 }
 
+/// Utility to check if the value is a filename or directory and not a Path
 fn validate_path_component(value: &str, label: &str) -> Result<(), BundleError> {
     let path = Path::new(value);
     if value.trim().is_empty() {
@@ -286,6 +291,7 @@ fn _payload_digest(root: &Path) -> Result<String, BundleError> {
 #[cfg(test)]
 mod tests {
     use super::{BundleBuilder, BundleProject};
+    use crate::constants::BUNDLE_INSTALL_LAYOUT_DIR_NAME;
     use crate::layout::{read_config, read_manifest};
     use crate::test_support::write_bundle_project;
     use pretty_assertions::assert_eq;
@@ -306,8 +312,9 @@ mod tests {
             .build(&output_root)
             .expect("build bundle");
 
-        let (_, manifest, manifest_digest) = read_manifest(&artifact.path).expect("read manifest");
-        let config = read_config(&artifact.path, &manifest).expect("read config");
+        let layout_root = artifact.path.join(BUNDLE_INSTALL_LAYOUT_DIR_NAME);
+        let (_, manifest, manifest_digest) = read_manifest(&layout_root).expect("read manifest");
+        let config = read_config(&layout_root, &manifest).expect("read config");
 
         assert_eq!(artifact.metadata.namespace, "team");
         assert_eq!(artifact.metadata.id, "demo");
@@ -337,6 +344,14 @@ mod tests {
                 .expect("read bundled resource"),
             "liquidos"
         );
+        assert!(!artifact.path.join("bundle.json").exists());
+        assert!(!artifact.path.join("index.json").exists());
+        assert!(!artifact.path.join("oci-layout").exists());
+        assert!(!artifact.path.join("blobs").exists());
+        assert!(layout_root.join("bundle.json").exists());
+        assert!(layout_root.join("index.json").exists());
+        assert!(layout_root.join("oci-layout").exists());
+        assert!(layout_root.join("blobs").exists());
     }
 
     #[test]

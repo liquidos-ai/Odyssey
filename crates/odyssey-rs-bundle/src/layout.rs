@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Cursor, Read};
+use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -56,65 +57,53 @@ pub struct ArchiveEntry {
     pub bytes: Vec<u8>,
 }
 
+// Bound untrusted layout/archive parsing so malformed bundles cannot request
+// arbitrarily large allocations during import or pull flows.
+const MAX_LAYOUT_ENTRY_COUNT: u32 = 16_384;
+const MAX_LAYOUT_PATH_BYTES: u32 = 4 * 1024;
+const MAX_LAYOUT_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
+
 pub fn pack_payload(root: &Path) -> Result<Vec<u8>, BundleError> {
     let entries = payload_entries(root)?;
+    let entry_count = validate_entry_count(entries.len(), "payload file count")?;
     let mut bytes = Vec::new();
     //Add a Magic Header for the blob
     bytes.extend_from_slice(LAYOUT_PAYLOAD_BUNDLE_MAGIC);
-    bytes.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&entry_count.to_le_bytes());
     for entry in entries {
         let path = normalize_relative(root, entry.path())?;
         let path_bytes = path.as_bytes();
         let contents = fs::read(entry.path()).map_err(|err| io_err(entry.path(), err))?;
-        bytes.extend_from_slice(&(path_bytes.len() as u32).to_le_bytes());
+        let path_len = validate_path_len(path_bytes.len(), "payload path length")?;
+        let content_len = validate_data_len(contents.len(), "payload data length")?;
+        bytes.extend_from_slice(&path_len.to_le_bytes());
         bytes.extend_from_slice(path_bytes);
-        bytes.extend_from_slice(&(contents.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&content_len.to_le_bytes());
         bytes.extend_from_slice(&contents);
     }
     Ok(bytes)
 }
 
 pub fn unpack_payload(bytes: &[u8], dst: &Path) -> Result<(), BundleError> {
-    let mut cursor = Cursor::new(bytes);
-    let mut entries = Vec::new();
-    let mut magic = [0_u8; 7];
-    cursor
-        .read_exact(&mut magic)
-        .map_err(|err| BundleError::Invalid(err.to_string()))?;
-    if &magic != LAYOUT_PAYLOAD_BUNDLE_MAGIC {
-        return Err(BundleError::Invalid(
-            "invalid bundle payload header".to_string(),
-        ));
-    }
+    let entries = parse_entry_ranges(
+        bytes,
+        LAYOUT_PAYLOAD_BUNDLE_MAGIC,
+        "invalid bundle payload header",
+        "payload file count",
+        "payload path length",
+        "payload data length",
+        "payload bundle contains trailing data",
+    )?;
 
-    let file_count = read_u32(&mut cursor)?;
-    for _ in 0..file_count {
-        let path_len = usize_len(read_u32(&mut cursor)? as u64, "payload path length")?;
-        let mut path_bytes = vec![0_u8; path_len];
-        cursor
-            .read_exact(&mut path_bytes)
-            .map_err(|err| BundleError::Invalid(err.to_string()))?;
-        let path =
-            String::from_utf8(path_bytes).map_err(|err| BundleError::Invalid(err.to_string()))?;
-        let data_len = usize_len(read_u64(&mut cursor)?, "payload data length")?;
-        let mut contents = vec![0_u8; data_len];
-        cursor
-            .read_exact(&mut contents)
-            .map_err(|err| BundleError::Invalid(err.to_string()))?;
-        let target = payload_target(dst, &path)?;
-        entries.push((target, contents));
-    }
-    if cursor.position() != bytes.len() as u64 {
-        return Err(BundleError::Invalid(
-            "payload bundle contains trailing data".to_string(),
-        ));
-    }
-
-    for (target, contents) in entries {
+    for (target, range) in entries
+        .into_iter()
+        .map(|(path, range)| Ok((payload_target(dst, &path)?, range)))
+        .collect::<Result<Vec<_>, BundleError>>()?
+    {
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent).map_err(|err| io_err(parent, err))?;
         }
-        fs::write(&target, contents).map_err(|err| io_err(&target, err))?;
+        fs::write(&target, &bytes[range]).map_err(|err| io_err(&target, err))?;
     }
     Ok(())
 }
@@ -217,24 +206,27 @@ pub fn copy_blob_into_layout(
 
 pub fn collect_oci_entries(root: &Path) -> Result<Vec<ArchiveEntry>, BundleError> {
     let mut entries = Vec::new();
+    let mut entry_count = 0_usize;
     for relative in ["oci-layout", "index.json"] {
         let path = root.join(relative);
         let bytes = fs::read(&path).map_err(|err| io_err(&path, err))?;
-        entries.push(ArchiveEntry {
-            path: relative.to_string(),
+        entry_count += 1;
+        entries.push(validated_archive_entry(
+            entry_count,
+            relative.to_string(),
             bytes,
-        });
+        )?);
     }
 
-    for entry in WalkDir::new(root.join("blobs"))
-        .sort_by_file_name()
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-    {
+    for entry in WalkDir::new(root.join("blobs")).sort_by_file_name() {
+        let entry = entry.map_err(walkdir_err)?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
         let path = normalize_relative(root, entry.path())?;
         let bytes = fs::read(entry.path()).map_err(|err| io_err(entry.path(), err))?;
-        entries.push(ArchiveEntry { path, bytes });
+        entry_count += 1;
+        entries.push(validated_archive_entry(entry_count, path, bytes)?);
     }
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(entries)
@@ -254,40 +246,17 @@ pub fn archive_entries(entries: &[ArchiveEntry]) -> Vec<u8> {
     bytes
 }
 
-pub fn read_archive_entries(bytes: &[u8]) -> Result<Vec<ArchiveEntry>, BundleError> {
-    let mut cursor = Cursor::new(bytes);
-    let mut magic = [0_u8; 6];
-    cursor
-        .read_exact(&mut magic)
-        .map_err(|err| BundleError::Invalid(err.to_string()))?;
-    if &magic != ARCHIVE_MAGIC {
-        return Err(BundleError::Invalid(
-            "invalid bundle archive header".to_string(),
-        ));
-    }
-    let count = read_u32(&mut cursor)?;
-    let mut entries = Vec::with_capacity(count as usize);
-    for _ in 0..count {
-        let path_len = usize_len(read_u32(&mut cursor)? as u64, "archive path length")?;
-        let mut path_bytes = vec![0_u8; path_len];
-        cursor
-            .read_exact(&mut path_bytes)
-            .map_err(|err| BundleError::Invalid(err.to_string()))?;
-        let path =
-            String::from_utf8(path_bytes).map_err(|err| BundleError::Invalid(err.to_string()))?;
-        let data_len = usize_len(read_u64(&mut cursor)?, "archive entry length")?;
-        let mut data = vec![0_u8; data_len];
-        cursor
-            .read_exact(&mut data)
-            .map_err(|err| BundleError::Invalid(err.to_string()))?;
-        entries.push(ArchiveEntry { path, bytes: data });
-    }
-    if cursor.position() != bytes.len() as u64 {
-        return Err(BundleError::Invalid(
-            "bundle archive contains trailing data".to_string(),
-        ));
-    }
-    Ok(entries)
+#[cfg(test)]
+fn read_archive_entries(bytes: &[u8]) -> Result<Vec<ArchiveEntry>, BundleError> {
+    archive_entry_ranges(bytes)?
+        .into_iter()
+        .map(|(path, range)| {
+            Ok(ArchiveEntry {
+                path,
+                bytes: bytes[range].to_vec(),
+            })
+        })
+        .collect()
 }
 
 pub fn sha256_digest(bytes: &[u8]) -> String {
@@ -296,14 +265,28 @@ pub fn sha256_digest(bytes: &[u8]) -> String {
     format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
+pub(crate) fn archive_entry_ranges(
+    bytes: &[u8],
+) -> Result<Vec<(String, Range<usize>)>, BundleError> {
+    parse_entry_ranges(
+        bytes,
+        ARCHIVE_MAGIC,
+        "invalid bundle archive header",
+        "archive entry count",
+        "archive path length",
+        "archive entry length",
+        "bundle archive contains trailing data",
+    )
+}
+
 fn payload_entries(root: &Path) -> Result<Vec<walkdir::DirEntry>, BundleError> {
-    let mut entries = WalkDir::new(root)
-        .sort_by_file_name()
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-        .filter(|entry| is_payload_path(root, entry.path()))
-        .collect::<Vec<_>>();
+    let mut entries = Vec::new();
+    for entry in WalkDir::new(root).sort_by_file_name() {
+        let entry = entry.map_err(walkdir_err)?;
+        if entry.file_type().is_file() && is_payload_path(root, entry.path()) {
+            entries.push(entry);
+        }
+    }
     entries.sort_by_key(|entry| entry.path().to_path_buf());
     Ok(entries)
 }
@@ -389,6 +372,149 @@ fn usize_len(value: u64, field: &str) -> Result<usize, BundleError> {
         .map_err(|_| BundleError::Invalid(format!("{field} exceeds platform limits")))
 }
 
+fn validate_entry_count(value: usize, field: &str) -> Result<u32, BundleError> {
+    let value = u32::try_from(value)
+        .map_err(|_| BundleError::Invalid(format!("{field} exceeds archive format limits")))?;
+    if value > MAX_LAYOUT_ENTRY_COUNT {
+        return Err(BundleError::Invalid(format!(
+            "{field} exceeds maximum {MAX_LAYOUT_ENTRY_COUNT}"
+        )));
+    }
+    Ok(value)
+}
+
+fn validate_path_len(value: usize, field: &str) -> Result<u32, BundleError> {
+    let value = u32::try_from(value)
+        .map_err(|_| BundleError::Invalid(format!("{field} exceeds archive format limits")))?;
+    if value > MAX_LAYOUT_PATH_BYTES {
+        return Err(BundleError::Invalid(format!(
+            "{field} exceeds maximum {MAX_LAYOUT_PATH_BYTES} bytes"
+        )));
+    }
+    Ok(value)
+}
+
+fn validate_data_len(value: usize, field: &str) -> Result<u64, BundleError> {
+    let value = u64::try_from(value)
+        .map_err(|_| BundleError::Invalid(format!("{field} exceeds platform limits")))?;
+    if value > MAX_LAYOUT_ENTRY_BYTES {
+        return Err(BundleError::Invalid(format!(
+            "{field} exceeds maximum {MAX_LAYOUT_ENTRY_BYTES} bytes"
+        )));
+    }
+    Ok(value)
+}
+
+fn parse_entry_ranges(
+    bytes: &[u8],
+    magic: &[u8],
+    invalid_magic_message: &str,
+    count_field: &str,
+    path_len_field: &str,
+    data_len_field: &str,
+    trailing_data_message: &str,
+) -> Result<Vec<(String, Range<usize>)>, BundleError> {
+    let mut cursor = Cursor::new(bytes);
+    let mut actual_magic = vec![0_u8; magic.len()];
+    cursor
+        .read_exact(&mut actual_magic)
+        .map_err(|err| BundleError::Invalid(err.to_string()))?;
+    if actual_magic.as_slice() != magic {
+        return Err(BundleError::Invalid(invalid_magic_message.to_string()));
+    }
+
+    let entry_count = read_bounded_entry_count(&mut cursor, count_field)?;
+    let mut entries = Vec::with_capacity(entry_count);
+    for _ in 0..entry_count {
+        let path_len = read_bounded_path_len(&mut cursor, path_len_field)?;
+        let path_range = read_entry_range(&cursor, bytes, path_len, path_len_field)?;
+        let path = String::from_utf8(bytes[path_range.clone()].to_vec())
+            .map_err(|err| BundleError::Invalid(err.to_string()))?;
+        cursor.set_position(path_range.end as u64);
+
+        let data_len = read_bounded_data_len(&mut cursor, data_len_field)?;
+        let data_range = read_entry_range(&cursor, bytes, data_len, data_len_field)?;
+        cursor.set_position(data_range.end as u64);
+        entries.push((path, data_range));
+    }
+    if cursor.position() != bytes.len() as u64 {
+        return Err(BundleError::Invalid(trailing_data_message.to_string()));
+    }
+    Ok(entries)
+}
+
+fn read_bounded_entry_count(cursor: &mut Cursor<&[u8]>, field: &str) -> Result<usize, BundleError> {
+    let count = read_u32(cursor)?;
+    if count > MAX_LAYOUT_ENTRY_COUNT {
+        return Err(BundleError::Invalid(format!(
+            "{field} exceeds maximum {MAX_LAYOUT_ENTRY_COUNT}"
+        )));
+    }
+    Ok(count as usize)
+}
+
+fn read_bounded_path_len(cursor: &mut Cursor<&[u8]>, field: &str) -> Result<usize, BundleError> {
+    let value = read_u32(cursor)?;
+    if value > MAX_LAYOUT_PATH_BYTES {
+        return Err(BundleError::Invalid(format!(
+            "{field} exceeds maximum {MAX_LAYOUT_PATH_BYTES} bytes"
+        )));
+    }
+    Ok(value as usize)
+}
+
+fn read_bounded_data_len(cursor: &mut Cursor<&[u8]>, field: &str) -> Result<usize, BundleError> {
+    let value = read_u64(cursor)?;
+    if value > MAX_LAYOUT_ENTRY_BYTES {
+        return Err(BundleError::Invalid(format!(
+            "{field} exceeds maximum {MAX_LAYOUT_ENTRY_BYTES} bytes"
+        )));
+    }
+    usize_len(value, field)
+}
+
+fn read_entry_range(
+    cursor: &Cursor<&[u8]>,
+    bytes: &[u8],
+    len: usize,
+    field: &str,
+) -> Result<Range<usize>, BundleError> {
+    let start = usize_len(cursor.position(), field)?;
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| BundleError::Invalid(format!("{field} exceeds platform limits")))?;
+    if end > bytes.len() {
+        return Err(BundleError::Invalid(
+            "bundle entry is truncated".to_string(),
+        ));
+    }
+    Ok(start..end)
+}
+
+fn validated_archive_entry(
+    entry_count: usize,
+    path: String,
+    bytes: Vec<u8>,
+) -> Result<ArchiveEntry, BundleError> {
+    validate_entry_count(entry_count, "archive entry count")?;
+    validate_path_len(path.len(), "archive path length")?;
+    validate_data_len(bytes.len(), "archive entry length")?;
+    Ok(ArchiveEntry { path, bytes })
+}
+
+fn walkdir_err(err: walkdir::Error) -> BundleError {
+    match (err.path(), err.io_error()) {
+        (Some(path), Some(source_err)) => io_err(
+            path,
+            std::io::Error::new(source_err.kind(), source_err.to_string()),
+        ),
+        (Some(path), None) => {
+            BundleError::Invalid(format!("unable to traverse {}: {err}", path.display()))
+        }
+        (None, _) => BundleError::Invalid(err.to_string()),
+    }
+}
+
 fn io_err(path: &Path, err: std::io::Error) -> BundleError {
     BundleError::Io {
         path: path.display().to_string(),
@@ -399,11 +525,12 @@ fn io_err(path: &Path, err: std::io::Error) -> BundleError {
 #[cfg(test)]
 mod tests {
     use super::{
-        BundleConfig, OciImageIndex, OciImageManifest, annotated_descriptor, archive_entries,
-        blob_path, collect_oci_entries, copy_blob_into_layout, descriptor, pack_payload,
-        read_archive_entries, read_blob, read_config, read_manifest, sha256_digest, unpack_payload,
-        write_blob,
+        BundleConfig, MAX_LAYOUT_ENTRY_BYTES, MAX_LAYOUT_ENTRY_COUNT, MAX_LAYOUT_PATH_BYTES,
+        OciImageIndex, OciImageManifest, annotated_descriptor, archive_entries, blob_path,
+        collect_oci_entries, copy_blob_into_layout, descriptor, pack_payload, read_archive_entries,
+        read_blob, read_config, read_manifest, sha256_digest, unpack_payload, write_blob,
     };
+    use crate::BundleError;
     use crate::constants::{
         ARCHIVE_MAGIC, BUNDLE_CONFIG_MEDIA_TYPE, BUNDLE_LAYER_MEDIA_TYPE,
         LAYOUT_PAYLOAD_BUNDLE_MAGIC, OCI_INDEX_MEDIA_TYPE, OCI_LAYOUT_VERSION,
@@ -603,6 +730,19 @@ mod tests {
     }
 
     #[test]
+    fn pack_payload_rejects_missing_root() {
+        let temp = tempdir().expect("tempdir");
+        let missing_root = temp.path().join("missing");
+
+        let error = pack_payload(&missing_root).expect_err("missing root should fail");
+
+        assert!(matches!(
+            error,
+            BundleError::Io { path, .. } if path == missing_root.display().to_string()
+        ));
+    }
+
+    #[test]
     fn unpack_payload_rejects_paths_outside_destination() {
         let temp = tempdir().expect("tempdir");
         let mut payload = Vec::new();
@@ -643,5 +783,102 @@ mod tests {
             "invalid bundle: payload bundle contains trailing data"
         );
         assert!(!temp.path().join("agent.yaml").exists());
+    }
+
+    #[test]
+    fn payload_parser_rejects_oversized_counts_and_lengths() {
+        let temp = tempdir().expect("tempdir");
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(LAYOUT_PAYLOAD_BUNDLE_MAGIC);
+        payload.extend_from_slice(&(MAX_LAYOUT_ENTRY_COUNT + 1).to_le_bytes());
+        let error = unpack_payload(&payload, temp.path()).expect_err("reject oversized file count");
+        assert_eq!(
+            error.to_string(),
+            format!("invalid bundle: payload file count exceeds maximum {MAX_LAYOUT_ENTRY_COUNT}")
+        );
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(LAYOUT_PAYLOAD_BUNDLE_MAGIC);
+        payload.extend_from_slice(&1_u32.to_le_bytes());
+        payload.extend_from_slice(&(MAX_LAYOUT_PATH_BYTES + 1).to_le_bytes());
+        let error =
+            unpack_payload(&payload, temp.path()).expect_err("reject oversized path length");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "invalid bundle: payload path length exceeds maximum {MAX_LAYOUT_PATH_BYTES} bytes"
+            )
+        );
+
+        let path = "agent.yaml";
+        let mut payload = Vec::new();
+        payload.extend_from_slice(LAYOUT_PAYLOAD_BUNDLE_MAGIC);
+        payload.extend_from_slice(&1_u32.to_le_bytes());
+        payload.extend_from_slice(&(path.len() as u32).to_le_bytes());
+        payload.extend_from_slice(path.as_bytes());
+        payload.extend_from_slice(&(MAX_LAYOUT_ENTRY_BYTES + 1).to_le_bytes());
+        let error =
+            unpack_payload(&payload, temp.path()).expect_err("reject oversized data length");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "invalid bundle: payload data length exceeds maximum {MAX_LAYOUT_ENTRY_BYTES} bytes"
+            )
+        );
+    }
+
+    #[test]
+    fn collect_oci_entries_rejects_missing_blobs_directory() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path();
+        fs::write(root.join("oci-layout"), "{}").expect("write layout");
+        fs::write(root.join("index.json"), "{}").expect("write index");
+
+        let error = collect_oci_entries(root).expect_err("missing blobs dir should fail");
+
+        assert!(matches!(
+            error,
+            BundleError::Io { path, .. } if path == root.join("blobs").display().to_string()
+        ));
+    }
+
+    #[test]
+    fn archive_parser_rejects_oversized_counts_and_lengths() {
+        let mut archive = Vec::new();
+        archive.extend_from_slice(ARCHIVE_MAGIC);
+        archive.extend_from_slice(&(MAX_LAYOUT_ENTRY_COUNT + 1).to_le_bytes());
+        let error = read_archive_entries(&archive).expect_err("reject oversized entry count");
+        assert_eq!(
+            error.to_string(),
+            format!("invalid bundle: archive entry count exceeds maximum {MAX_LAYOUT_ENTRY_COUNT}")
+        );
+
+        let mut archive = Vec::new();
+        archive.extend_from_slice(ARCHIVE_MAGIC);
+        archive.extend_from_slice(&1_u32.to_le_bytes());
+        archive.extend_from_slice(&(MAX_LAYOUT_PATH_BYTES + 1).to_le_bytes());
+        let error = read_archive_entries(&archive).expect_err("reject oversized path length");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "invalid bundle: archive path length exceeds maximum {MAX_LAYOUT_PATH_BYTES} bytes"
+            )
+        );
+
+        let path = "agent.yaml";
+        let mut archive = Vec::new();
+        archive.extend_from_slice(ARCHIVE_MAGIC);
+        archive.extend_from_slice(&1_u32.to_le_bytes());
+        archive.extend_from_slice(&(path.len() as u32).to_le_bytes());
+        archive.extend_from_slice(path.as_bytes());
+        archive.extend_from_slice(&(MAX_LAYOUT_ENTRY_BYTES + 1).to_le_bytes());
+        let error = read_archive_entries(&archive).expect_err("reject oversized entry length");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "invalid bundle: archive entry length exceeds maximum {MAX_LAYOUT_ENTRY_BYTES} bytes"
+            )
+        );
     }
 }

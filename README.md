@@ -257,10 +257,7 @@ cargo tarpaulin --engine llvm --skip-clean --workspace --all-features --timeout 
 
 ## Documentation
 
-- [Docs index](docs/README.md)
-- [Runtime architecture](docs/architecture-runtime.md)
-- [Hello world bundle](bundles/hello-world/README.md)
-- [Odyssey agent bundle](bundles/odyssey-agent/README.md)
+- [Documentation site](https://liquidos-ai.github.io/Odyssey/)
 
 ## Contributing
 

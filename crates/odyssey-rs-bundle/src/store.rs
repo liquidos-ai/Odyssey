@@ -1,12 +1,13 @@
 use crate::build::{BundleArtifact, BundleMetadata};
 use crate::constants::{
-    BUNDLE_INSTALL_LAYOUT_DIR_NAME, BUNDLE_INSTALL_ROOT_DIR_NAME, OCI_LAYOUT_VERSION,
+    BUNDLE_IMPORTS_ROOT_DIR_NAME, BUNDLE_INSTALL_LAYOUT_DIR_NAME, BUNDLE_INSTALL_ROOT_DIR_NAME,
+    BUNDLE_LOCAL_NAMESPACE, BUNDLE_ODYSSEY_EXPORT_FILE_FORMAT, OCI_LAYOUT_VERSION,
 };
 use crate::distribution::{publish_layout, pull_layout};
 use crate::layout::{
-    OciImageManifest, archive_entries, blob_path, collect_oci_entries, copy_blob_into_layout,
-    parse_config_bytes, read_archive_entries, read_blob, read_config, read_manifest, sha256_digest,
-    unpack_payload,
+    OciImageManifest, archive_entries, archive_entry_ranges, blob_path, collect_oci_entries,
+    copy_blob_into_layout, parse_config_bytes, read_blob, read_config, read_manifest,
+    sha256_digest, unpack_payload,
 };
 use crate::{BundleBuilder, BundleError, BundleProject};
 use directories::BaseDirs;
@@ -14,7 +15,9 @@ use odyssey_rs_manifest::{BundleRef, BundleRefKind};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fs;
+use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
+use tempfile::{Builder as TempDirBuilder, TempDir};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BundleInstall {
@@ -68,16 +71,31 @@ impl BundleStore {
             message: err.to_string(),
         })?;
         let project = BundleProject::load(project_root.as_ref().to_path_buf())?;
-        //Use local namespace and install to default local install dir
-        let artifact = BundleBuilder::new(project)
-            .with_namespace(namespace.as_ref())
-            .build(self.installs_root())?;
-        self.persist_layout_blobs(&artifact.path)?;
-        self.relocate_install_layout(&artifact.path)?;
-        Ok(BundleInstall {
-            path: artifact.path,
-            metadata: artifact.metadata,
-        })
+        let staging_parent = self.install_staging_parent();
+        let staging_root = create_temp_dir(&staging_parent, "build-")?;
+
+        let install = (|| -> Result<BundleInstall, BundleError> {
+            // Build into a staging root first, then atomically move the completed bundle
+            // into its final install path once all bundle files are written successfully.
+            let artifact = BundleBuilder::new(project)
+                .with_namespace(namespace.as_ref())
+                .build(staging_root.path())?;
+
+            self.persist_layout_blobs(&install_layout_root(&artifact.path))?;
+            let install_path = self.validated_install_path(
+                &artifact.metadata.namespace,
+                &artifact.metadata.id,
+                &artifact.metadata.version,
+            )?;
+            commit_staged_install(&artifact.path, &install_path)?;
+
+            Ok(BundleInstall {
+                path: install_path,
+                metadata: artifact.metadata,
+            })
+        })();
+
+        finish_staged_operation(install, staging_root, &staging_parent)
     }
 
     pub fn resolve(&self, input: &str) -> Result<BundleInstall, BundleError> {
@@ -132,58 +150,14 @@ impl BundleStore {
             return Ok(Vec::new());
         }
         let mut bundles = Vec::new();
-        for namespace_entry in fs::read_dir(&installs_root).map_err(|err| BundleError::Io {
-            path: installs_root.display().to_string(),
-            message: err.to_string(),
-        })? {
-            let namespace_entry = namespace_entry.map_err(|err| BundleError::Io {
-                path: installs_root.display().to_string(),
-                message: err.to_string(),
-            })?;
-            let namespace_path = namespace_entry.path();
-            if !namespace_path.is_dir() {
-                continue;
-            }
-            let namespace = namespace_entry.file_name().to_string_lossy().to_string();
-            for id_entry in fs::read_dir(&namespace_path).map_err(|err| BundleError::Io {
-                path: namespace_path.display().to_string(),
-                message: err.to_string(),
-            })? {
-                let id_entry = id_entry.map_err(|err| BundleError::Io {
-                    path: namespace_path.display().to_string(),
-                    message: err.to_string(),
-                })?;
-                let id_path = id_entry.path();
-                if !id_path.is_dir() {
-                    continue;
-                }
-                for version_entry in fs::read_dir(&id_path).map_err(|err| BundleError::Io {
-                    path: id_path.display().to_string(),
-                    message: err.to_string(),
-                })? {
-                    let version_entry = version_entry.map_err(|err| BundleError::Io {
-                        path: id_path.display().to_string(),
-                        message: err.to_string(),
-                    })?;
-                    let bundle_path = version_entry.path();
-                    if !bundle_path.is_dir() || !has_bundle_metadata(&bundle_path) {
-                        continue;
-                    }
-                    let metadata = read_metadata(&bundle_path)?;
-                    bundles.push(BundleInstallSummary {
-                        namespace: namespace.clone(),
-                        id: metadata.id,
-                        version: metadata.version,
-                        path: bundle_path,
-                    });
-                }
-            }
+        for namespace_entry in read_dir_entries(&installs_root)? {
+            bundles.extend(collect_namespace_installs(namespace_entry)?);
         }
         bundles.sort_by(|a, b| {
             a.namespace
                 .cmp(&b.namespace)
                 .then(a.id.cmp(&b.id))
-                .then(a.version.cmp(&b.version))
+                .then_with(|| compare_bundle_versions(&a.version, &b.version))
         });
         Ok(bundles)
     }
@@ -210,12 +184,13 @@ impl BundleStore {
         let layout_root = metadata_root(&install.path)
             .ok_or_else(|| BundleError::NotFound(install.path.display().to_string()))?;
         let entries = collect_oci_entries(&layout_root)?;
+        //Pack the entries into a file
         let archive = archive_entries(&entries);
         let output = output.as_ref();
         let output_path = if output.is_dir() {
             output.join(format!(
-                "{}-{}.odyssey",
-                install.metadata.id, install.metadata.version
+                "{}-{}{}",
+                install.metadata.id, install.metadata.version, BUNDLE_ODYSSEY_EXPORT_FILE_FORMAT
             ))
         } else {
             output.to_path_buf()
@@ -239,48 +214,14 @@ impl BundleStore {
             path: archive_path.display().to_string(),
             message: err.to_string(),
         })?;
-        let entries = read_archive_entries(&bytes)?;
-        let temp_root = self.root.join("imports").join("staging");
-        if temp_root.exists() {
-            fs::remove_dir_all(&temp_root).map_err(|err| BundleError::Io {
-                path: temp_root.display().to_string(),
-                message: err.to_string(),
-            })?;
-        }
-        fs::create_dir_all(&temp_root).map_err(|err| BundleError::Io {
-            path: temp_root.display().to_string(),
-            message: err.to_string(),
-        })?;
+        let entry_ranges = archive_entry_ranges(&bytes)?;
+        let staging_parent = self.import_staging_parent();
+        let staging_root = create_temp_dir(&staging_parent, "staging-")?;
         let install = (|| -> Result<BundleInstall, BundleError> {
-            for entry in entries {
-                let target = safe_relative_join(&temp_root, &entry.path, "bundle archive entry")?;
-                if let Some(parent) = target.parent() {
-                    fs::create_dir_all(parent).map_err(|err| BundleError::Io {
-                        path: parent.display().to_string(),
-                        message: err.to_string(),
-                    })?;
-                }
-                fs::write(&target, entry.bytes).map_err(|err| BundleError::Io {
-                    path: target.display().to_string(),
-                    message: err.to_string(),
-                })?;
-            }
-            self.install_from_layout(&temp_root)
+            materialize_archive_ranges(staging_root.path(), &bytes, &entry_ranges)?;
+            self.install_from_layout(staging_root.path())
         })();
-        let cleanup = if temp_root.exists() {
-            fs::remove_dir_all(&temp_root).map_err(|err| BundleError::Io {
-                path: temp_root.display().to_string(),
-                message: err.to_string(),
-            })
-        } else {
-            Ok(())
-        };
-        match (install, cleanup) {
-            (Ok(install), Ok(())) => Ok(install),
-            (Err(err), Ok(())) => Err(err),
-            (Ok(_), Err(err)) => Err(err),
-            (Err(err), Err(_)) => Err(err),
-        }
+        finish_staged_operation(install, staging_root, &staging_parent)
     }
 
     fn load_from_path(&self, path: &Path) -> Result<BundleInstall, BundleError> {
@@ -298,7 +239,7 @@ impl BundleStore {
         let namespace = reference
             .namespace
             .clone()
-            .unwrap_or_else(|| "local".to_string());
+            .unwrap_or_else(|| BUNDLE_LOCAL_NAMESPACE.to_string());
         validate_store_component(&namespace, "bundle namespace")?;
         let id = reference
             .id
@@ -314,42 +255,27 @@ impl BundleStore {
             .clone()
             .unwrap_or_else(|| "latest".to_string());
         if version == "latest" {
-            let latest = fs::read_dir(&id_dir)
-                .map_err(|err| BundleError::Io {
-                    path: id_dir.display().to_string(),
-                    message: err.to_string(),
-                })?
-                .filter_map(Result::ok)
-                .map(|entry| entry.path())
-                .filter(|path| path.is_dir() && has_bundle_metadata(path))
-                .try_fold(None::<BundleInstall>, |latest, bundle_path| {
-                    let metadata = read_metadata(&bundle_path)?;
-                    let candidate = BundleInstall {
-                        path: bundle_path,
-                        metadata,
-                    };
-                    Ok::<_, BundleError>(match latest {
-                        Some(current)
-                            if compare_bundle_versions(
-                                &candidate.metadata.version,
-                                &current.metadata.version,
-                            ) == Ordering::Greater =>
-                        {
-                            Some(candidate)
-                        }
-                        Some(current) => Some(current),
-                        None => Some(candidate),
-                    })
-                })?;
-            return latest.ok_or_else(|| BundleError::NotFound(reference.raw.clone()));
+            return self
+                .load_latest_installed_from_id_dir(&id_dir)?
+                .ok_or_else(|| BundleError::NotFound(reference.raw.clone()));
         }
         validate_store_component(&version, "bundle version")?;
         let bundle_path = self.validated_install_path(&namespace, id, &version)?;
-        let metadata = read_metadata(&bundle_path)?;
-        Ok(BundleInstall {
-            path: bundle_path,
-            metadata,
-        })
+        load_bundle_install(&bundle_path)
+    }
+
+    fn load_latest_installed_from_id_dir(
+        &self,
+        id_dir: &Path,
+    ) -> Result<Option<BundleInstall>, BundleError> {
+        read_dir_entries(id_dir)?
+            .into_iter()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir() && has_bundle_metadata(path))
+            .try_fold(None, |latest, bundle_path| {
+                let candidate = load_bundle_install(&bundle_path)?;
+                Ok::<_, BundleError>(Some(select_newer_bundle_install(latest, candidate)))
+            })
     }
 
     fn load_remote_install(&self, reference: &BundleRef) -> Result<BundleInstall, BundleError> {
@@ -508,22 +434,28 @@ impl BundleStore {
     ) -> Result<BundleInstall, BundleError> {
         let install_root =
             self.validated_install_path(&metadata.namespace, &metadata.id, &metadata.version)?;
-        let layout_root = install_layout_root(&install_root);
-        recreate_install_root(&install_root)?;
-        fs::create_dir_all(&layout_root).map_err(|err| BundleError::Io {
-            path: layout_root.display().to_string(),
-            message: err.to_string(),
-        })?;
-        write_install_layout_files(&layout_root, index_bytes)?;
-        copy_blob_into_layout(&self.root, &layout_root, &metadata.digest)?;
-        copy_blob_into_layout(&self.root, &layout_root, &config_digest)?;
-        for (digest, _) in &validated_layers {
-            copy_blob_into_layout(&self.root, &layout_root, digest)?;
-        }
-        for (_, bytes) in &validated_layers {
-            unpack_payload(bytes, &install_root)?;
-        }
-        self.write_metadata(&install_root, &metadata)?;
+        let staging_parent = self.install_staging_parent();
+        let staging_root = create_temp_dir(&staging_parent, "pull-")?;
+        let install = (|| -> Result<(), BundleError> {
+            let staged_install_root = staging_root.path().join("install");
+            let layout_root = install_layout_root(&staged_install_root);
+            fs::create_dir_all(&layout_root).map_err(|err| BundleError::Io {
+                path: layout_root.display().to_string(),
+                message: err.to_string(),
+            })?;
+            write_install_layout_files(&layout_root, index_bytes)?;
+            copy_blob_into_layout(&self.root, &layout_root, &metadata.digest)?;
+            copy_blob_into_layout(&self.root, &layout_root, &config_digest)?;
+            for (digest, _) in &validated_layers {
+                copy_blob_into_layout(&self.root, &layout_root, digest)?;
+            }
+            for (_, bytes) in &validated_layers {
+                unpack_payload(bytes, &staged_install_root)?;
+            }
+            self.write_metadata(&staged_install_root, &metadata)?;
+            commit_staged_install(&staged_install_root, &install_root)
+        })();
+        finish_staged_operation(install, staging_root, &staging_parent)?;
         Ok(BundleInstall {
             path: install_root,
             metadata,
@@ -539,37 +471,38 @@ impl BundleStore {
     ) -> Result<BundleInstall, BundleError> {
         let install_root =
             self.validated_install_path(&metadata.namespace, &metadata.id, &metadata.version)?;
-        let install_layout_root = install_layout_root(&install_root);
-        if install_root.exists() {
-            fs::remove_dir_all(&install_root).map_err(|err| BundleError::Io {
-                path: install_root.display().to_string(),
+        let staging_parent = self.install_staging_parent();
+        let staging_root = create_temp_dir(&staging_parent, "install-")?;
+        let install = (|| -> Result<(), BundleError> {
+            let staged_install_root = staging_root.path().join("install");
+            let staged_layout_root = install_layout_root(&staged_install_root);
+            fs::create_dir_all(&staged_install_root).map_err(|err| BundleError::Io {
+                path: staged_install_root.display().to_string(),
                 message: err.to_string(),
             })?;
-        }
-        fs::create_dir_all(&install_root).map_err(|err| BundleError::Io {
-            path: install_root.display().to_string(),
-            message: err.to_string(),
-        })?;
-        fs::create_dir_all(&install_layout_root).map_err(|err| BundleError::Io {
-            path: install_layout_root.display().to_string(),
-            message: err.to_string(),
-        })?;
-        for relative in ["oci-layout", "index.json"] {
-            let src = source_layout_root.join(relative);
-            let dst = install_layout_root.join(relative);
-            fs::copy(&src, &dst).map_err(|err| BundleError::Io {
-                path: dst.display().to_string(),
+            fs::create_dir_all(&staged_layout_root).map_err(|err| BundleError::Io {
+                path: staged_layout_root.display().to_string(),
                 message: err.to_string(),
             })?;
-        }
-        copy_blob_into_layout(&self.root, &install_layout_root, &metadata.digest)?;
-        copy_blob_into_layout(&self.root, &install_layout_root, &config_digest)?;
-        for layer in &layers {
-            copy_blob_into_layout(&self.root, &install_layout_root, &layer.digest)?;
-            let bytes = read_blob(source_layout_root, &layer.digest)?;
-            unpack_payload(&bytes, &install_root)?;
-        }
-        self.write_metadata(&install_root, &metadata)?;
+            for relative in ["oci-layout", "index.json"] {
+                let src = source_layout_root.join(relative);
+                let dst = staged_layout_root.join(relative);
+                fs::copy(&src, &dst).map_err(|err| BundleError::Io {
+                    path: dst.display().to_string(),
+                    message: err.to_string(),
+                })?;
+            }
+            copy_blob_into_layout(&self.root, &staged_layout_root, &metadata.digest)?;
+            copy_blob_into_layout(&self.root, &staged_layout_root, &config_digest)?;
+            for layer in &layers {
+                copy_blob_into_layout(&self.root, &staged_layout_root, &layer.digest)?;
+                let bytes = read_blob(source_layout_root, &layer.digest)?;
+                unpack_payload(&bytes, &staged_install_root)?;
+            }
+            self.write_metadata(&staged_install_root, &metadata)?;
+            commit_staged_install(&staged_install_root, &install_root)
+        })();
+        finish_staged_operation(install, staging_root, &staging_parent)?;
         Ok(BundleInstall {
             path: install_root,
             metadata,
@@ -612,39 +545,6 @@ impl BundleStore {
         Ok(())
     }
 
-    fn relocate_install_layout(&self, install_root: &Path) -> Result<(), BundleError> {
-        let layout_root = install_layout_root(install_root);
-        if layout_root.exists() {
-            fs::remove_dir_all(&layout_root).map_err(|err| BundleError::Io {
-                path: layout_root.display().to_string(),
-                message: err.to_string(),
-            })?;
-        }
-        fs::create_dir_all(&layout_root).map_err(|err| BundleError::Io {
-            path: layout_root.display().to_string(),
-            message: err.to_string(),
-        })?;
-        for relative in ["bundle.json", "index.json", "oci-layout"] {
-            let src = install_root.join(relative);
-            let dst = layout_root.join(relative);
-            if src.exists() {
-                fs::rename(&src, &dst).map_err(|err| BundleError::Io {
-                    path: dst.display().to_string(),
-                    message: err.to_string(),
-                })?;
-            }
-        }
-        let blobs_src = install_root.join("blobs");
-        let blobs_dst = layout_root.join("blobs");
-        if blobs_src.exists() {
-            fs::rename(&blobs_src, &blobs_dst).map_err(|err| BundleError::Io {
-                path: blobs_dst.display().to_string(),
-                message: err.to_string(),
-            })?;
-        }
-        Ok(())
-    }
-
     fn write_metadata(
         &self,
         install_root: &Path,
@@ -668,6 +568,14 @@ impl BundleStore {
 
     fn installs_root(&self) -> PathBuf {
         self.root.join(BUNDLE_INSTALL_ROOT_DIR_NAME)
+    }
+
+    fn install_staging_parent(&self) -> PathBuf {
+        self.installs_root().join(".tmp")
+    }
+
+    fn import_staging_parent(&self) -> PathBuf {
+        self.root.join(BUNDLE_IMPORTS_ROOT_DIR_NAME)
     }
 
     fn validated_install_path(
@@ -785,17 +693,221 @@ fn validate_remote_layers(
     Ok(validated_layers)
 }
 
-fn recreate_install_root(install_root: &Path) -> Result<(), BundleError> {
-    if install_root.exists() {
-        fs::remove_dir_all(install_root).map_err(|err| BundleError::Io {
-            path: install_root.display().to_string(),
+fn remove_dir_if_exists(path: &Path) -> Result<(), BundleError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    fs::remove_dir_all(path).map_err(|err| BundleError::Io {
+        path: path.display().to_string(),
+        message: err.to_string(),
+    })
+}
+
+fn remove_dir_if_empty(path: &Path) -> Result<(), BundleError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    match fs::remove_dir(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(BundleError::Io {
+            path: path.display().to_string(),
+            message: err.to_string(),
+        }),
+    }
+}
+
+fn create_temp_dir(parent: &Path, prefix: &str) -> Result<TempDir, BundleError> {
+    fs::create_dir_all(parent).map_err(|err| BundleError::Io {
+        path: parent.display().to_string(),
+        message: err.to_string(),
+    })?;
+    TempDirBuilder::new()
+        .prefix(prefix)
+        .tempdir_in(parent)
+        .map_err(|err| BundleError::Io {
+            path: parent.display().to_string(),
+            message: err.to_string(),
+        })
+}
+
+fn close_temp_dir(temp_dir: TempDir) -> Result<(), BundleError> {
+    let path = temp_dir.path().to_path_buf();
+    temp_dir.close().map_err(|err| BundleError::Io {
+        path: path.display().to_string(),
+        message: err.to_string(),
+    })
+}
+
+fn finish_staged_operation<T>(
+    result: Result<T, BundleError>,
+    staging_root: TempDir,
+    staging_parent: &Path,
+) -> Result<T, BundleError> {
+    let cleanup = close_temp_dir(staging_root).and_then(|_| remove_dir_if_empty(staging_parent));
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(err), Ok(())) => Err(err),
+        (Ok(_), Err(err)) => Err(err),
+        (Err(err), Err(_)) => Err(err),
+    }
+}
+
+fn reserve_temp_path(parent: &Path, prefix: &str) -> Result<PathBuf, BundleError> {
+    let temp_dir = create_temp_dir(parent, prefix)?;
+    let path = temp_dir.path().to_path_buf();
+    close_temp_dir(temp_dir)?;
+    Ok(path)
+}
+
+fn commit_staged_install(staged_root: &Path, install_root: &Path) -> Result<(), BundleError> {
+    let parent = install_root.parent().ok_or_else(|| {
+        BundleError::Invalid(format!(
+            "bundle install path has no parent: {}",
+            install_root.display()
+        ))
+    })?;
+    fs::create_dir_all(parent).map_err(|err| BundleError::Io {
+        path: parent.display().to_string(),
+        message: err.to_string(),
+    })?;
+    let backup_parent = parent.join(".tmp");
+    let backup_path = if install_root.exists() {
+        Some(reserve_temp_path(&backup_parent, "backup-")?)
+    } else {
+        None
+    };
+    if let Some(backup_path) = &backup_path {
+        fs::rename(install_root, backup_path).map_err(|err| BundleError::Io {
+            path: backup_path.display().to_string(),
             message: err.to_string(),
         })?;
     }
-    fs::create_dir_all(install_root).map_err(|err| BundleError::Io {
-        path: install_root.display().to_string(),
-        message: err.to_string(),
+
+    match fs::rename(staged_root, install_root) {
+        Ok(()) => {
+            if let Some(backup_path) = &backup_path {
+                remove_dir_if_exists(backup_path)?;
+                remove_dir_if_empty(&backup_parent)?;
+            }
+            Ok(())
+        }
+        Err(err) => {
+            let install_message = err.to_string();
+            if let Some(backup_path) = &backup_path {
+                fs::rename(backup_path, install_root).map_err(|restore_err| BundleError::Io {
+                    path: install_root.display().to_string(),
+                    message: format!(
+                        "failed to install staged bundle: {install_message}; failed to restore previous install: {restore_err}"
+                    ),
+                })?;
+                remove_dir_if_empty(&backup_parent)?;
+            }
+            Err(BundleError::Io {
+                path: install_root.display().to_string(),
+                message: install_message,
+            })
+        }
+    }
+}
+
+fn load_bundle_install(bundle_path: &Path) -> Result<BundleInstall, BundleError> {
+    let metadata = read_metadata(bundle_path)?;
+    Ok(BundleInstall {
+        path: bundle_path.to_path_buf(),
+        metadata,
     })
+}
+
+fn materialize_archive_ranges(
+    root: &Path,
+    archive_bytes: &[u8],
+    entries: &[(String, Range<usize>)],
+) -> Result<(), BundleError> {
+    for (path, range) in entries {
+        let target = safe_relative_join(root, path, "bundle archive entry")?;
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|err| BundleError::Io {
+                path: parent.display().to_string(),
+                message: err.to_string(),
+            })?;
+        }
+        fs::write(&target, &archive_bytes[range.clone()]).map_err(|err| BundleError::Io {
+            path: target.display().to_string(),
+            message: err.to_string(),
+        })?;
+    }
+    Ok(())
+}
+
+fn select_newer_bundle_install(
+    current: Option<BundleInstall>,
+    candidate: BundleInstall,
+) -> BundleInstall {
+    match current {
+        Some(current)
+            if compare_bundle_versions(&candidate.metadata.version, &current.metadata.version)
+                == Ordering::Greater =>
+        {
+            candidate
+        }
+        Some(current) => current,
+        None => candidate,
+    }
+}
+
+fn read_dir_entries(path: &Path) -> Result<Vec<fs::DirEntry>, BundleError> {
+    fs::read_dir(path)
+        .map_err(|err| BundleError::Io {
+            path: path.display().to_string(),
+            message: err.to_string(),
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| BundleError::Io {
+            path: path.display().to_string(),
+            message: err.to_string(),
+        })
+}
+
+fn collect_namespace_installs(
+    namespace_entry: fs::DirEntry,
+) -> Result<Vec<BundleInstallSummary>, BundleError> {
+    let namespace_path = namespace_entry.path();
+    if !namespace_path.is_dir() {
+        return Ok(Vec::new());
+    }
+    let namespace = namespace_entry.file_name().to_string_lossy().to_string();
+    let mut bundles = Vec::new();
+    for id_entry in read_dir_entries(&namespace_path)? {
+        bundles.extend(collect_id_installs(&namespace, id_entry)?);
+    }
+    Ok(bundles)
+}
+
+fn collect_id_installs(
+    namespace: &str,
+    id_entry: fs::DirEntry,
+) -> Result<Vec<BundleInstallSummary>, BundleError> {
+    let id_path = id_entry.path();
+    if !id_path.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut bundles = Vec::new();
+    for version_entry in read_dir_entries(&id_path)? {
+        let bundle_path = version_entry.path();
+        if !bundle_path.is_dir() || !has_bundle_metadata(&bundle_path) {
+            continue;
+        }
+        let metadata = read_metadata(&bundle_path)?;
+        bundles.push(BundleInstallSummary {
+            namespace: namespace.to_string(),
+            id: metadata.id,
+            version: metadata.version,
+            path: bundle_path,
+        });
+    }
+    Ok(bundles)
 }
 
 fn write_install_layout_files(layout_root: &Path, index_bytes: Vec<u8>) -> Result<(), BundleError> {
@@ -950,9 +1062,13 @@ fn _artifact_to_install(artifact: BundleArtifact) -> BundleInstall {
 
 #[cfg(test)]
 mod tests {
-    use super::{BundleInstallSummary, BundleStore};
+    use super::{
+        BundleInstallSummary, BundleStore, collect_id_installs, collect_namespace_installs,
+        commit_staged_install, load_bundle_install, read_dir_entries, select_newer_bundle_install,
+    };
+    use crate::BundleError;
     use crate::constants::ARCHIVE_MAGIC;
-    use crate::layout::read_manifest;
+    use crate::layout::{blob_path, read_blob, read_manifest};
     use crate::test_support::write_bundle_project;
     use pretty_assertions::assert_eq;
     use std::fs;
@@ -1019,7 +1135,12 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let store = BundleStore::new(temp.path().join("store"));
 
-        for (name, version) in [("zeta", "0.1.0"), ("alpha", "0.2.0"), ("alpha", "0.1.0")] {
+        for (name, version) in [
+            ("zeta", "0.1.0"),
+            ("alpha", "0.10.0"),
+            ("alpha", "0.2.0"),
+            ("alpha", "0.1.0"),
+        ] {
             let project_root = temp.path().join(format!("{name}-{version}"));
             fs::create_dir_all(&project_root).expect("create project");
             write_bundle_project(
@@ -1053,9 +1174,201 @@ mod tests {
                     "alpha".to_string(),
                     "0.2.0".to_string()
                 ),
+                (
+                    "local".to_string(),
+                    "alpha".to_string(),
+                    "0.10.0".to_string()
+                ),
                 ("local".to_string(), "zeta".to_string(), "0.1.0".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn read_dir_entries_returns_files_and_directories() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("entries");
+        fs::create_dir_all(root.join("nested")).expect("create nested dir");
+        fs::write(root.join("note.txt"), "hello").expect("write note");
+
+        let mut names = read_dir_entries(&root)
+            .expect("read dir entries")
+            .into_iter()
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        names.sort();
+
+        assert_eq!(names, vec!["nested".to_string(), "note.txt".to_string()]);
+    }
+
+    #[test]
+    fn collect_id_installs_ignores_entries_without_bundle_metadata() {
+        let temp = tempdir().expect("tempdir");
+        let store = BundleStore::new(temp.path().join("store"));
+        let project_root = temp.path().join("project");
+        fs::create_dir_all(&project_root).expect("create project");
+        write_bundle_project(
+            &project_root,
+            "demo",
+            "0.1.0",
+            "data/notes.txt",
+            "hello world\n",
+        );
+        let install = store
+            .build_and_install(&project_root)
+            .expect("build and install");
+        let id_path = install.path.parent().expect("id path");
+        fs::create_dir_all(id_path.join("not-a-bundle")).expect("create invalid version dir");
+        fs::write(id_path.join("README.txt"), "ignore me").expect("write stray file");
+
+        let id_entry = read_dir_entries(id_path.parent().expect("namespace path"))
+            .expect("read namespace entries")
+            .into_iter()
+            .find(|entry| entry.path() == id_path)
+            .expect("find id entry");
+        let installs = collect_id_installs("local", id_entry).expect("collect id installs");
+
+        assert_eq!(installs.len(), 1);
+        assert_eq!(installs[0].namespace, "local");
+        assert_eq!(installs[0].id, "demo");
+        assert_eq!(installs[0].version, "0.1.0");
+        assert_eq!(installs[0].path, install.path);
+    }
+
+    #[test]
+    fn collect_namespace_installs_aggregates_bundle_summaries() {
+        let temp = tempdir().expect("tempdir");
+        let store = BundleStore::new(temp.path().join("store"));
+
+        for version in ["0.1.0", "0.2.0"] {
+            let project_root = temp.path().join(format!("demo-{version}"));
+            fs::create_dir_all(&project_root).expect("create project");
+            write_bundle_project(
+                &project_root,
+                "demo",
+                version,
+                "data/notes.txt",
+                "hello world\n",
+            );
+            store
+                .build_and_install(&project_root)
+                .expect("build and install");
+        }
+
+        let namespace_path = store.installs_root().join("local");
+        fs::write(store.installs_root().join("ignore.txt"), "ignore me").expect("write stray file");
+        let namespace_entry = read_dir_entries(store.installs_root().as_path())
+            .expect("read installs root entries")
+            .into_iter()
+            .find(|entry| entry.path() == namespace_path)
+            .expect("find namespace entry");
+        let mut summaries = collect_namespace_installs(namespace_entry)
+            .expect("collect namespace installs")
+            .into_iter()
+            .map(|summary| (summary.namespace, summary.id, summary.version))
+            .collect::<Vec<_>>();
+        summaries.sort();
+
+        assert_eq!(
+            summaries,
+            vec![
+                ("local".to_string(), "demo".to_string(), "0.1.0".to_string()),
+                ("local".to_string(), "demo".to_string(), "0.2.0".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn load_bundle_install_reads_metadata_from_bundle_path() {
+        let temp = tempdir().expect("tempdir");
+        let store = BundleStore::new(temp.path().join("store"));
+        let project_root = temp.path().join("project");
+        fs::create_dir_all(&project_root).expect("create project");
+        write_bundle_project(
+            &project_root,
+            "demo",
+            "0.1.0",
+            "data/notes.txt",
+            "hello world\n",
+        );
+
+        let install = store
+            .build_and_install(&project_root)
+            .expect("build and install");
+        let loaded = load_bundle_install(&install.path).expect("load bundle install");
+
+        assert_eq!(loaded.path, install.path);
+        assert_eq!(loaded.metadata.namespace, install.metadata.namespace);
+        assert_eq!(loaded.metadata.id, install.metadata.id);
+        assert_eq!(loaded.metadata.version, install.metadata.version);
+        assert_eq!(loaded.metadata.digest, install.metadata.digest);
+    }
+
+    #[test]
+    fn select_newer_bundle_install_prefers_higher_version() {
+        let temp = tempdir().expect("tempdir");
+        let store = BundleStore::new(temp.path().join("store"));
+
+        let older_root = temp.path().join("demo-0.1.0");
+        fs::create_dir_all(&older_root).expect("create older project");
+        write_bundle_project(
+            &older_root,
+            "demo",
+            "0.1.0",
+            "data/notes.txt",
+            "hello world\n",
+        );
+        let older = store
+            .build_and_install(&older_root)
+            .expect("build older install");
+
+        let newer_root = temp.path().join("demo-0.2.0");
+        fs::create_dir_all(&newer_root).expect("create newer project");
+        write_bundle_project(
+            &newer_root,
+            "demo",
+            "0.2.0",
+            "data/notes.txt",
+            "hello world\n",
+        );
+        let newer = store
+            .build_and_install(&newer_root)
+            .expect("build newer install");
+
+        let selected = select_newer_bundle_install(Some(older), newer.clone());
+
+        assert_eq!(selected.path, newer.path);
+        assert_eq!(selected.metadata.version, "0.2.0");
+    }
+
+    #[test]
+    fn load_latest_installed_from_id_dir_returns_highest_version() {
+        let temp = tempdir().expect("tempdir");
+        let store = BundleStore::new(temp.path().join("store"));
+
+        for version in ["0.1.0", "0.10.0", "0.2.0"] {
+            let project_root = temp.path().join(format!("demo-{version}"));
+            fs::create_dir_all(&project_root).expect("create project");
+            write_bundle_project(
+                &project_root,
+                "demo",
+                version,
+                "data/notes.txt",
+                "hello world\n",
+            );
+            store
+                .build_and_install(&project_root)
+                .expect("build and install");
+        }
+
+        let id_dir = store.installs_root().join("local").join("demo");
+        let latest = store
+            .load_latest_installed_from_id_dir(&id_dir)
+            .expect("load latest")
+            .expect("latest install");
+
+        assert_eq!(latest.metadata.version, "0.10.0");
+        assert_eq!(latest.path, id_dir.join("0.10.0"));
     }
 
     #[test]
@@ -1085,6 +1398,61 @@ mod tests {
                 .join("odyssey")
                 .join("demo")
                 .join("0.1.0")
+        );
+    }
+
+    #[test]
+    fn build_and_install_cleans_staging_root_after_success() {
+        let temp = tempdir().expect("tempdir");
+        let store = BundleStore::new(temp.path().join("store"));
+        let project_root = temp.path().join("project");
+        fs::create_dir_all(&project_root).expect("create project");
+        write_bundle_project(
+            &project_root,
+            "demo",
+            "0.1.0",
+            "data/notes.txt",
+            "hello world\n",
+        );
+
+        store
+            .build_and_install(&project_root)
+            .expect("build and install");
+
+        let staging_root = store.installs_root().join(".tmp");
+        assert!(!staging_root.exists());
+    }
+
+    #[test]
+    fn commit_staged_install_restores_previous_install_when_swap_fails() {
+        let temp = tempdir().expect("tempdir");
+        let install_root = temp
+            .path()
+            .join("installs")
+            .join("local")
+            .join("demo")
+            .join("0.1.0");
+        fs::create_dir_all(&install_root).expect("create install root");
+        fs::write(install_root.join("agent.yaml"), "old bundle").expect("write bundle");
+
+        let missing_staged_root = temp.path().join("missing-staged-root");
+        let error = commit_staged_install(&missing_staged_root, &install_root)
+            .expect_err("missing staged root should fail");
+
+        assert!(matches!(
+            error,
+            BundleError::Io { path, .. } if path == install_root.display().to_string()
+        ));
+        assert_eq!(
+            fs::read_to_string(install_root.join("agent.yaml")).expect("read restored bundle"),
+            "old bundle"
+        );
+        assert!(
+            !install_root
+                .parent()
+                .expect("id root")
+                .join(".tmp")
+                .exists()
         );
     }
 
@@ -1226,5 +1594,130 @@ mod tests {
             error.to_string(),
             "invalid bundle: bundle namespace must not contain path separators or traversal segments"
         );
+    }
+
+    #[test]
+    fn install_layout_payload_preserves_existing_install_on_unpack_failure() {
+        let temp = tempdir().expect("tempdir");
+        let store = BundleStore::new(temp.path().join("store"));
+        let project_root = temp.path().join("project");
+        fs::create_dir_all(&project_root).expect("create project");
+        write_bundle_project(
+            &project_root,
+            "demo",
+            "0.1.0",
+            "data/notes.txt",
+            "hello world\n",
+        );
+
+        let install = store
+            .build_and_install(&project_root)
+            .expect("build and install");
+        let original_agent =
+            fs::read_to_string(install.path.join("agent.yaml")).expect("read original agent");
+        let source_layout_root = install.path.join(".odyssey");
+        let (_, manifest, _) = read_manifest(&source_layout_root).expect("read manifest");
+        let config_digest = manifest.config.digest.clone();
+        let layers = manifest.layers.clone();
+
+        let broken_layout_root = temp.path().join("broken-layout");
+        fs::create_dir_all(&broken_layout_root).expect("create broken layout");
+        for relative in ["oci-layout", "index.json"] {
+            fs::copy(
+                source_layout_root.join(relative),
+                broken_layout_root.join(relative),
+            )
+            .expect("copy layout file");
+        }
+        for digest in std::iter::once(install.metadata.digest.clone())
+            .chain(std::iter::once(config_digest.clone()))
+            .chain(layers.iter().map(|layer| layer.digest.clone()))
+        {
+            let bytes = read_blob(&source_layout_root, &digest).expect("read source blob");
+            let target = blob_path(&broken_layout_root, &digest).expect("target blob path");
+            fs::create_dir_all(target.parent().expect("blob parent")).expect("create blob parent");
+            fs::write(&target, bytes).expect("write blob copy");
+        }
+        let broken_layer_path =
+            blob_path(&broken_layout_root, &layers[0].digest).expect("broken layer path");
+        fs::write(&broken_layer_path, b"not-a-payload").expect("write invalid payload");
+
+        let error = store
+            .install_layout_payload(
+                &broken_layout_root,
+                install.metadata.clone(),
+                config_digest,
+                layers,
+            )
+            .expect_err("invalid payload should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "invalid bundle: invalid bundle payload header"
+        );
+        assert_eq!(
+            fs::read_to_string(install.path.join("agent.yaml")).expect("read preserved agent"),
+            original_agent
+        );
+        assert_eq!(
+            store
+                .resolve("demo@0.1.0")
+                .expect("resolve preserved install")
+                .metadata
+                .digest,
+            install.metadata.digest
+        );
+        assert!(!store.install_staging_parent().exists());
+    }
+
+    #[test]
+    fn materialize_remote_layout_install_preserves_existing_install_on_unpack_failure() {
+        let temp = tempdir().expect("tempdir");
+        let store = BundleStore::new(temp.path().join("store"));
+        let project_root = temp.path().join("project");
+        fs::create_dir_all(&project_root).expect("create project");
+        write_bundle_project(
+            &project_root,
+            "demo",
+            "0.1.0",
+            "data/notes.txt",
+            "hello world\n",
+        );
+
+        let install = store
+            .build_and_install(&project_root)
+            .expect("build and install");
+        let original_agent =
+            fs::read_to_string(install.path.join("agent.yaml")).expect("read original agent");
+        let layout_root = install.path.join(".odyssey");
+        let (_, manifest, _) = read_manifest(&layout_root).expect("read manifest");
+        let index_bytes = fs::read(layout_root.join("index.json")).expect("read index");
+
+        let error = store
+            .materialize_remote_layout_install(
+                index_bytes,
+                manifest.config.digest,
+                install.metadata.clone(),
+                vec![(manifest.layers[0].digest.clone(), b"not-a-payload".to_vec())],
+            )
+            .expect_err("invalid payload should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "invalid bundle: invalid bundle payload header"
+        );
+        assert_eq!(
+            fs::read_to_string(install.path.join("agent.yaml")).expect("read preserved agent"),
+            original_agent
+        );
+        assert_eq!(
+            store
+                .resolve("demo@0.1.0")
+                .expect("resolve preserved install")
+                .metadata
+                .digest,
+            install.metadata.digest
+        );
+        assert!(!store.install_staging_parent().exists());
     }
 }

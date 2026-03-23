@@ -25,9 +25,9 @@ walkdir.workspace = true
 thiserror.workspace = true
 directories.workspace = true
 base64 = "0.22.1"
+tempfile.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
 pretty_assertions.workspace = true
-tempfile.workspace = true
 tokio.workspace = true

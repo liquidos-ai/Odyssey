@@ -5,7 +5,9 @@ pub(crate) const RESOURCES_DIR_NAME: &str = "resources";
 
 // Bundle specific constants
 pub(crate) const BUNDLE_INSTALL_ROOT_DIR_NAME: &str = "installs";
+pub(crate) const BUNDLE_IMPORTS_ROOT_DIR_NAME: &str = "imports";
 pub(crate) const BUNDLE_INSTALL_LAYOUT_DIR_NAME: &str = ".odyssey";
+pub(crate) const BUNDLE_ODYSSEY_EXPORT_FILE_FORMAT: &str = ".odyssey";
 pub(crate) const BUNDLE_LOCAL_NAMESPACE: &str = "local";
 pub(crate) const BUNDLE_CONFIG_SCHEMA_VERSION: usize = 1;
 
