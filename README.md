@@ -6,6 +6,7 @@
   <p><strong>Define, build, and run agents as portable bundles.</strong></p>
   <p>Open-source Rust runtime for packaging, securing, and operating portable AI agents.</p>
 
+  [![Crates.io](https://img.shields.io/crates/v/autoagents.svg)](https://crates.io/crates/autoagents)
   [![License](https://img.shields.io/github/license/liquidos-ai/odyssey)](https://github.com/liquidos-ai/odyssey/blob/main/APACHE_LICENSE)
   [![CI](https://github.com/liquidos-ai/odyssey/actions/workflows/ci-chek.yml/badge.svg)](https://github.com/liquidos-ai/odyssey/actions/workflows/ci-chek.yml)
   [![Coverage](https://github.com/liquidos-ai/odyssey/actions/workflows/coverage.yml/badge.svg)](https://github.com/liquidos-ai/odyssey/actions/workflows/coverage.yml)

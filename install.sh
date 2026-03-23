@@ -84,37 +84,25 @@ verify_sha256() {
   local checksum_file archive_file
   checksum_file="$1"
   archive_file="$2"
+  local expected actual
+
+  expected="$(awk '{print $1}' "${checksum_file}")"
 
   if has_command sha256sum; then
-    (
-      cd "$(dirname "${archive_file}")"
-      sha256sum -c "$(basename "${checksum_file}")"
-    )
-    return
-  fi
-
-  if has_command shasum; then
-    (
-      cd "$(dirname "${archive_file}")"
-      shasum -a 256 -c "$(basename "${checksum_file}")"
-    )
-    return
-  fi
-
-  if has_command openssl; then
-    local expected actual
-    expected="$(awk '{print $1}' "${checksum_file}")"
+    actual="$(sha256sum "${archive_file}" | awk '{print $1}')"
+  elif has_command shasum; then
+    actual="$(shasum -a 256 "${archive_file}" | awk '{print $1}')"
+  elif has_command openssl; then
     actual="$(openssl dgst -sha256 "${archive_file}" | awk '{print $NF}')"
-    if [ "${expected}" = "${actual}" ]; then
-      return
-    fi
-
-    print_error "checksum verification failed"
+  else
+    print_error "no SHA-256 verifier found; install sha256sum, shasum, or openssl"
     exit 1
   fi
 
-  print_error "no SHA-256 verifier found; install sha256sum, shasum, or openssl"
-  exit 1
+  if [ "${expected}" != "${actual}" ]; then
+    print_error "checksum verification failed"
+    exit 1
+  fi
 }
 
 main() {
