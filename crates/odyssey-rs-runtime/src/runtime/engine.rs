@@ -762,6 +762,44 @@ tools:
         .expect("write resource");
     }
 
+    // Some CI hosts install `bwrap` but still block unprivileged user namespaces.
+    // Probe the actual restricted runtime path so these tests only run when the
+    // sandbox is usable, not just present in PATH.
+    #[cfg(target_os = "linux")]
+    async fn restricted_sandbox_usable() -> bool {
+        if which::which("bwrap").is_err() {
+            return false;
+        }
+
+        let temp = tempdir().expect("tempdir");
+        let mut config = runtime_config(temp.path());
+        config.sandbox_mode_override = None;
+        let runtime = Arc::new(OdysseyRuntime::new(config).expect("runtime"));
+        let project = temp.path().join("probe-project");
+        fs::create_dir_all(&project).expect("create project");
+        write_bundle_project(&project, "probe", "probe-agent");
+        runtime.build_and_install(&project).expect("install bundle");
+
+        let session_id = runtime
+            .create_session("local/probe@0.1.0")
+            .expect("create session")
+            .id;
+        match runtime.run_session_command(session_id, "true").await {
+            Ok(output) if output.status_code == Some(0) => true,
+            Ok(output) => {
+                eprintln!(
+                    "skipping restricted sandbox test: bubblewrap probe exited {:?} with stderr: {}",
+                    output.status_code, output.stderr
+                );
+                false
+            }
+            Err(err) => {
+                eprintln!("skipping restricted sandbox test: bubblewrap probe failed: {err}");
+                false
+            }
+        }
+    }
+
     #[test]
     fn build_session_command_spec_rejects_empty_commands() {
         let temp = tempdir().expect("tempdir");
@@ -955,7 +993,7 @@ tools:
     #[tokio::test]
     #[cfg(target_os = "linux")]
     async fn run_session_command_uses_operator_exec_policy_in_restricted_sandbox() {
-        if which::which("bwrap").is_err() {
+        if !restricted_sandbox_usable().await {
             return;
         }
 
@@ -984,7 +1022,7 @@ tools:
     #[tokio::test]
     #[cfg(target_os = "linux")]
     async fn workspace_write_session_commands_persist_staged_changes_within_session() {
-        if which::which("bwrap").is_err() {
+        if !restricted_sandbox_usable().await {
             return;
         }
 
