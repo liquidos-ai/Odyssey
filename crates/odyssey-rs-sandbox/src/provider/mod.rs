@@ -419,7 +419,7 @@ fn create_private_tmp_dir() -> Result<PathBuf, SandboxError> {
     }
 
     let candidate = base.join(uuid::Uuid::new_v4().to_string());
-    std::fs::create_dir(&candidate).map_err(SandboxError::Io)?;
+    std::fs::create_dir_all(&candidate).map_err(SandboxError::Io)?;
 
     #[cfg(unix)]
     {

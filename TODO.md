@@ -3,6 +3,6 @@
 - [ ] Major Refactoring task for the below
   - [ ] Review Runtime
   - [ ] Review Sandbox
-  - [ ] Review Tools
-  - [ ] Review Server
+  - [x] Review Tools
+  - [x] Review Server
   - [ ] Reveiw Docs
