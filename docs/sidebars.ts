@@ -12,6 +12,7 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Reference',
       items: [
+        'reference/cli-and-server',
         'reference/bundle-format',
         'reference/sandbox-and-tools',
       ],
@@ -19,7 +20,11 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Runtime',
-      items: ['runtime/runtime-model', 'runtime/architecture'],
+      items: [
+        'runtime/runtime-model',
+        'runtime/events-and-approvals',
+        'runtime/architecture',
+      ],
     },
   ],
 };

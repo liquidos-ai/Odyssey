@@ -3,13 +3,15 @@ use log::info;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use tempfile::TempDir;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use crate::error::SandboxError;
 use crate::types::{
     AccessDecision, AccessMode, CommandResult, CommandSpec, SandboxContext, SandboxHandle,
-    SandboxLimits, SandboxMountBinding, SandboxNetworkMode, SandboxPolicy,
+    SandboxLimits, SandboxNetworkMode, SandboxPolicy,
 };
 use odyssey_rs_protocol::SandboxMode;
 
@@ -63,7 +65,7 @@ pub trait SandboxProvider: Send + Sync {
         DependencyReport::default()
     }
 
-    async fn shutdown(&self, handle: SandboxHandle);
+    fn shutdown(&self, handle: SandboxHandle);
 }
 
 pub trait CommandOutputSink: Send {
@@ -85,7 +87,7 @@ pub struct PreparedSandbox {
     pub(crate) allowed_env_keys: BTreeSet<String>,
     pub(crate) limits: SandboxLimits,
     pub(crate) network: SandboxNetworkMode,
-    pub(crate) private_tmp_dir: Option<PathBuf>,
+    pub(crate) _private_tmp_dir: Option<Arc<TempDir>>,
     pub(crate) working_dir: PathBuf,
     pub(crate) mounts: Vec<Mount>,
 }
@@ -119,7 +121,6 @@ impl AccessPolicy {
             },
             SandboxMode::ReadOnly | SandboxMode::WorkspaceWrite => {
                 let mut roots = vec![workspace_root.clone()];
-                roots.extend(standard_system_exec_roots());
                 roots.extend(normalize_existing_roots(
                     &workspace_root,
                     &policy.filesystem.read_roots,
@@ -245,11 +246,10 @@ fn matches_any(path: &Path, patterns: &[PathBuf]) -> bool {
 }
 
 pub fn standard_system_exec_roots() -> Vec<PathBuf> {
-    ["/usr", "/lib", "/lib64", "/bin", "/sbin", "/opt"]
+    ["/usr", "/bin", "/sbin", "/opt"]
         .into_iter()
         .map(PathBuf::from)
         .filter(|path| path.exists())
-        .filter_map(|path| canonicalize_existing_path(&path).ok())
         .collect()
 }
 
@@ -269,11 +269,7 @@ fn normalize_lexical(path: &Path) -> PathBuf {
     normalized
 }
 
-fn resolve_user_path(
-    user_path: &Path,
-    working_dir: &Path,
-    workspace_root: &Path,
-) -> Result<PathBuf, SandboxError> {
+fn validate_user_path(user_path: &Path) -> Result<(), SandboxError> {
     if user_path.as_os_str().is_empty() {
         return Err(SandboxError::AccessDenied(
             "empty path is not allowed".to_string(),
@@ -287,13 +283,29 @@ fn resolve_user_path(
             )));
         }
     }
+    Ok(())
+}
+
+fn normalize_requested_path(user_path: &Path, working_dir: &Path) -> Result<PathBuf, SandboxError> {
+    validate_user_path(user_path)?;
 
     let candidate = if user_path.is_absolute() {
         user_path.to_path_buf()
     } else {
         working_dir.join(user_path)
     };
-    let candidate = normalize_lexical(&candidate);
+
+    Ok(normalize_lexical(&candidate))
+}
+
+fn resolve_user_path(
+    user_path: &Path,
+    working_dir: &Path,
+    workspace_root: &Path,
+) -> Result<PathBuf, SandboxError> {
+    validate_user_path(user_path)?;
+
+    let candidate = normalize_requested_path(user_path, working_dir)?;
 
     let mut unresolved = Vec::<OsString>::new();
     let mut cursor = candidate.as_path();
@@ -407,35 +419,12 @@ fn build_env(
     (env, allowed)
 }
 
-fn create_private_tmp_dir() -> Result<PathBuf, SandboxError> {
-    let base = std::env::temp_dir().join("odyssey-rs");
-    std::fs::create_dir_all(&base).map_err(SandboxError::Io)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let _ = std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700));
-    }
-
-    let candidate = base.join(uuid::Uuid::new_v4().to_string());
-    std::fs::create_dir_all(&candidate).map_err(SandboxError::Io)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o700))
-            .map_err(SandboxError::Io)?;
-    }
-
-    Ok(candidate)
-}
-
-pub(crate) fn cleanup_private_tmp_dir(path: Option<&Path>) {
-    if let Some(path) = path {
-        let _ = std::fs::remove_dir_all(path);
-    }
+fn create_private_tmp_dir() -> Result<Arc<TempDir>, SandboxError> {
+    tempfile::Builder::new()
+        .prefix("odyssey-rs-")
+        .tempdir()
+        .map(Arc::new)
+        .map_err(SandboxError::Io)
 }
 
 #[cfg(test)]
@@ -676,9 +665,15 @@ pub(crate) fn resolve_command_path(
     prepared: &PreparedSandbox,
 ) -> Result<PathBuf, SandboxError> {
     if command.is_absolute() || command.components().count() > 1 {
-        let resolved = resolve_user_path(command, working_dir, &prepared.access.workspace_root)?;
-        return match prepared.access.check(&resolved, AccessMode::Execute) {
-            AccessDecision::Allow => Ok(resolved),
+        let candidate = normalize_requested_path(command, working_dir)?;
+        if !candidate.exists() {
+            return Err(SandboxError::AccessDenied(format!(
+                "executable does not exist: {}",
+                candidate.display()
+            )));
+        }
+        return match prepared.access.check(&candidate, AccessMode::Execute) {
+            AccessDecision::Allow => Ok(candidate),
             AccessDecision::Deny(reason) => Err(SandboxError::AccessDenied(reason)),
         };
     }
@@ -693,12 +688,11 @@ pub(crate) fn resolve_command_path(
         if !candidate.exists() {
             continue;
         }
-        let resolved = candidate.canonicalize().map_err(SandboxError::Io)?;
         if matches!(
-            prepared.access.check(&resolved, AccessMode::Execute),
+            prepared.access.check(&candidate, AccessMode::Execute),
             AccessDecision::Allow
         ) {
-            return Ok(resolved);
+            return Ok(normalize_lexical(&candidate));
         }
     }
 
@@ -708,47 +702,120 @@ pub(crate) fn resolve_command_path(
     )))
 }
 
-fn build_mounts_from_access(
-    access: &AccessPolicy,
+fn resolve_mount_target(workspace_root: &Path, raw_path: &str) -> Result<PathBuf, SandboxError> {
+    reject_glob(raw_path)?;
+    let path = PathBuf::from(raw_path);
+    if path.is_absolute() {
+        return Ok(normalize_lexical(&path));
+    }
+
+    Ok(normalize_lexical(&workspace_root.join(path)))
+}
+
+fn insert_mount(
+    mounts: &mut BTreeMap<PathBuf, Mount>,
+    source: PathBuf,
+    target: PathBuf,
+    writable: bool,
+) -> Result<(), SandboxError> {
+    if let Some(existing) = mounts.get_mut(&target) {
+        if existing.source != source {
+            return Err(SandboxError::InvalidConfig(format!(
+                "sandbox mount target {} resolves to multiple sources",
+                target.display()
+            )));
+        }
+        existing.writable |= writable;
+        return Ok(());
+    }
+
+    mounts.insert(
+        target.clone(),
+        Mount {
+            source,
+            target,
+            writable,
+        },
+    );
+    Ok(())
+}
+
+fn build_mounts_from_policy(
+    workspace_root: &Path,
     mode: SandboxMode,
-    mount_bindings: &[SandboxMountBinding],
-) -> Vec<Mount> {
+    policy: &SandboxPolicy,
+) -> Result<Vec<Mount>, SandboxError> {
     if matches!(mode, SandboxMode::DangerFullAccess) {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let workspace_writable = matches!(mode, SandboxMode::WorkspaceWrite);
-    let mut mount_modes: BTreeMap<PathBuf, bool> = BTreeMap::new();
-    mount_modes.insert(access.workspace_root.clone(), workspace_writable);
+    let mut mounts = BTreeMap::<PathBuf, Mount>::new();
+    insert_mount(
+        &mut mounts,
+        workspace_root.to_path_buf(),
+        workspace_root.to_path_buf(),
+        workspace_writable,
+    )?;
 
-    // Mount roots keep the same visible path inside the sandbox so the runtime,
-    // filesystem tools, and direct process execution all agree on one path model.
-    for path in access.read.roots.iter().chain(access.exec.roots.iter()) {
-        if !path.starts_with(&access.workspace_root) {
-            mount_modes.entry(path.clone()).or_insert(false);
+    for raw_path in &policy.filesystem.read_roots {
+        let target = resolve_mount_target(workspace_root, raw_path)?;
+        if target.starts_with(workspace_root) {
+            continue;
         }
+        insert_mount(
+            &mut mounts,
+            canonicalize_existing_path(&target)?,
+            target,
+            false,
+        )?;
     }
-    for path in &access.write.roots {
-        if !path.starts_with(&access.workspace_root) {
-            mount_modes.insert(path.clone(), true);
+
+    for raw_path in &policy.filesystem.write_roots {
+        let target = resolve_mount_target(workspace_root, raw_path)?;
+        if target.starts_with(workspace_root) {
+            continue;
         }
+        insert_mount(
+            &mut mounts,
+            canonicalize_existing_path(&target)?,
+            target,
+            true,
+        )?;
     }
 
-    let mut mounts = mount_modes
-        .into_iter()
-        .map(|(path, writable)| Mount {
-            source: path.clone(),
-            target: path,
-            writable,
-        })
-        .collect::<Vec<_>>();
+    let mut exec_roots = policy.filesystem.exec_roots.clone();
+    if policy.filesystem.exec_allow_all {
+        exec_roots.extend(
+            standard_system_exec_roots()
+                .into_iter()
+                .map(|path| path.display().to_string()),
+        );
+    }
 
-    mounts.extend(mount_bindings.iter().map(|binding| Mount {
-        source: PathBuf::from(&binding.source),
-        target: PathBuf::from(&binding.target),
-        writable: binding.writable,
-    }));
-    mounts
+    for raw_path in &exec_roots {
+        let target = resolve_mount_target(workspace_root, raw_path)?;
+        if target.starts_with(workspace_root) {
+            continue;
+        }
+        insert_mount(
+            &mut mounts,
+            canonicalize_existing_path(&target)?,
+            target,
+            false,
+        )?;
+    }
+
+    for binding in &policy.filesystem.mount_bindings {
+        insert_mount(
+            &mut mounts,
+            PathBuf::from(&binding.source),
+            PathBuf::from(&binding.target),
+            binding.writable,
+        )?;
+    }
+
+    Ok(mounts.into_values().collect())
 }
 
 pub fn build_prepared_sandbox(ctx: &SandboxContext) -> Result<PreparedSandbox, SandboxError> {
@@ -759,9 +826,12 @@ pub fn build_prepared_sandbox(ctx: &SandboxContext) -> Result<PreparedSandbox, S
     } else {
         Some(create_private_tmp_dir()?)
     };
-    let (env, allowed_env_keys) =
-        build_env(&ctx.policy, &workspace_root, private_tmp_dir.as_deref());
-    let mounts = build_mounts_from_access(&access, ctx.mode, &ctx.policy.filesystem.mount_bindings);
+    let (env, allowed_env_keys) = build_env(
+        &ctx.policy,
+        &workspace_root,
+        private_tmp_dir.as_deref().map(TempDir::path),
+    );
+    let mounts = build_mounts_from_policy(&workspace_root, ctx.mode, &ctx.policy)?;
     info!(
         "prepared sandbox (mode={:?}, mounts={}, env_keys={})",
         ctx.mode,
@@ -774,7 +844,7 @@ pub fn build_prepared_sandbox(ctx: &SandboxContext) -> Result<PreparedSandbox, S
         allowed_env_keys,
         limits: ctx.policy.limits.clone(),
         network: ctx.policy.network.mode,
-        private_tmp_dir,
+        _private_tmp_dir: private_tmp_dir,
         working_dir: workspace_root,
         mounts,
     })
@@ -849,7 +919,7 @@ pub fn bind_if_exists(args: &mut Vec<String>, flag: &str, source: &Path, target:
 #[cfg(test)]
 mod tests {
     use super::{
-        AccessPolicy, bind_if_exists, build_mounts_from_access, build_prepared_sandbox,
+        AccessPolicy, bind_if_exists, build_mounts_from_policy, build_prepared_sandbox,
         command_display, effective_output_limit, effective_wall_clock, merge_command_env,
         normalize_existing_roots, normalize_lexical, reject_glob, resolve_command_path,
         resolve_user_path, resolve_working_dir, run_host_process, validate_host_execution_context,
@@ -994,7 +1064,13 @@ mod tests {
         let tmpdir = PathBuf::from(prepared.env.get("TMPDIR").expect("tmpdir"));
         assert!(tmpdir.exists());
         assert!(tmpdir.starts_with(super::default_tmp_dir_for_tests()));
-        assert_eq!(prepared.private_tmp_dir.as_deref(), Some(tmpdir.as_path()));
+        assert_eq!(
+            prepared
+                ._private_tmp_dir
+                .as_deref()
+                .map(tempfile::TempDir::path),
+            Some(tmpdir.as_path())
+        );
     }
 
     #[test]
@@ -1061,7 +1137,7 @@ mod tests {
     }
 
     #[test]
-    fn build_mounts_from_access_tracks_writable_roots_by_mode() {
+    fn build_mounts_from_policy_tracks_writable_roots_by_mode() {
         let temp = tempdir().expect("tempdir");
         let host_root = tempdir().expect("host root");
         let host_read = host_root.path().join("host-read");
@@ -1093,14 +1169,8 @@ mod tests {
             },
             ..SandboxPolicy::default()
         };
-        let access =
-            AccessPolicy::new(SandboxMode::WorkspaceWrite, &policy, temp.path()).expect("access");
-
-        let mounts = build_mounts_from_access(
-            &access,
-            SandboxMode::WorkspaceWrite,
-            &policy.filesystem.mount_bindings,
-        );
+        let mounts = build_mounts_from_policy(temp.path(), SandboxMode::WorkspaceWrite, &policy)
+            .expect("mounts");
         assert!(
             mounts
                 .iter()
@@ -1113,12 +1183,30 @@ mod tests {
             && mount.target == target_write
             && mount.writable));
 
-        let no_mounts = build_mounts_from_access(
-            &access,
-            SandboxMode::DangerFullAccess,
-            &policy.filesystem.mount_bindings,
-        );
+        let no_mounts =
+            build_mounts_from_policy(temp.path(), SandboxMode::DangerFullAccess, &policy)
+                .expect("no mounts");
         assert!(no_mounts.is_empty());
+    }
+
+    #[test]
+    fn explicit_exec_roots_do_not_mount_standard_host_binary_trees() {
+        let temp = tempdir().expect("tempdir");
+        let sh = which::which("sh").expect("resolve sh");
+        let policy = SandboxPolicy {
+            filesystem: SandboxFilesystemPolicy {
+                exec_roots: vec![sh.display().to_string()],
+                ..SandboxFilesystemPolicy::default()
+            },
+            ..SandboxPolicy::default()
+        };
+
+        let mounts =
+            build_mounts_from_policy(temp.path(), SandboxMode::ReadOnly, &policy).expect("mounts");
+
+        assert!(mounts.iter().any(|mount| mount.target == sh));
+        assert!(!mounts.iter().any(|mount| mount.target == Path::new("/usr")));
+        assert!(!mounts.iter().any(|mount| mount.target == Path::new("/bin")));
     }
 
     #[test]

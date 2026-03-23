@@ -4,11 +4,11 @@ use crate::{
     provider::{DependencyReport, canonicalize_existing_path, local::HostExecProvider},
 };
 use odyssey_rs_protocol::SandboxMode;
+use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::{collections::HashMap, fmt::Display};
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
 /// High-level buckets for runtime-managed sandbox cells.
@@ -319,22 +319,12 @@ impl SandboxRuntime {
         let workspace_root = canonicalize_existing_path(&layout.app_dir())?;
         let policy = augment_managed_cell_policy(spec.mode, spec.policy.clone(), &layout);
 
-        let mut cells = self.cells.lock().await;
-        if let Some(state) = cells.get(&spec.key) {
-            if state.workspace_root != workspace_root
-                || state.cell_root != cell_root
-                || state.mode != spec.mode
-                || state.policy != policy
-            {
-                return Err(SandboxError::InvalidConfig(format!(
-                    "sandbox cell '{}' already exists with a different root, mode, or policy",
-                    spec.key.component_id
-                )));
-            }
-
+        if let Some(state) =
+            self.find_matching_cell(&spec.key, &workspace_root, &cell_root, spec.mode, &policy)?
+        {
             return Ok(Arc::new(SandboxCellLease {
                 provider: self.provider.clone(),
-                state: state.clone(),
+                state,
             }));
         }
 
@@ -344,7 +334,7 @@ impl SandboxRuntime {
             policy: policy.clone(),
         };
         let handle = self.provider.prepare(&context).await?;
-        let state = Arc::new(SandboxCellState {
+        let prepared_state = Arc::new(SandboxCellState {
             key: spec.key.clone(),
             handle,
             workspace_root,
@@ -352,7 +342,24 @@ impl SandboxRuntime {
             mode: spec.mode,
             policy,
         });
-        cells.insert(spec.key, state.clone());
+
+        let state = {
+            let mut cells = self.cells.lock();
+            if let Some(existing) = cells.get(&spec.key) {
+                self.validate_matching_cell(
+                    existing,
+                    &prepared_state.workspace_root,
+                    &prepared_state.cell_root,
+                    prepared_state.mode,
+                    &prepared_state.policy,
+                )?;
+                self.provider.shutdown(prepared_state.handle.clone());
+                existing.clone()
+            } else {
+                cells.insert(spec.key, prepared_state.clone());
+                prepared_state
+            }
+        };
 
         Ok(Arc::new(SandboxCellLease {
             provider: self.provider.clone(),
@@ -360,13 +367,33 @@ impl SandboxRuntime {
         }))
     }
 
-    pub async fn shutdown(&self) {
-        let mut cells = self.cells.lock().await;
+    pub fn shutdown(&self) {
+        let mut cells = self.cells.lock();
         let states = cells.drain().map(|(_, state)| state).collect::<Vec<_>>();
-        drop(cells);
         for state in states {
-            self.provider.shutdown(state.handle.clone()).await;
+            self.provider.shutdown(state.handle.clone());
         }
+    }
+
+    pub fn shutdown_session(&self, session_id: Uuid) -> Result<(), SandboxError> {
+        let states = {
+            let mut cells = self.cells.lock();
+            let keys = cells
+                .keys()
+                .filter(|key| key.session_id == Some(session_id))
+                .cloned()
+                .collect::<Vec<_>>();
+
+            keys.into_iter()
+                .filter_map(|key| cells.remove(&key))
+                .collect::<Vec<_>>()
+        };
+
+        for state in states {
+            self.provider.shutdown(state.handle.clone());
+        }
+
+        self.remove_session_roots(session_id)
     }
 
     fn materialize_cell_root(&self, key: &SandboxCellKey) -> Result<PathBuf, SandboxError> {
@@ -385,6 +412,73 @@ impl SandboxRuntime {
         let root = canonicalize_existing_path(root)?;
         ManagedCellLayout::new(root.clone()).ensure()?;
         Ok(root)
+    }
+
+    fn find_matching_cell(
+        &self,
+        key: &SandboxCellKey,
+        workspace_root: &Path,
+        cell_root: &Path,
+        mode: SandboxMode,
+        policy: &SandboxPolicy,
+    ) -> Result<Option<Arc<SandboxCellState>>, SandboxError> {
+        let cells = self.cells.lock();
+        let Some(state) = cells.get(key) else {
+            return Ok(None);
+        };
+
+        self.validate_matching_cell(state, workspace_root, cell_root, mode, policy)?;
+        Ok(Some(state.clone()))
+    }
+
+    fn validate_matching_cell(
+        &self,
+        state: &SandboxCellState,
+        workspace_root: &Path,
+        cell_root: &Path,
+        mode: SandboxMode,
+        policy: &SandboxPolicy,
+    ) -> Result<(), SandboxError> {
+        if state.workspace_root == workspace_root
+            && state.cell_root == cell_root
+            && state.mode == mode
+            && state.policy == *policy
+        {
+            return Ok(());
+        }
+
+        Err(SandboxError::InvalidConfig(format!(
+            "sandbox cell '{}' already exists with a different root, mode, or policy",
+            state.key.component_id
+        )))
+    }
+
+    fn remove_session_roots(&self, session_id: Uuid) -> Result<(), SandboxError> {
+        let cells_root = self.storage_root.join("cells");
+        if !cells_root.exists() {
+            return Ok(());
+        }
+
+        let session_segment = session_id.to_string();
+        for kind_entry in std::fs::read_dir(&cells_root).map_err(SandboxError::Io)? {
+            let kind_entry = kind_entry.map_err(SandboxError::Io)?;
+            let kind_path = kind_entry.path();
+            if !kind_path.is_dir() {
+                continue;
+            }
+
+            for agent_entry in std::fs::read_dir(&kind_path).map_err(SandboxError::Io)? {
+                let agent_entry = agent_entry.map_err(SandboxError::Io)?;
+                let agent_path = agent_entry.path();
+                if !agent_path.is_dir() {
+                    continue;
+                }
+
+                remove_directory_tree_if_safe(&agent_path.join(&session_segment))?;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -412,6 +506,28 @@ fn ensure_child_directory(parent: &Path, name: &str) -> Result<PathBuf, SandboxE
     }
 
     canonicalize_existing_path(&child)
+}
+
+fn remove_directory_tree_if_safe(path: &Path) -> Result<(), SandboxError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(SandboxError::InvalidConfig(format!(
+                    "sandbox path must not be a symlink: {}",
+                    path.display()
+                )));
+            }
+            if !metadata.is_dir() {
+                return Err(SandboxError::InvalidConfig(format!(
+                    "sandbox path must be a directory: {}",
+                    path.display()
+                )));
+            }
+            std::fs::remove_dir_all(path).map_err(SandboxError::Io)
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(SandboxError::Io(err)),
+    }
 }
 
 fn push_unique_path(paths: &mut Vec<String>, path: &Path) {
@@ -876,13 +992,14 @@ mod tests {
     #[derive(Default)]
     struct RecordingProvider {
         contexts: ParkingMutex<Vec<SandboxContext>>,
+        shutdowns: ParkingMutex<Vec<Uuid>>,
     }
 
     #[async_trait]
     impl SandboxProvider for RecordingProvider {
         async fn prepare(&self, ctx: &SandboxContext) -> Result<SandboxHandle, SandboxError> {
             self.contexts.lock().push(ctx.clone());
-            Ok(SandboxHandle { id: Uuid::nil() })
+            Ok(SandboxHandle { id: Uuid::new_v4() })
         }
 
         async fn run_command(
@@ -911,7 +1028,9 @@ mod tests {
             AccessDecision::Allow
         }
 
-        async fn shutdown(&self, _handle: SandboxHandle) {}
+        fn shutdown(&self, handle: SandboxHandle) {
+            self.shutdowns.lock().push(handle.id);
+        }
     }
 
     #[tokio::test]
@@ -967,5 +1086,48 @@ mod tests {
             context.policy.env.set.get("TMPDIR"),
             Some(&root.join("tmp").display().to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_session_removes_active_cells_and_storage_roots() {
+        let temp = tempdir().expect("tempdir");
+        let provider = Arc::new(RecordingProvider::default());
+        let runtime =
+            SandboxRuntime::new("recording", provider.clone(), temp.path().join("sandbox"))
+                .expect("runtime");
+        let session_id = Uuid::new_v4();
+        let primary = SandboxCellKey::tooling(session_id, "agent");
+        let secondary = SandboxCellKey::tooling_component(session_id, "agent", "session-command");
+        let primary_root = runtime.managed_cell_root(&primary).expect("primary root");
+        let secondary_root = runtime
+            .managed_cell_root(&secondary)
+            .expect("secondary root");
+
+        let _primary = runtime
+            .lease_cell(SandboxCellSpec::managed_component(
+                primary.clone(),
+                primary_root.clone(),
+                SandboxMode::ReadOnly,
+                SandboxPolicy::default(),
+            ))
+            .await
+            .expect("primary lease");
+        let _secondary = runtime
+            .lease_cell(SandboxCellSpec::managed_component(
+                secondary,
+                secondary_root.clone(),
+                SandboxMode::ReadOnly,
+                SandboxPolicy::default(),
+            ))
+            .await
+            .expect("secondary lease");
+
+        runtime
+            .shutdown_session(session_id)
+            .expect("shutdown session");
+
+        assert_eq!(provider.shutdowns.lock().len(), 2);
+        assert!(!primary_root.exists());
+        assert!(!secondary_root.exists());
     }
 }

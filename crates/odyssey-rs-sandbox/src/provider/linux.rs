@@ -11,8 +11,8 @@ use crate::{
     SandboxError, SandboxHandle, SandboxLimits, SandboxProvider,
     provider::{
         BufferingSink, DependencyReport, Mount, PreparedSandbox, bind_if_exists,
-        build_prepared_sandbox, cleanup_private_tmp_dir, collect_child_result, command_display,
-        configure_child_unix, merge_command_env, resolve_command_path, resolve_working_dir,
+        build_prepared_sandbox, collect_child_result, command_display, configure_child_unix,
+        merge_command_env, resolve_command_path, resolve_working_dir,
     },
     types::SandboxNetworkMode,
 };
@@ -89,7 +89,7 @@ impl BubblewrapProvider {
         }
 
         append_etc_mounts(&mut bwrap_args);
-        append_runtime_mounts(&mut bwrap_args);
+        append_runtime_support_mounts(&mut bwrap_args);
         let sandbox_tmp = sandbox_tmp_dir();
         bwrap_args.push("--dev".to_string());
         bwrap_args.push("/dev".to_string());
@@ -139,13 +139,10 @@ fn append_command_mount_if_needed(
         return Ok(());
     }
 
-    let Some(parent) = command.parent() else {
-        return Err(SandboxError::InvalidConfig(format!(
-            "command path has no parent directory: {}",
-            command.display()
-        )));
-    };
-    bind_if_exists(args, "--ro-bind", parent, parent);
+    let source = command.canonicalize().map_err(SandboxError::Io)?;
+    args.push("--ro-bind".to_string());
+    args.push(source.display().to_string());
+    args.push(command.display().to_string());
     Ok(())
 }
 
@@ -155,7 +152,16 @@ fn path_is_mounted(path: &Path, prepared: &PreparedSandbox) -> bool {
         .iter()
         .any(|mount| path.starts_with(&mount.target))
         || [
-            "/usr", "/lib", "/lib64", "/bin", "/sbin", "/opt", "/etc", "/dev",
+            "/lib",
+            "/lib64",
+            "/lib32",
+            "/usr/lib",
+            "/usr/lib64",
+            "/usr/lib32",
+            "/usr/libexec",
+            "/libexec",
+            "/etc",
+            "/dev",
         ]
         .into_iter()
         .any(|root| path.starts_with(root))
@@ -252,14 +258,9 @@ impl SandboxProvider for BubblewrapProvider {
         Ok(command)
     }
 
-    async fn shutdown(&self, handle: SandboxHandle) {
+    fn shutdown(&self, handle: SandboxHandle) {
         info!("bubblewrap sandbox shutdown (handle_id={})", handle.id);
-        let removed = self.state.write().remove(&handle.id);
-        cleanup_private_tmp_dir(
-            removed
-                .as_ref()
-                .and_then(|prepared| prepared.private_tmp_dir.as_deref()),
-        );
+        self.state.write().remove(&handle.id);
     }
 }
 
@@ -358,9 +359,21 @@ pub(crate) fn append_etc_mounts(args: &mut Vec<String>) {
     }
 }
 
-pub(crate) fn append_runtime_mounts(args: &mut Vec<String>) {
-    for dir in ["/usr", "/lib", "/lib64", "/bin", "/sbin", "/opt"] {
+pub(crate) fn append_runtime_support_mounts(args: &mut Vec<String>) {
+    for dir in [
+        "/lib",
+        "/lib64",
+        "/usr/lib",
+        "/usr/lib64",
+        "/lib32",
+        "/usr/lib32",
+        "/usr/libexec",
+        "/libexec",
+    ] {
         bind_if_exists(args, "--ro-bind", Path::new(dir), Path::new(dir));
+    }
+    for file in ["/etc/ld.so.cache", "/etc/ld.so.conf"] {
+        bind_if_exists(args, "--ro-bind", Path::new(file), Path::new(file));
     }
     // Keep /run private so the sandbox cannot reach host Unix-domain sockets.
     args.push("--tmpfs".to_string());
@@ -369,7 +382,7 @@ pub(crate) fn append_runtime_mounts(args: &mut Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{append_etc_mounts, append_mount, append_runtime_mounts};
+    use super::{append_etc_mounts, append_mount, append_runtime_support_mounts};
     use crate::provider::Mount;
     use pretty_assertions::assert_eq;
     use std::path::Path;
@@ -422,11 +435,11 @@ mod tests {
     }
 
     #[test]
-    fn append_runtime_mounts_binds_existing_system_roots() {
+    fn append_runtime_support_mounts_only_binds_runtime_dependencies() {
         let mut args = Vec::new();
-        append_runtime_mounts(&mut args);
+        append_runtime_support_mounts(&mut args);
 
-        assert!(args.windows(3).any(|window| {
+        assert!(!args.windows(3).any(|window| {
             window[0] == "--ro-bind" && window[1] == "/usr" && window[2] == "/usr"
         }));
         assert!(

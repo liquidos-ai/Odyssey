@@ -1,6 +1,6 @@
 # {{ bundle_id }}
 
-This is an Hello World Agent Bundle 
+This is a starter Odyssey bundle.
 
 ## Build
 
@@ -21,17 +21,52 @@ export OPENAI_API_KEY="your-key"
 cargo run -p odyssey-rs -- run {{ bundle_id }}@latest --prompt "Hey, What is your name?"
 ```
 
-## Sandbox
+## Starter Template Defaults
 
-`odyssey.bundle.json5` uses default-deny networking for sandboxed bundle commands.
+The generated `odyssey.bundle.json5` starts with a development-friendly policy:
 
-- `sandbox.mode` controls the default command isolation mode for the bundle. Use `workspace_write` unless the bundle has a strong reason to require `read_only` or `danger_full_access`.
-- `sandbox.permissions.network: []` disables outbound network access for commands run through bundle tools such as `Bash`.
-- `sandbox.permissions.network: ["*"]` enables unrestricted outbound network access. Hostname allowlists are not implemented in v1.
+- `executor.id: "react"`
+- `memory.id: "sliding_window"`
+- all builtin tools listed in `manifest.tools`
+- `sandbox.mode: "read_only"`
+- `sandbox.permissions.network: ["*"]`
+- `sandbox.system_tools_mode: "standard"`
+- `sandbox.system_tools: []`
+- `sandbox.env: {}`
+
+The generated `agent.yaml` starts with:
+
+- an OpenAI model entry using `gpt-4.1-mini`
+- empty `tools.allow`, `tools.ask`, and `tools.deny`
+
+Because those tool-rule lists are empty, the agent still has access to the tools declared by the
+manifest. Tighten both files before you treat the bundle as production automation.
+
+## Sandbox And Tool Notes
+
+- `sandbox.permissions.network: []` disables outbound network access for commands run through
+  bundle tools such as `Bash`.
+- `sandbox.permissions.network: ["*"]` enables unrestricted outbound network access. Hostname
+  allowlists are not implemented in v1.
 - `agent.yaml` owns tool permissions through `tools.allow`, `tools.ask`, and `tools.deny`.
-- Tool permission entries can be coarse like `Bash` or granular like `Bash(cargo test:*)` and `Bash(find:*)`.
-- `sandbox.env` maps sandbox variable names to host environment variable names, and Odyssey reads those host values at runtime before launching the sandbox.
+- Tool permission entries can be coarse like `Bash` or granular like `Bash(cargo test:*)` and
+  `Bash(find:*)`.
+- Invalid tool permission entries are rejected instead of silently falling back to broad tool-name
+  matching.
+- `sandbox.env` maps sandbox variable names to host environment variable names for sandboxed bundle
+  commands. Missing host variables are skipped.
+- Model-provider credentials such as `OPENAI_API_KEY` are read by the Odyssey runtime process
+  itself, not from `sandbox.env`.
 - `sandbox.system_tools_mode` controls host executable policy for sandboxed process execution:
   `explicit`, `standard`, or `all`.
 - `sandbox.system_tools` lists additional named host binaries when `system_tools_mode` is
   `explicit` or when you want to supplement `standard`.
+- In confined Linux sandboxes, `explicit` mounts only the declared binaries and bundle-local exec
+  paths, `standard` mounts the standard host executable roots, and `all` removes the execute
+  allowlist for files already visible inside the sandbox.
+
+## Platform Notes
+
+- Restricted sandboxes require Linux and `bubblewrap` (`bwrap`).
+- On macOS and Windows, use `--dangerous-sandbox-mode` for local development or run Odyssey inside
+  a Linux container if you want confined execution.

@@ -103,6 +103,10 @@ This creates a starter project with:
 - `skills/`
 - `resources/`
 
+The starter template currently uses the `react` executor, `sliding_window` memory, all builtin
+tools, and a development-friendly sandbox policy. Tighten the bundle manifest before production
+use.
+
 ### 2. Build and install locally
 
 ```bash
@@ -152,7 +156,10 @@ cargo run -p odyssey-rs -- --remote http://127.0.0.1:8472 sessions
 
 ## Docker on macOS
 
-Odyssey's confined sandbox backend is Linux-only today. If you are developing on macOS and want to run the current system with the Linux `bubblewrap` sandbox instead of host fallback mode, use the included Docker image.
+Odyssey's confined sandbox backend is Linux-only today. On macOS and Windows, `read_only` and
+`workspace_write` bundle sandboxes require a Linux environment. If you want the current
+`bubblewrap`-based sandbox on macOS, use the included Docker image. If you only need local host
+execution, use `--dangerous-sandbox-mode` instead.
 
 Build the image:
 

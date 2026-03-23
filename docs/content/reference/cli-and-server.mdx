@@ -1,0 +1,183 @@
+---
+title: CLI And Server
+slug: /cli-and-server
+description: Command-line and HTTP reference for Odyssey bundle and session workflows.
+---
+
+## Bundle Reference Forms
+
+Most bundle-facing commands accept the same reference syntax:
+
+| Example | Meaning |
+| --- | --- |
+| `hello-world` | Latest installed local bundle with id `hello-world` |
+| `hello-world@latest` | Explicit latest installed local bundle |
+| `local/hello-world:0.1.0` | Namespaced bundle reference with version |
+| `team/demo@0.2.0` | Namespaced bundle reference using `@version` |
+| `team/demo@sha256:...` | Digest reference |
+| `./dist/demo` | Direct path to a bundle layout directory |
+| `./dist/demo.odyssey` | Archive file that must be imported before use |
+
+## CLI Commands
+
+Odyssey's main entrypoint is `odyssey-rs`.
+
+| Command | Purpose | `--remote` support | Notes |
+| --- | --- | --- | --- |
+| `init <path>` | Create a starter bundle project | No | Writes the template manifest, agent spec, README, and directories. |
+| `build <path> [--output <dir>]` | Build a bundle | No | Installs locally by default; writes a bundle layout when `--output` is set. |
+| `inspect <reference>` | Show installed bundle metadata | Yes | Reads from the local store or from a remote runtime. |
+| `run <reference> --prompt <text>` | One-shot prompt execution | Yes | Creates a fresh session and executes one turn. |
+| `serve [--bind <addr>]` | Start the HTTP runtime server | No | Default bind address is `127.0.0.1:8472`. |
+| `push <source> --to <target> [--hub <url>]` | Publish a bundle to a hub | No | Uses the configured hub URL when omitted. |
+| `pull <reference> [--hub <url>]` | Pull a bundle from a hub | Yes | Installs the pulled bundle into the local store. |
+| `export <reference> [--output <path>]` | Export a `.odyssey` archive | No | Exports from an installed bundle. |
+| `import <path>` | Import and install a `.odyssey` archive | No | Archives must be imported before use. |
+| `bundles` | List installed bundles | Yes | Reads bundle summaries. |
+| `sessions` | List saved sessions | Yes | Shows persisted session summaries. |
+| `session <uuid> [--delete]` | Inspect or delete one session | Yes | `--delete` removes the session and its sandbox state. |
+| `tui [--bundle <ref>] [--cwd <path>]` | Launch the terminal UI | No | Uses a local runtime, not the HTTP server. |
+
+## Useful CLI Patterns
+
+Initialize, build, inspect, and run a local bundle:
+
+```bash
+cargo run -p odyssey-rs -- init ./hello-world
+cargo run -p odyssey-rs -- build ./hello-world
+cargo run -p odyssey-rs -- inspect hello-world@latest
+cargo run -p odyssey-rs -- run hello-world@latest --prompt "What can you do?"
+```
+
+Start a server and target it remotely:
+
+```bash
+cargo run -p odyssey-rs -- serve
+cargo run -p odyssey-rs -- --remote http://127.0.0.1:8472 bundles
+cargo run -p odyssey-rs -- --remote http://127.0.0.1:8472 inspect hello-world@latest
+cargo run -p odyssey-rs -- --remote http://127.0.0.1:8472 run hello-world@latest --prompt "Summarize yourself"
+```
+
+For local-only debugging, the CLI also supports `--dangerous-sandbox-mode` on `run`, `serve`, and
+`tui`. That forces host execution and bypasses confined sandbox restrictions.
+
+## HTTP Routes
+
+`odyssey-rs serve` exposes bundle, session, and approval routes over HTTP.
+
+### Bundle routes
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET` | `/bundles` | List installed bundles |
+| `POST` | `/bundles/build` | Build and install a project path |
+| `GET` | `/bundles/inspect?reference=...` | Inspect bundle metadata |
+| `POST` | `/bundles/export` | Export an installed bundle |
+| `POST` | `/bundles/import` | Import a `.odyssey` archive |
+| `POST` | `/bundles/publish` | Publish a bundle to a hub |
+| `POST` | `/bundles/pull` | Pull a bundle from a hub |
+
+### Session routes
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET` | `/sessions` | List sessions |
+| `POST` | `/sessions` | Create a session |
+| `GET` | `/sessions/{id}` | Fetch one session |
+| `DELETE` | `/sessions/{id}` | Delete one session |
+| `POST` | `/sessions/{id}/run` | Queue an async turn |
+| `POST` | `/sessions/{id}/run-sync` | Run a turn and wait for the final response |
+| `GET` | `/sessions/{id}/events` | Subscribe to session events over SSE |
+
+### Approval route
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `POST` | `/approvals/{id}` | Resolve a pending approval request |
+
+## HTTP Request Shapes
+
+Create a session:
+
+```json
+{
+  "bundle_ref": "hello-world@latest"
+}
+```
+
+Create a session with a model override:
+
+```json
+{
+  "bundle_ref": "hello-world@latest",
+  "model": {
+    "provider": "openai",
+    "name": "gpt-4.1-mini",
+    "config": null
+  }
+}
+```
+
+Run a turn asynchronously or synchronously:
+
+```json
+{
+  "input": {
+    "prompt": "Summarize the repository",
+    "submission_id": "11111111-1111-1111-1111-111111111111",
+    "completed": false
+  },
+  "turn_context": {
+    "cwd": "mount/read/current",
+    "model": {
+      "provider": "openai",
+      "name": "gpt-4.1-mini",
+      "config": null
+    }
+  }
+}
+```
+
+`turn_context` is optional. In the current public protocol it supports only:
+
+- `cwd`
+- `model`
+
+Resolve a pending approval:
+
+```json
+{
+  "decision": "allow_once"
+}
+```
+
+Accepted approval decisions are:
+
+- `allow_once`
+- `allow_always`
+- `deny`
+
+## Event Streaming
+
+`GET /sessions/{id}/events` exposes server-sent events. Each SSE `data:` frame contains a JSON
+serialized `EventMsg`.
+
+That stream includes:
+
+- turn lifecycle events
+- streamed assistant output
+- streamed reasoning output
+- tool call start, delta, and finish events
+- command execution begin, output, and end events
+- permission requests and approval resolutions
+- plan updates
+- runtime errors
+
+See [Events and Approvals](/events-and-approvals) for the event payload model and approval flow.
+
+## Direct Session Commands
+
+The Rust runtime exposes `run_session_command(session_id, "...")` for direct operator commands
+inside an existing session sandbox. That is what local operator workflows such as TUI `!ls` use.
+
+The current HTTP server does not expose a route for direct operator commands.

@@ -86,13 +86,14 @@ fn spawn_dispatcher(
 ) {
     let dispatcher = async move {
         while let Some(job) = receiver.recv().await {
-            let _permit = match semaphore.clone().acquire_owned().await {
+            let permit = match semaphore.clone().acquire_owned().await {
                 Ok(permit) => permit,
                 Err(_) => break,
             };
             let runtime = inner.clone();
             let statuses = statuses.clone();
             tokio::spawn(async move {
+                let _permit = permit;
                 {
                     let mut lock = statuses.write();
                     lock.insert(job.handle.turn_id, ExecutionStatus::Running);

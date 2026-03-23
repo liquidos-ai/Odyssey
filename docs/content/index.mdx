@@ -7,15 +7,59 @@ description: Product documentation for Odyssey, the portable Rust runtime for bu
 
 # Odyssey Documentation
 
-Odyssey is a bundle-first runtime for packaging, securing, and executing AI agents. It provides a single execution contract across CLI, TUI, HTTP, and embedded Rust usage.
+Odyssey packages an AI agent as a portable bundle, then runs that bundle through the same runtime
+contract across the CLI, TUI, HTTP server, and embedded Rust usage. The bundle defines the agent,
+the sandbox policy, the available tools, and the runtime defaults; the runtime turns that bundle
+into sessions, turns, events, approvals, and persisted history.
 
-## Getting Started
+## Start Here
 
-Install and run your first agent in minutes. See the [Getting Started](/getting-started/) guide for the full bundle workflow.
+- [Getting Started](/getting-started) for the first local bundle workflow
+- [CLI and Server](/cli-and-server) for commands, bundle references, and HTTP routes
+- [Bundle Format](/bundle-format) for `odyssey.bundle.json5`, `agent.yaml`, and build layout
+- [Sandbox and Tools](/sandbox-and-tools) for confinement, mounts, exec policy, and approvals
+- [Runtime Model](/runtime-model) for the public runtime API and execution lifecycle
+- [Events and Approvals](/events-and-approvals) for session event streaming and approval flow
+- [Runtime Architecture](/architecture) for the internal system design
 
-```bash
-cargo run -p odyssey-rs -- init ./hello-world
-```
+## Mental Model
+
+| Concept | What it means |
+| --- | --- |
+| Bundle | The installable unit. It contains the manifest, the agent spec, skills, resources, and runtime policy. |
+| Session | A persisted conversation bound to one bundle and one chosen model configuration. |
+| Turn | One submitted task plus its streamed events and stored result. |
+| Sandbox cell | A reusable per-session workspace prepared for bundle tools and direct commands. |
+| Runtime | The process-wide engine that owns the bundle store, session store, sandboxes, scheduler, tools, and approvals. |
+
+## Choose An Interface
+
+| Surface | Best for | Notes |
+| --- | --- | --- |
+| `odyssey-rs run` | One-shot prompts | Creates a fresh session, runs one turn, prints the final response. |
+| `odyssey-rs tui` | Local operator workflows | Uses the same local runtime and supports direct operator commands with `!`. |
+| `odyssey-rs serve` | Shared runtime access | Exposes bundle and session APIs over HTTP plus SSE event streaming. |
+| `OdysseyRuntime` | Embedded Rust apps | Gives direct access to bundle, session, execution, and approval APIs. |
+
+## Current Capabilities
+
+- Bundle authoring, install, export, import, publish, and pull flows are built in.
+- The runtime persists sessions to disk and streams execution events in real time.
+- Builtin tools cover file access, search, edits, shell commands, and bundle skill lookup.
+- The only executor currently implemented is `react`.
+- The only memory provider currently implemented is `sliding_window`.
+- Manifest tool entries currently support builtin tools only.
+- Cloud model providers currently wired into the runtime are Anthropic, Azure OpenAI, DeepSeek,
+  Google or Gemini, Groq, MiniMax, OpenAI, OpenRouter, Phind, and xAI.
+- Local provider names such as `llama_cpp` are recognized by the resolver, but local model
+  execution is not implemented yet.
+
+## Platform Notes
+
+- Restricted sandboxes are currently Linux-only and use `bubblewrap`.
+- On macOS and Windows, local execution currently requires `--dangerous-sandbox-mode` or a Linux
+  container if you want confined execution.
+- The project is still pre-release, so prefer the docs here and the code over older examples.
 
 ## Workspace Crates
 
@@ -23,34 +67,13 @@ cargo run -p odyssey-rs -- init ./hello-world
 | --- | --- |
 | `odyssey-rs-manifest` | Parses and validates bundle manifests and agent specs |
 | `odyssey-rs-bundle` | Builds, installs, exports, imports, publishes, and pulls bundles |
-| `odyssey-rs-runtime` | Owns sessions, sandbox preparation, tool routing, approvals, prompt assembly, and execution |
+| `odyssey-rs-runtime` | Owns sessions, sandbox preparation, prompt assembly, tool routing, approvals, and execution |
 | `odyssey-rs-tools` | Provides the builtin tool set |
 | `odyssey-rs-sandbox` | Provides host and Linux sandbox backends |
 | `odyssey-rs-server` | HTTP surface over the runtime |
-| `odyssey-rs` | CLI surface, including the `tui` command |
-| `odyssey-rs-tui` | Terminal UI implementation crate used by `odyssey-rs tui` |
+| `odyssey-rs` | CLI facade, including the `tui` command |
+| `odyssey-rs-tui` | Terminal UI crate used by `odyssey-rs tui` |
 
-## What You Can Do Today
+## API Reference
 
-- Author local bundles and install them into the bundle store.
-- Export and import portable `.odyssey` archives.
-- Run agents through the CLI, HTTP server, or TUI.
-- Persist sessions locally and stream execution events.
-- Gate tool calls through sandbox policy and approvals.
-- Integrate the runtime directly from Rust.
-
-## Current Limits
-
-- Manifest validation currently accepts prebuilt executors only; `react` is the executor wired into the runtime.
-- Manifest validation currently accepts prebuilt memory providers only; `sliding_window` is the implemented provider.
-- Manifest validation currently accepts builtin tools only.
-- Cloud LLM providers are implemented today; local model support is planned.
-
-## Further Reading
-
-- [Getting Started](/getting-started/) — Bundle lifecycle walkthrough
-- [Bundle Format](/bundle-format/) — Manifest schema and build outputs
-- [Sandbox and Tools](/sandbox-and-tools/) — Runtime safety and builtin tools
-- [Runtime Model](/runtime-model/) — Execution flow and events
-- [Runtime Architecture](/architecture/) — System design and transport surfaces
-- [docs.rs](https://docs.rs/releases/search?query=odyssey-rs) — Crate-level API reference
+- [docs.rs](https://docs.rs/releases/search?query=odyssey-rs) for crate-level Rust API docs

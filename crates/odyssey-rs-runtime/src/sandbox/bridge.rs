@@ -219,30 +219,29 @@ pub fn build_mode(manifest: &BundleManifest, override_mode: Option<SandboxMode>)
     override_mode.unwrap_or(manifest.sandbox.mode)
 }
 
-pub fn build_permission_rules(agent: &AgentSpec) -> Vec<ToolPermissionRule> {
+pub fn build_permission_rules(agent: &AgentSpec) -> Result<Vec<ToolPermissionRule>, RuntimeError> {
     let mut permissions = Vec::new();
     for rule in &agent.tools.allow {
-        permissions.push(build_permission_rule(PermissionAction::Allow, rule));
+        permissions.push(build_permission_rule(PermissionAction::Allow, rule)?);
     }
     for rule in &agent.tools.ask {
-        permissions.push(build_permission_rule(PermissionAction::Ask, rule));
+        permissions.push(build_permission_rule(PermissionAction::Ask, rule)?);
     }
     for rule in &agent.tools.deny {
-        permissions.push(build_permission_rule(PermissionAction::Deny, rule));
+        permissions.push(build_permission_rule(PermissionAction::Deny, rule)?);
     }
 
-    permissions
+    Ok(permissions)
 }
 
-fn build_permission_rule(action: PermissionAction, value: &str) -> ToolPermissionRule {
-    let matcher = match ToolPermissionMatcher::parse(value) {
-        Ok(matcher) => matcher,
-        Err(_) => ToolPermissionMatcher {
-            tool: value.to_string(),
-            target: None,
-        },
-    };
-    ToolPermissionRule { action, matcher }
+fn build_permission_rule(
+    action: PermissionAction,
+    value: &str,
+) -> Result<ToolPermissionRule, RuntimeError> {
+    let matcher = ToolPermissionMatcher::parse(value).map_err(|err| {
+        RuntimeError::Executor(format!("invalid tool permission rule `{value}`: {err}"))
+    })?;
+    Ok(ToolPermissionRule { action, matcher })
 }
 
 pub async fn prepare_cell(
@@ -648,20 +647,57 @@ fn build_network_policy(entries: &[String]) -> Result<SandboxNetworkPolicy, Runt
 }
 
 fn resolve_system_tools(tools: &[String]) -> Result<Vec<String>, RuntimeError> {
-    let mut resolved = Vec::with_capacity(tools.len());
+    let mut resolved = Vec::new();
     for tool in tools {
-        let path = which::which(tool).map_err(|_| {
+        resolved.extend(resolve_system_tool_aliases(tool)?);
+    }
+    resolved.sort();
+    resolved.dedup();
+    Ok(resolved)
+}
+
+fn resolve_system_tool_aliases(tool: &str) -> Result<Vec<String>, RuntimeError> {
+    let requested = PathBuf::from(tool);
+    let treat_as_path = requested.is_absolute() || requested.components().count() > 1;
+    let primary = if treat_as_path {
+        requested
+    } else {
+        which::which(tool).map_err(|_| {
             RuntimeError::Sandbox(odyssey_rs_sandbox::SandboxError::DependencyMissing(
                 format!("missing system tool: {tool}"),
             ))
-        })?;
-        let path = path.canonicalize().map_err(|err| RuntimeError::Io {
-            path: path.display().to_string(),
-            message: err.to_string(),
-        })?;
-        resolved.push(path.display().to_string());
+        })?
+    };
+    let canonical = primary.canonicalize().map_err(|err| RuntimeError::Io {
+        path: primary.display().to_string(),
+        message: err.to_string(),
+    })?;
+
+    if treat_as_path {
+        return Ok(vec![primary.display().to_string()]);
     }
-    Ok(resolved)
+
+    let mut aliases = vec![primary];
+    if let Some(path_value) = std::env::var_os("PATH") {
+        for root in std::env::split_paths(&path_value) {
+            let candidate = root.join(tool);
+            if aliases.iter().any(|existing| existing == &candidate) || !candidate.exists() {
+                continue;
+            }
+
+            let Ok(candidate_canonical) = candidate.canonicalize() else {
+                continue;
+            };
+            if candidate_canonical == canonical {
+                aliases.push(candidate);
+            }
+        }
+    }
+
+    Ok(aliases
+        .into_iter()
+        .map(|path| path.display().to_string())
+        .collect())
 }
 
 fn validate_provider_support(
@@ -1168,12 +1204,12 @@ mod tests {
                 .exec_roots
                 .contains(&"/bundle-root/bin/run".to_string())
         );
-        assert!(
-            policy
-                .filesystem
-                .exec_roots
-                .contains(&sh.display().to_string())
-        );
+        assert!(policy.filesystem.exec_roots.iter().any(|path| {
+            Path::new(path)
+                .canonicalize()
+                .map(|resolved| resolved == sh)
+                .unwrap_or(false)
+        }));
         assert_eq!(policy.network.mode, SandboxNetworkMode::AllowAll);
         assert_eq!(policy.limits.cpu_seconds, Some(3));
         assert_eq!(policy.limits.memory_bytes, Some(64 * 1024 * 1024));
@@ -1305,7 +1341,7 @@ mod tests {
             },
         };
 
-        let rules = build_permission_rules(&agent);
+        let rules = build_permission_rules(&agent).expect("rules");
 
         assert_eq!(
             rules,
@@ -1338,6 +1374,28 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn build_permission_rules_rejects_invalid_matchers() {
+        let agent = AgentSpec {
+            id: "demo".to_string(),
+            description: String::default(),
+            prompt: "test".to_string(),
+            model: odyssey_rs_protocol::ModelSpec {
+                provider: "openai".to_string(),
+                name: "gpt-4.1-mini".to_string(),
+                config: None,
+            },
+            tools: AgentToolPolicy {
+                allow: vec!["Bash(".to_string()],
+                ask: Vec::new(),
+                deny: Vec::new(),
+            },
+        };
+
+        let error = build_permission_rules(&agent).expect_err("invalid matcher rejected");
+        assert!(error.to_string().contains("invalid tool permission rule"));
     }
 
     #[test]

@@ -397,7 +397,7 @@ async fn handle_session(
         if let Some(remote) = remote {
             remote.delete_session(id).await?;
         } else {
-            runtime.delete_session(id)?;
+            runtime.delete_session(id).await?;
         }
         println!("{} {}", "deleted".green().bold(), id);
     } else {

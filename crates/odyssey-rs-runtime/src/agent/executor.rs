@@ -106,10 +106,10 @@ async fn forward_autoagents_events(
     turn_context: TurnContext,
 ) {
     let mut bridge = AutoagentsEventBridge::new(turn_id, turn_context);
+    info!("Forwaring AutoAgents Events");
     while let Some(event) = events.next().await {
         let mapped = bridge.map_event(event);
         for payload in mapped.payloads {
-            info!("Forwaring AutoAgents Events");
             emit(&sender, session_id, payload);
         }
         if mapped.terminal {

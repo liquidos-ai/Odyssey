@@ -5,12 +5,14 @@ use crate::client::AgentRuntimeClient;
 use crate::event::AppEvent;
 use crate::handlers::{agent, bundle, model, session, slash};
 use crate::ui::theme::AVAILABLE_THEMES;
+use crate::ui::widgets::input::PROMPT;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use log::info;
 use odyssey_rs_protocol::ApprovalDecision;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use unicode_width::UnicodeWidthStr;
 
 /// Handle a keyboard event.
 ///
@@ -59,6 +61,7 @@ fn handle_esc(app: &mut App) -> anyhow::Result<bool> {
     if app.show_slash_commands {
         app.show_slash_commands = false;
         app.input.clear();
+        app.input_cursor = 0;
         return Ok(false);
     }
     Ok(true)
@@ -182,22 +185,84 @@ async fn handle_normal_input(
         KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             session::activate_selected_session(client, app, sender, stream_handle).await?;
         }
+        KeyCode::Tab => {
+            app.open_viewer(ViewerKind::Agents);
+        }
         KeyCode::PageUp => app.scroll_up(5),
         KeyCode::PageDown => app.scroll_down(5),
-        KeyCode::Up => app.scroll_up(1),
-        KeyCode::Down => app.scroll_down(1),
-        KeyCode::Home => app.scroll_to_top(),
-        KeyCode::End => app.enable_auto_scroll(),
+
+        // Arrow keys: navigate cursor when input has text, otherwise scroll chat.
+        KeyCode::Left => {
+            if !app.input.is_empty() {
+                move_cursor_left(app);
+            }
+        }
+        KeyCode::Right => {
+            if !app.input.is_empty() {
+                move_cursor_right(app);
+            }
+        }
+        KeyCode::Up => {
+            if app.input.is_empty() || app.history_index.is_some() && cursor_on_first_line(app) {
+                // Browse history: go to previous entry.
+                history_up(app);
+            } else if !app.input.is_empty() {
+                move_cursor_up(app);
+            } else {
+                app.scroll_up(1);
+            }
+        }
+        KeyCode::Down => {
+            if app.history_index.is_some() && cursor_on_last_line(app) {
+                // Browse history: go to next entry (or back to draft).
+                history_down(app);
+            } else if !app.input.is_empty() {
+                move_cursor_down(app);
+            } else {
+                app.scroll_down(1);
+            }
+        }
+
+        KeyCode::Home => {
+            if !app.input.is_empty() {
+                app.input_cursor = 0;
+            } else {
+                app.scroll_to_top();
+            }
+        }
+        KeyCode::End => {
+            if !app.input.is_empty() {
+                app.input_cursor = app.input.len();
+            } else {
+                app.enable_auto_scroll();
+            }
+        }
+
         KeyCode::Enter => handle_enter(key, client, app, sender, stream_handle).await?,
         KeyCode::Backspace => {
-            app.input.pop();
-            app.show_slash_commands = app.input.trim_start().starts_with('/');
-            app.slash_selected = 0;
+            if app.input_cursor > 0 {
+                let prev = prev_char_boundary(&app.input, app.input_cursor);
+                app.input.drain(prev..app.input_cursor);
+                app.input_cursor = prev;
+                app.show_slash_commands = app.input.trim_start().starts_with('/');
+                app.slash_selected = 0;
+                app.history_index = None;
+            }
+        }
+        KeyCode::Delete => {
+            if app.input_cursor < app.input.len() {
+                let next = next_char_boundary(&app.input, app.input_cursor);
+                app.input.drain(app.input_cursor..next);
+                app.show_slash_commands = app.input.trim_start().starts_with('/');
+                app.slash_selected = 0;
+            }
         }
         KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.input.push(ch);
+            app.input.insert(app.input_cursor, ch);
+            app.input_cursor += ch.len_utf8();
             app.show_slash_commands = app.input.trim_start().starts_with('/');
             app.slash_selected = 0;
+            app.history_index = None;
         }
         _ => {}
     }
@@ -239,6 +304,7 @@ async fn handle_palette_key(
                 // No arguments needed — execute the command immediately.
                 let command = format!("/{}", entry.trigger);
                 app.input.clear();
+                app.input_cursor = 0;
                 if let Err(err) =
                     slash::handle_slash_command(client, app, sender, stream_handle, command).await
                 {
@@ -248,11 +314,189 @@ async fn handle_palette_key(
                 // Command needs arguments — complete the trigger and let the
                 // user type the rest.
                 app.input = format!("/{} ", entry.trigger);
+                app.input_cursor = app.input.len();
             }
             Ok(true)
         }
         _ => Ok(false),
     }
+}
+
+// ── History helpers ──────────────────────────────────────────────────────────
+
+/// Whether the cursor is on the first visual line of the input.
+fn cursor_on_first_line(app: &App) -> bool {
+    let width = app.input_inner_width.max(1) as usize;
+    let prompt_w = UnicodeWidthStr::width(PROMPT);
+    let (line, _) = visual_pos(&app.input, app.input_cursor, width, prompt_w);
+    line == 0
+}
+
+/// Whether the cursor is on the last visual line of the input.
+fn cursor_on_last_line(app: &App) -> bool {
+    let width = app.input_inner_width.max(1) as usize;
+    let prompt_w = UnicodeWidthStr::width(PROMPT);
+    let (line, _) = visual_pos(&app.input, app.input_cursor, width, prompt_w);
+    let total = crate::ui::input_line_count(&app.input, width) as usize;
+    line + 1 >= total
+}
+
+fn history_up(app: &mut App) {
+    if app.history.is_empty() {
+        return;
+    }
+    let new_idx = match app.history_index {
+        Some(idx) if idx > 0 => idx - 1,
+        Some(0) => return, // already at oldest
+        None => {
+            // Start browsing: save current input as draft.
+            app.history_draft = app.input.clone();
+            app.history.len() - 1
+        }
+        _ => return,
+    };
+    app.history_index = Some(new_idx);
+    app.input.clone_from(&app.history[new_idx]);
+    app.input_cursor = app.input.len();
+}
+
+fn history_down(app: &mut App) {
+    let Some(idx) = app.history_index else {
+        return;
+    };
+    if idx + 1 < app.history.len() {
+        let new_idx = idx + 1;
+        app.history_index = Some(new_idx);
+        app.input.clone_from(&app.history[new_idx]);
+        app.input_cursor = app.input.len();
+    } else {
+        // Past the newest entry — restore draft.
+        app.history_index = None;
+        app.input = std::mem::take(&mut app.history_draft);
+        app.input_cursor = app.input.len();
+    }
+}
+
+// ── Cursor movement helpers ──────────────────────────────────────────────────
+
+/// Return the byte index of the previous character boundary before `pos`.
+fn prev_char_boundary(s: &str, pos: usize) -> usize {
+    let mut i = pos.saturating_sub(1);
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Return the byte index of the next character boundary after `pos`.
+fn next_char_boundary(s: &str, pos: usize) -> usize {
+    let mut i = pos + 1;
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i.min(s.len())
+}
+
+fn move_cursor_left(app: &mut App) {
+    if app.input_cursor > 0 {
+        app.input_cursor = prev_char_boundary(&app.input, app.input_cursor);
+    }
+}
+
+fn move_cursor_right(app: &mut App) {
+    if app.input_cursor < app.input.len() {
+        app.input_cursor = next_char_boundary(&app.input, app.input_cursor);
+    }
+}
+
+/// Move cursor up one visual line, keeping the same visual column.
+fn move_cursor_up(app: &mut App) {
+    let width = app.input_inner_width.max(1) as usize;
+    let prompt_w = UnicodeWidthStr::width(PROMPT);
+
+    // Compute the visual column and line of the current cursor.
+    let (cursor_line, cursor_col) = visual_pos(&app.input, app.input_cursor, width, prompt_w);
+
+    if cursor_line == 0 {
+        // Already on the first line — move cursor to start.
+        app.input_cursor = 0;
+        return;
+    }
+
+    // Find the byte offset that corresponds to (cursor_line - 1, cursor_col).
+    app.input_cursor =
+        byte_offset_for_visual(&app.input, cursor_line - 1, cursor_col, width, prompt_w);
+}
+
+/// Move cursor down one visual line, keeping the same visual column.
+fn move_cursor_down(app: &mut App) {
+    let width = app.input_inner_width.max(1) as usize;
+    let prompt_w = UnicodeWidthStr::width(PROMPT);
+
+    let (cursor_line, cursor_col) = visual_pos(&app.input, app.input_cursor, width, prompt_w);
+
+    // Total number of visual lines.
+    let total_lines = crate::ui::input_line_count(&app.input, width) as usize;
+    if cursor_line + 1 >= total_lines {
+        // Already on the last line — move cursor to end.
+        app.input_cursor = app.input.len();
+        return;
+    }
+
+    app.input_cursor =
+        byte_offset_for_visual(&app.input, cursor_line + 1, cursor_col, width, prompt_w);
+}
+
+/// Compute (visual_line, visual_col) for a given byte offset in the input.
+fn visual_pos(input: &str, byte_offset: usize, width: usize, prompt_w: usize) -> (usize, usize) {
+    let mut line = 0usize;
+    let mut col = prompt_w;
+
+    for (i, ch) in input.char_indices() {
+        if i >= byte_offset {
+            break;
+        }
+        let ch_w = UnicodeWidthStr::width(ch.encode_utf8(&mut [0u8; 4]) as &str);
+        if col + ch_w > width && col > 0 {
+            line += 1;
+            col = 0;
+        }
+        col += ch_w;
+    }
+    (line, col)
+}
+
+/// Find the byte offset in `input` that corresponds to (target_line, target_col).
+/// Clamps to the end of the target line if `target_col` is beyond the line length.
+fn byte_offset_for_visual(
+    input: &str,
+    target_line: usize,
+    target_col: usize,
+    width: usize,
+    prompt_w: usize,
+) -> usize {
+    let mut line = 0usize;
+    let mut col = prompt_w;
+    let mut last_byte = 0usize;
+
+    for (i, ch) in input.char_indices() {
+        let ch_w = UnicodeWidthStr::width(ch.encode_utf8(&mut [0u8; 4]) as &str);
+        if col + ch_w > width && col > 0 {
+            if line == target_line {
+                // We were on the target line but hit the end before reaching target_col.
+                return i;
+            }
+            line += 1;
+            col = 0;
+        }
+        if line == target_line && col >= target_col {
+            return i;
+        }
+        col += ch_w;
+        last_byte = i + ch.len_utf8();
+    }
+    // Past all characters — return end.
+    last_byte
 }
 
 async fn handle_enter(
@@ -266,9 +510,16 @@ async fn handle_enter(
         app.show_slash_commands = false;
         return Ok(());
     }
+    // Save to history and reset browsing state.
+    crate::history::push(&app.input);
+    app.history.push(app.input.clone());
+    app.history_index = None;
+    app.history_draft.clear();
+
     app.show_slash_commands = false;
     if app.input.trim_start().starts_with('/') {
         let command = std::mem::take(&mut app.input);
+        app.input_cursor = 0;
         if let Err(err) =
             slash::handle_slash_command(client, app, sender, stream_handle, command).await
         {

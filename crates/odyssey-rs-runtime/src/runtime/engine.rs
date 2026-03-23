@@ -92,6 +92,7 @@ pub(crate) struct OdysseyRuntimeInner {
     pub(crate) store: BundleStore,
     pub(crate) sessions: SessionStore,
     pub(crate) host_sandbox: Arc<SandboxRuntime>,
+    pub(crate) restricted_sandbox: Arc<SandboxRuntime>,
     pub(crate) tools: ToolRegistry,
     pub(crate) approvals: ApprovalStore,
     execution_guards: SessionExecutionGuards,
@@ -113,6 +114,8 @@ impl OdysseyRuntime {
             &config,
             SandboxMode::DangerFullAccess,
         )?);
+        let restricted_sandbox =
+            Arc::new(build_sandbox_runtime(&config, SandboxMode::WorkspaceWrite)?);
         let worker_count = config.worker_count;
         let queue_capacity = config.queue_capacity;
         let inner = Arc::new(OdysseyRuntimeInner {
@@ -120,6 +123,7 @@ impl OdysseyRuntime {
             store,
             sessions,
             host_sandbox,
+            restricted_sandbox,
             tools: builtin_registry(),
             approvals: ApprovalStore::default(),
             execution_guards: SessionExecutionGuards::default(),
@@ -257,8 +261,14 @@ impl OdysseyRuntime {
         Ok(session_from_record(record))
     }
 
-    pub fn delete_session(&self, session_id: Uuid) -> Result<(), RuntimeError> {
+    pub async fn delete_session(&self, session_id: Uuid) -> Result<(), RuntimeError> {
+        let _session_guard = self.inner.lock_session_execution(session_id).await;
         self.inner.sessions.delete(session_id)?;
+        self.inner.approvals.clear_session(session_id);
+        self.inner.host_sandbox.shutdown_session(session_id)?;
+        if !Arc::ptr_eq(&self.inner.host_sandbox, &self.inner.restricted_sandbox) {
+            self.inner.restricted_sandbox.shutdown_session(session_id)?;
+        }
         self.inner.remove_session_execution_guard(session_id);
         Ok(())
     }
@@ -359,7 +369,7 @@ impl OdysseyRuntime {
                 handle: cell.sandbox.handle,
                 lease: cell.sandbox.lease,
             },
-            permission_rules: build_permission_rules(&resolved.default_agent),
+            permission_rules: build_permission_rules(&resolved.default_agent)?,
             event_sink: Some(event_sink),
             approval_handler: Some(approval_handler),
             skills: None,

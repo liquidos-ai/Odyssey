@@ -183,7 +183,7 @@ async fn delete_session(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    state.runtime.delete_session(id).map_err(internal)?;
+    state.runtime.delete_session(id).await.map_err(internal)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

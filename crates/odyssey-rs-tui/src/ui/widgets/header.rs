@@ -160,9 +160,22 @@ pub fn draw_cpu_widget(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ]),
     ];
 
+    // Process memory usage
+    let mem_label = format_bytes(app.mem_usage_bytes);
+    let mem_color = if app.mem_usage_bytes < 256 * 1024 * 1024 {
+        Color::Rgb(120, 220, 140)
+    } else if app.mem_usage_bytes < 1024 * 1024 * 1024 {
+        t.accent
+    } else {
+        Color::Rgb(255, 110, 110)
+    };
+    lines.push(Line::from(Span::styled(
+        format!(" MEM {mem_label}"),
+        Style::default().fg(mem_color).add_modifier(Modifier::BOLD),
+    )));
+
     if let Some(temp) = app.gpu_temp {
         let color = usage_color(temp, 60.0, 80.0, t.accent);
-        lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             format!(" GPU {temp:5.1}°C"),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -170,6 +183,22 @@ pub fn draw_cpu_widget(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Format a byte count as a human-readable string (e.g. "23.4 MB").
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 /// Map a gauge value to green / accent / red based on thresholds.

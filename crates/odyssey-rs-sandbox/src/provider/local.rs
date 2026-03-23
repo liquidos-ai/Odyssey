@@ -3,7 +3,7 @@ use crate::{
     SandboxError, SandboxHandle, SandboxProvider,
     provider::{
         BufferingSink, PreparedSandbox, build_host_child_command, build_prepared_sandbox,
-        cleanup_private_tmp_dir, run_host_process, validate_host_execution_context,
+        run_host_process, validate_host_execution_context,
     },
 };
 use async_trait::async_trait;
@@ -91,14 +91,9 @@ impl SandboxProvider for HostExecProvider {
         build_host_child_command(spec, &prepared)
     }
 
-    async fn shutdown(&self, handle: SandboxHandle) {
+    fn shutdown(&self, handle: SandboxHandle) {
         info!("host execution provider shutdown (handle_id={})", handle.id);
-        let removed = self.state.write().remove(&handle.id);
-        cleanup_private_tmp_dir(
-            removed
-                .as_ref()
-                .and_then(|prepared| prepared.private_tmp_dir.as_deref()),
-        );
+        self.state.write().remove(&handle.id);
     }
 }
 
@@ -159,11 +154,16 @@ mod tests {
             .state
             .read()
             .get(&handle.id)
-            .and_then(|prepared| prepared.private_tmp_dir.clone())
+            .and_then(|prepared| {
+                prepared
+                    ._private_tmp_dir
+                    .as_ref()
+                    .map(|path| path.path().to_path_buf())
+            })
             .expect("private tmp dir");
         assert!(private_tmp_dir.exists());
 
-        provider.shutdown(handle).await;
+        provider.shutdown(handle);
         assert!(!private_tmp_dir.exists());
         match provider.check_access(&handle_clone, &inside, AccessMode::Read) {
             AccessDecision::Deny(message) => assert!(message.contains("unknown")),

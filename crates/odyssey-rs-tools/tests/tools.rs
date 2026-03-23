@@ -101,7 +101,7 @@ impl SandboxProvider for FakeProvider {
         }
     }
 
-    async fn shutdown(&self, _handle: SandboxHandle) {}
+    fn shutdown(&self, _handle: SandboxHandle) {}
 }
 
 #[derive(Default)]

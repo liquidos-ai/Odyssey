@@ -110,6 +110,7 @@ pub async fn send_message(
         }
     };
     let prompt = std::mem::take(&mut app.input);
+    app.input_cursor = 0;
     info!(
         "sending message (session_id={}, prompt_len={})",
         session_id,
@@ -138,6 +139,7 @@ pub async fn send_command(
         }
     };
     let raw_input = std::mem::take(&mut app.input);
+    app.input_cursor = 0;
     let command_line = raw_input
         .trim_start()
         .strip_prefix('!')

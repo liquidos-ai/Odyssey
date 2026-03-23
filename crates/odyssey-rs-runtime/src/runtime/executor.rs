@@ -19,8 +19,7 @@ use crate::{
         tool_event::{RuntimeApprovalHandler, RuntimeToolEventSink},
     },
     sandbox::{
-        PreparedToolSandbox, build_permission_rules, build_sandbox_runtime, prepare_cell,
-        prepare_operator_command_cell,
+        PreparedToolSandbox, build_permission_rules, prepare_cell, prepare_operator_command_cell,
     },
     session::{SessionRecord, TurnChatMessageRecord, TurnRecord},
     skill::BundleSkillStore,
@@ -102,10 +101,10 @@ impl ScheduleExecutor {
         debug!("Effective Sandbox mode: {:?}", mode);
 
         //Prepare sandbox cell
+        let permissions = build_permission_rules(&resolved.default_agent)?;
         let cell =
             prepare_resolved_bundle_cell(&mode, &self.runtime, &resolved, session_id).await?;
         info!("Prepared bundle cell");
-        let permissions = build_permission_rules(&resolved.default_agent);
         info!("Built permission rules");
         let event_sink = Arc::new(RuntimeToolEventSink {
             session_id,
@@ -202,7 +201,7 @@ pub(crate) async fn prepare_resolved_bundle_cell(
     let sandbox_runtime = if mode == &SandboxMode::DangerFullAccess {
         runtime.host_sandbox.clone()
     } else {
-        Arc::new(build_sandbox_runtime(&runtime.config, *mode)?)
+        runtime.restricted_sandbox.clone()
     };
 
     prepare_cell(
@@ -225,7 +224,7 @@ pub(crate) async fn prepare_resolved_bundle_command_cell(
     let sandbox_runtime = if mode == &SandboxMode::DangerFullAccess {
         runtime.host_sandbox.clone()
     } else {
-        Arc::new(build_sandbox_runtime(&runtime.config, *mode)?)
+        runtime.restricted_sandbox.clone()
     };
 
     prepare_operator_command_cell(

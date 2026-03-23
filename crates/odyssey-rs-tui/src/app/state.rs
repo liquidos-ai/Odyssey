@@ -48,6 +48,16 @@ pub struct App {
     pub messages: Vec<ChatEntry>,
     /// Current input buffer.
     pub input: String,
+    /// Byte offset of the cursor within `input`.
+    pub input_cursor: usize,
+    /// Inner width of the input widget (set during rendering, used for Up/Down navigation).
+    pub input_inner_width: u16,
+    /// Input history entries (oldest first), loaded from disk on startup.
+    pub history: Vec<String>,
+    /// Current position in the history list (`None` = not browsing history).
+    pub history_index: Option<usize>,
+    /// Saved in-progress input before history browsing started.
+    pub history_draft: String,
     /// Whether to show the slash command palette overlay.
     pub show_slash_commands: bool,
     /// Index of the highlighted command in the slash palette.
@@ -78,6 +88,8 @@ pub struct App {
     pub cpu_usage: f32,
     /// Current GPU temperature in °C, if a GPU sensor is available.
     pub gpu_temp: Option<f32>,
+    /// Current process memory usage in bytes.
+    pub mem_usage_bytes: u64,
     pub(crate) sys: System,
     pub(crate) components: Components,
     pub(crate) streamed_turns: HashSet<Uuid>,
@@ -269,6 +281,11 @@ impl Default for App {
             cwd: String::default(),
             messages: Vec::new(),
             input: String::default(),
+            input_cursor: 0,
+            input_inner_width: 80,
+            history: crate::history::load(),
+            history_index: None,
+            history_draft: String::new(),
             show_slash_commands: false,
             slash_selected: 0,
             theme: ODYSSEY,
@@ -284,6 +301,7 @@ impl Default for App {
             chat_max_scroll: 0,
             cpu_usage: 0.0,
             gpu_temp: None,
+            mem_usage_bytes: 0,
             sys: System::new(),
             components: Components::new_with_refreshed_list(),
             streamed_turns: HashSet::new(),
@@ -422,13 +440,20 @@ impl App {
 
     // ── System metrics ───────────────────────────────────────────────────────
 
-    /// Refresh CPU usage and GPU temperature readings.
+    /// Refresh CPU usage, memory usage, and GPU temperature readings.
     pub fn refresh_cpu(&mut self) {
         self.sys.refresh_cpu_usage();
         let cpus = self.sys.cpus();
         if !cpus.is_empty() {
             let total: f32 = cpus.iter().map(|c| c.cpu_usage()).sum();
             self.cpu_usage = total / cpus.len() as f32;
+        }
+        self.sys.refresh_processes(
+            sysinfo::ProcessesToUpdate::Some(&[sysinfo::get_current_pid().unwrap()]),
+            true,
+        );
+        if let Some(proc) = self.sys.process(sysinfo::get_current_pid().unwrap()) {
+            self.mem_usage_bytes = proc.memory();
         }
         self.components.refresh(false);
         self.gpu_temp = find_gpu_temp(&self.components);

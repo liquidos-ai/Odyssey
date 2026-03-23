@@ -6,7 +6,7 @@ description: Builtin tools, sandbox modes, and approval behavior in Odyssey.
 
 ## Builtin Tools
 
-The builtin tool registry currently contains:
+The builtin registry currently exposes these tools:
 
 - `Read`
 - `Write`
@@ -17,12 +17,17 @@ The builtin tool registry currently contains:
 - `Bash`
 - `Skill`
 
-Important behavior detail:
+Useful distinctions:
 
-- `Read`, `LS`, `Glob`, and `Grep` respect `.gitignore` files while traversing the visible workspace and mounted host directories
-- `Write` and `Edit` mutate files directly through the tool API after sandbox read or write checks
-- `Bash` runs the command through a real sandboxed system shell (`sh -lc ...`), so shell features like redirection and pipelines work
-- that means `Bash` depends on both the sandbox write policy and the executable policy for the shell itself, while `Write` does not
+- `Read`, `LS`, `Glob`, and `Grep` respect `.gitignore` while traversing the visible workspace
+  and mounted host directories
+- `Write` and `Edit` mutate files through the tool API after sandbox write checks
+- `Bash` runs `sh -lc ...` inside the sandbox, so shell features like redirection, pipes, and
+  globbing work
+- `Skill` exposes bundle skill summaries through the runtime skill store
+
+That last point matters because process execution is governed by both filesystem access and
+executable policy, while direct file-writing tools are governed only by filesystem policy.
 
 ## How Tool Selection Works
 
@@ -36,6 +41,13 @@ Tool availability is the result of two filters:
    and exact entries in `tools.deny` remove tools from the final list.
 
 The final list is sorted, deduplicated, and adapted into the executor's tool interface.
+
+Important behavior detail:
+
+- if `manifest.tools` is empty, Odyssey starts from the full builtin registry
+- if `agent.tools.allow`, `ask`, and `deny` are all empty, the manifest selection remains in place
+- granular denies such as `Bash(curl:*)` do not remove the `Bash` tool from availability; they
+  only affect permission checks during execution
 
 ## Sandbox Modes
 
@@ -58,7 +70,7 @@ The runtime builds sandbox filesystem policy from the manifest:
 - `mounts.read` becomes host read roots
 - `mounts.write` becomes host write roots
 - `filesystem.exec` becomes executable paths under the staged bundle root
-- `system_tools` resolves named host executables and adds those exact binaries to the execute allowlist
+- `system_tools` resolves named host executables and adds those exact binaries, plus matching PATH aliases such as `/bin/sh` and `/usr/bin/sh`, to the execute allowlist
 - `Bash` also needs a permitted system shell because it executes commands through `sh -lc ...`
 
 Bundle-local exec paths must stay inside the bundle workspace. Absolute paths, `..` traversal, and
@@ -85,6 +97,12 @@ The sandbox cell root itself is always added as a readable root. In `workspace_w
 For runtime-managed cells, Odyssey keeps the staged bundle under `app/` and keeps mutable runtime
 state in separate directories such as `data/`, `cache/`, `tmp/`, and `runs/`.
 
+In confined Linux sandboxes, executable visibility now follows the selected policy strictly:
+
+- `explicit` only mounts declared bundle exec paths and named `system_tools`, plus runtime linker and trust-store support files
+- `standard` mounts the standard host executable roots such as `/usr`, `/bin`, `/sbin`, and `/opt`
+- `all` removes the execute allowlist but still only applies to files already visible inside the sandbox
+
 That split matters because many tools need writable paths even when the bundle itself should remain
 stable:
 
@@ -97,6 +115,32 @@ Without that separation, a confined sandbox would have to choose between making 
 writable or letting normal tools fail with permission errors when they try to write under the app
 root. By keeping `app/` separate from writable runtime-owned directories, Odyssey can keep the
 staged bundle read-only in restricted modes while still giving processes safe writable locations.
+
+## Process Execution Policy
+
+For process execution, Odyssey combines:
+
+- filesystem visibility
+- the executable allowlist or exec-root mode
+- tool permission rules from `agent.yaml`
+
+That means these two operations are intentionally governed by different policy paths:
+
+- `Write` can create `hello.py` if the path is writable
+- `Bash` can only run `echo hello > hello.py` if the path is writable and the shell itself is
+  executable in the sandbox
+
+The three system-tool modes mean:
+
+- `explicit` mounts only bundle-local exec paths plus the named `sandbox.system_tools`
+- `standard` exposes common host executable roots such as `/usr` and `/bin`
+- `all` removes the executable allowlist but still does not expose paths outside the sandbox's
+  visible filesystem
+
+Direct operator commands are a separate path from agent tool calls. The runtime uses an operator
+command policy for `run_session_command` and local workflows such as TUI `!ls`, so basic operator
+inspection commands still work in restricted sessions even when the bundle manifest itself uses a
+more restrictive `system_tools_mode: "explicit"`.
 
 ## Environment Policy
 
@@ -120,6 +164,9 @@ it into the sandbox under the configured key. Missing host variables are silentl
 This behaves like a narrow allowlist. Only variables named in `sandbox.env` and Odyssey's built-in
 safe defaults such as `PATH`, `HOME`, `TMPDIR`, and `ODYSSEY_SANDBOX` are present in the final
 sandbox environment.
+
+This only applies to sandboxed bundle commands. Model-provider credentials such as
+`OPENAI_API_KEY` are read by the runtime process itself, not from the sandbox environment.
 
 ## Network Policy
 
@@ -152,30 +199,18 @@ Important details from the current implementation:
 - approval prompts are only generated for tools marked `ask`
 - more specific rules beat broader ones, and ties still resolve by action precedence
 - granular rules like `Bash(curl:*)` still make the `Bash` tool available to the agent
+- malformed tool permission entries are rejected; they do not silently fall back to coarse tool-name matching
 
-## System Tools
+## Approval Behavior
 
-The runtime supports three host executable policies:
+Tool permission rules can resolve in three ways:
 
-- `system_tools_mode: "explicit"`:
-  only `sandbox.system_tools` plus `filesystem.exec` paths are executable
-- `system_tools_mode: "standard"`:
-  standard host executable roots such as `/usr` and `/bin` are executable, plus any explicit `system_tools`
-- `system_tools_mode: "all"`:
-  executable path checks are not restricted to an allowlist
+- `allow` runs immediately
+- `deny` fails immediately
+- `ask` emits `PermissionRequested` and pauses until the runtime receives an approval decision
 
-When `sandbox.system_tools` is used, the runtime resolves each named binary with `which`, verifies
-it exists, and then permits sandboxed commands to execute that binary via `PATH`.
-
-This is the main difference between filesystem tools and process execution tools:
-
-- `Write` can create `hello.py` if the workspace path is writable
-- `Bash` can only run `echo hello > hello.py` if the workspace is writable and the bundle's executable policy allows the shell
-
-So those two flows are intentionally governed by different sandbox controls:
-
-- filesystem tools are governed by read or write access
-- process execution is governed by both filesystem access and the configured executable policy
+`ApprovalDecision::AllowAlways` is remembered only for the current session. It is cleared when the
+runtime restarts or when the session is deleted.
 
 ## Roadmap
 

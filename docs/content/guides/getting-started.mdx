@@ -8,6 +8,10 @@ description: Build, install, and run your first Odyssey bundle locally.
 
 - A Rust toolchain
 - An API key for the cloud model provider your bundle uses
+- On Linux, `bubblewrap` (`bwrap`) in `PATH` if you want restricted sandbox execution
+
+If you are developing on macOS or Windows, confined bundle sandboxes are not available yet. Use
+`--dangerous-sandbox-mode` for local development or run Odyssey inside a Linux container.
 
 ## Initialize A Bundle
 
@@ -17,7 +21,7 @@ Create a starter bundle project:
 cargo run -p odyssey-rs -- init ./hello-world
 ```
 
-The template creates:
+The template creates a small bundle project:
 
 - `odyssey.bundle.json5`
 - `agent.yaml`
@@ -25,8 +29,18 @@ The template creates:
 - `skills/`
 - `resources/`
 
-The default template uses the `react` executor, the `sliding_window` memory provider, and an
-OpenAI model entry in `agent.yaml`.
+The starter template is intentionally usable out of the box. It currently:
+
+- uses the `react` executor
+- uses the `sliding_window` memory provider
+- sets the default model in `agent.yaml` to `openai / gpt-4.1-mini`
+- lists all builtin tools explicitly in `manifest.tools`
+- starts with `sandbox.mode: "read_only"`
+- enables bundle-command network access with `sandbox.permissions.network: ["*"]`
+- uses `sandbox.system_tools_mode: "standard"`
+
+That is a convenient development starting point, not a production-hardening template. Tighten the
+bundle policy before you treat a bundle as trusted automation.
 
 ## Build And Install
 
@@ -48,6 +62,12 @@ Build an OCI-style bundle layout into a custom output directory instead:
 cargo run -p odyssey-rs -- build ./hello-world --output ./dist
 ```
 
+Bundle references accept a few useful forms:
+
+- `hello-world` or `hello-world@latest` for the latest installed local bundle
+- `local/hello-world:0.1.0` for an explicit namespace and version
+- `./dist` for a built bundle layout directory
+
 ## Run A Prompt
 
 `run` is a one-shot command. It creates a fresh session, sends one prompt, prints the final
@@ -58,24 +78,44 @@ export OPENAI_API_KEY="your-key"
 cargo run -p odyssey-rs -- run hello-world@latest --prompt "What can you do?"
 ```
 
-When you need to bypass sandbox restrictions locally:
+On macOS, Windows, or whenever you intentionally want host execution for local debugging:
 
 ```bash
 cargo run -p odyssey-rs -- run hello-world@latest --prompt "What can you do?" --dangerous-sandbox-mode
 ```
 
-Inspect installed metadata:
+## Inspect And List
+
+Inspect installed bundle metadata:
 
 ```bash
 cargo run -p odyssey-rs -- inspect hello-world@latest
 ```
 
-List installed bundles and saved sessions:
+List installed bundles and persisted sessions:
 
 ```bash
 cargo run -p odyssey-rs -- bundles
 cargo run -p odyssey-rs -- sessions
 ```
+
+## Use The TUI
+
+The TUI uses the same local runtime as the CLI:
+
+```bash
+cargo run -p odyssey-rs -- tui --bundle hello-world@latest
+```
+
+Inside the TUI:
+
+- plain text submits a normal chat turn
+- slash commands manage bundle and session workflow
+- lines starting with `!` run a direct operator command inside the current session sandbox, such as
+  `!ls -la`
+
+Direct operator commands are not stored as normal session turns. They are an operator workflow for
+inspection and debugging.
 
 ## Start The HTTP Runtime
 
@@ -91,25 +131,44 @@ Or choose a custom bind address:
 cargo run -p odyssey-rs -- serve --bind 127.0.0.1:8472
 ```
 
-The server exposes bundle and session APIs over HTTP. The CLI can target that server with
-`--remote` for the subset of commands that support remote execution:
+The HTTP server wraps the same runtime type that the CLI and TUI use locally.
+
+Create a session over HTTP:
+
+```bash
+curl -s -X POST http://127.0.0.1:8472/sessions \
+  -H 'content-type: application/json' \
+  -d '{"bundle_ref":"hello-world@latest"}'
+```
+
+Run a turn synchronously against an existing session:
+
+```bash
+curl -s -X POST http://127.0.0.1:8472/sessions/<session-id>/run-sync \
+  -H 'content-type: application/json' \
+  -d '{
+    "input": {
+      "prompt": "Summarize yourself in one paragraph",
+      "submission_id": "11111111-1111-1111-1111-111111111111",
+      "completed": false
+    }
+  }'
+```
+
+The server accepts the protocol `Task` shape in `input`. The CLI and TUI build that structure for
+you, so you only need to care about it when calling HTTP directly.
+
+The CLI can also target a running server with `--remote` for the commands that support remote
+execution:
 
 ```bash
 cargo run -p odyssey-rs -- --remote http://127.0.0.1:8472 bundles
 cargo run -p odyssey-rs -- --remote http://127.0.0.1:8472 run hello-world@latest --prompt "Summarize yourself"
 ```
 
-## Start The TUI
+## What To Read Next
 
-The TUI runs through the main CLI entrypoint:
-
-```bash
-cargo run -p odyssey-rs -- tui --bundle hello-world@latest
-```
-
-Inside the TUI:
-
-- plain text sends a normal chat turn to the active session
-- slash commands such as `/new` manage sessions and bundle state
-- lines that start with `!` run a direct sandboxed process inside the current session, for example
-  `!ls -la`
+- [Bundle Format](/bundle-format) to understand the manifest and agent spec
+- [Sandbox and Tools](/sandbox-and-tools) to lock down tools, mounts, exec policy, and approvals
+- [CLI and Server](/cli-and-server) for the full command and HTTP reference
+- [Runtime Architecture](/architecture) for the internal model behind sessions, cells, and events

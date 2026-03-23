@@ -11,6 +11,7 @@ intentionally small:
 
 - bundle helpers such as `init`, `build_and_install`, `build_to`, `inspect_bundle`, `export_bundle`,
   and `import_bundle`
+- bundle discovery helpers such as `list_agents`, `list_models`, and `list_skills`
 - session helpers such as `create_session`, `list_sessions`, `get_session`, and `delete_session`
 - execution helpers such as `run`, `submit`, `run_session_command`, `execution_status`,
   `subscribe_session`, and `resolve_approval`
@@ -30,6 +31,9 @@ It also defaults to:
 - `worker_count = 4`
 - `queue_capacity = 128`
 
+`RuntimeConfig.sandbox_mode_override` is `None` by default. When the CLI or an embedding sets it,
+that override replaces the bundle manifest sandbox mode for execution.
+
 ## Session Lifecycle
 
 A session is created from a `SessionSpec` that points at an `AgentRef`. During creation, the
@@ -46,13 +50,16 @@ Session records currently store:
 Turns are appended after execution completes. The runtime stores either a simple prompt/response
 pair or a normalized chat history that includes tool use and tool result records.
 
+Session files are written atomically. On startup, unreadable or corrupt session files are skipped
+and quarantined instead of aborting the whole runtime.
+
 ## Execution Flow
 
 For each submitted `ExecutionRequest`, the runtime currently does the following:
 
 1. Load the session record.
 2. Resolve the bundle and agent from the bundle store.
-3. Pick the effective sandbox mode from the runtime override, turn override, or manifest default.
+3. Pick the effective sandbox mode from the runtime override or the manifest default.
 4. Stage the installed bundle into a sandbox cell.
 5. Load bundle skills and append their summary section to the base system prompt when skills exist.
 6. Select builtin tools based on manifest entries plus agent allow or deny filters.
@@ -74,7 +81,22 @@ normal tools expect.
 session bundle, stages the bundle into the session sandbox cell, parses the command line into an
 argv-style process invocation, and runs that process directly inside the session sandbox. It emits
 the same `ExecCommand*` session events used by builtin tool-driven command execution, but it does
-not route through the bundle's `Bash` tool wrapper.
+not route through the bundle's `Bash` tool wrapper and it does not append a normal turn record to
+session history.
+
+`delete_session` is asynchronous because it waits for in-flight work on that session to finish,
+removes the persisted session file, clears any approval state, and shuts down sandbox cells for the
+session.
+
+## Turn Context Overrides
+
+The public protocol currently allows two per-turn overrides:
+
+- `TurnContextOverride.cwd`
+- `TurnContextOverride.model`
+
+The runtime includes the resolved sandbox mode in `TurnStarted.context`, but the public
+`ExecutionRequest` does not currently support a per-turn sandbox-mode override.
 
 ## Events
 
@@ -102,6 +124,15 @@ Tool approvals are driven by bundle sandbox tool rules:
 `ApprovalDecision::AllowAlways` is remembered for the rest of the current session only. It is not
 persisted across runtime restarts.
 
+## Concurrency Model
+
+- `submit` pushes work into an in-process queue
+- `worker_count` limits how many turns can execute concurrently in one runtime process
+- execution within a single session is serialized by a per-session async lock
+- different sessions can execute concurrently
+
+This means the runtime is concurrent across sessions but intentionally ordered within a session.
+
 ## Current Provider Support
 
 Cloud model providers are wired up for:
@@ -116,3 +147,6 @@ Cloud model providers are wired up for:
 - OpenRouter
 - Phind
 - xAI
+
+Local provider names such as `llama_cpp` are recognized by the resolver, but local model support
+is not implemented yet.

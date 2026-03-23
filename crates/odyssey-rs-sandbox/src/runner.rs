@@ -61,7 +61,7 @@ impl SandboxRunner {
     pub async fn run(&self, request: SandboxRunRequest) -> Result<SandboxRunResult, SandboxError> {
         let handle = self.prepare(&request.context).await?;
         let result = self.provider.run_command(&handle, request.command).await;
-        self.provider.shutdown(handle).await;
+        self.provider.shutdown(handle);
         result
     }
 
@@ -75,7 +75,7 @@ impl SandboxRunner {
             .provider
             .run_command_streaming(&handle, request.command, sink)
             .await;
-        self.provider.shutdown(handle).await;
+        self.provider.shutdown(handle);
         result
     }
 

@@ -4,6 +4,7 @@ mod app;
 mod client;
 mod event;
 mod handlers;
+pub mod history;
 mod spawn;
 mod terminal;
 mod tui_config;
@@ -90,14 +91,6 @@ pub async fn run(runtime: Arc<OdysseyRuntime>, config: TuiRunConfig) -> anyhow::
     spawn::spawn_tick(tx.clone());
 
     let mut stream_handle: Option<JoinHandle<()>> = None;
-    if !app.bundle_ref.is_empty()
-        && app.active_session.is_none()
-        && let Err(err) =
-            handlers::session::create_session(&client, &mut app, tx.clone(), &mut stream_handle)
-                .await
-    {
-        app.push_status(format!("failed to initialize session: {err}"));
-    }
 
     loop {
         terminal.draw(|frame| ui::draw(frame, &mut app))?;

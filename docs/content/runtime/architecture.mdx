@@ -4,73 +4,225 @@ slug: /architecture
 description: Architectural overview of scheduling, state, and transport surfaces in Odyssey.
 ---
 
-## Current Execution Stack
+## High-Level Shape
 
-1. A bundle is resolved from the local bundle store.
-2. A session is created or loaded from the session store.
-3. The scheduler enqueues the request and assigns it to a Tokio worker slot.
-4. The runtime stages the bundle into a sandbox cell and builds a `ToolContext`.
-5. The runtime selects builtin tools, loads bundle skills, resolves the model provider, and
-   preloads memory from prior turns.
-6. The `react` executor runs the turn and emits streamed events.
-7. The completed turn is normalized into session history and persisted to disk.
+Odyssey is a single-process runtime with three main layers:
 
-## Shared State Vs Per-Run State
+```text
+CLI / TUI / HTTP server / embedded Rust app
+                  |
+             OdysseyRuntime
+                  |
+  -------------------------------------------------
+  BundleStore  SessionStore  Scheduler  ApprovalStore
+  ToolRegistry  host SandboxRuntime  restricted SandboxRuntime
+```
 
-`OdysseyRuntime` keeps a few process-wide resources alive:
+The transport surface changes, but the execution engine does not. That is the most important design
+idea in the repository: the CLI, server, and TUI all drive the same runtime type.
 
-- `BundleStore`
-- `SessionStore`
-- one host `SandboxRuntime`
-- the builtin `ToolRegistry`
-- the `ApprovalStore`
-- the execution scheduler
+## Core Runtime Components
 
-Each run then builds its own execution-local state:
+### Bundle store
 
-- the resolved bundle and agent
-- the staged sandbox cell
-- the working directory
-- the selected tool set
-- the model provider instance
-- the memory provider for that session's history
-- the turn context and event sender
+`BundleStore` owns bundle installation, lookup, export, import, publish, and pull flows. At
+execution time it resolves a bundle reference into an installed bundle path plus metadata and the
+resolved manifest.
 
-That split is what lets the runtime execute multiple turns concurrently without rebuilding global
-state each time.
+### Session store
 
-## Scheduler
+`SessionStore` persists sessions as JSON under the configured session root. It also owns the
+broadcast senders used for per-session event streams.
+
+The store is designed for runtime continuity:
+
+- session writes are atomic
+- corrupt session files are quarantined instead of crashing startup
+- turn history is normalized after execution so tool activity can be replayed into memory
+
+### Tool registry
+
+The builtin `ToolRegistry` is process-wide. Each turn selects a subset of those tools based on the
+bundle manifest and the agent permission rules, then adapts them into the executor interface.
+
+### Approval store
+
+`ApprovalStore` is in-memory session state for:
+
+- pending approval requests
+- session-scoped `allow_always` decisions
+
+It is intentionally ephemeral. Approvals do not survive process restarts.
+
+### Sandbox runtimes
+
+`OdysseyRuntime` keeps two shared sandbox runtimes alive:
+
+- one host runtime for `danger_full_access`
+- one restricted runtime for confined execution
+
+Each `SandboxRuntime` manages prepared cells and reuses them across turns when the session, agent,
+and policy match.
+
+## Sessions, Turns, and Ordering
+
+The runtime is concurrent across sessions but serialized within a session.
+
+Two pieces make that work:
+
+- the scheduler limits global concurrency with a semaphore
+- `SessionExecutionGuards` hold a per-session async mutex so only one turn or direct operator
+  command runs in a given session at a time
+
+That design avoids races in session history, approvals, and sandbox cell reuse while still allowing
+different sessions to execute in parallel.
+
+## Managed Sandbox Cells
+
+Restricted execution is built around reusable managed cells. A cell is identified by a
+`SandboxCellKey` containing:
+
+- an optional `session_id`
+- the `agent_id`
+- the cell kind
+- a component id
+
+The runtime currently uses tooling cells for bundle execution. Each managed cell is laid out like
+this:
+
+```text
+<cell>/
+  app/          # staged bundle contents
+  data/
+    home/       # HOME for sandboxed processes
+  cache/        # runtime-owned caches
+  tmp/          # private tmp area
+  runs/         # per-execution scratch directories
+```
+
+Each execution inside a cell gets its own scratch layout under `runs/<uuid>/`:
+
+```text
+<run>/
+  inbox/
+  outbox/
+  work/
+  tmp/
+```
+
+This split is the core of Odyssey's sandbox filesystem model:
+
+- `app/` can stay read-only in restricted modes
+- tools still get writable `HOME`, temp, cache, and per-run work areas
+- cells can be reused without rebuilding global sandbox state every turn
+
+## Turn Execution Pipeline
+
+A submitted turn currently follows this path:
+
+1. Load the session record from `SessionStore`.
+2. Resolve the bundle and default agent from `BundleStore`.
+3. Choose the effective sandbox mode from the runtime override or the manifest default.
+4. Prepare or reuse a sandbox cell for the session and bundle policy.
+5. Build tool permission rules from `agent.yaml`.
+6. Load bundle skills and build the effective system prompt.
+7. Select the tool subset from the registry.
+8. Resolve the model provider from the session model or per-turn model override.
+9. Build memory from prior turns.
+10. Run the executor.
+11. Collect session events into normalized chat history.
+12. Persist the completed turn.
+
+Two points are easy to miss:
+
+- the runtime builds memory after loading session history, not from raw event replay alone
+- the executor runs with an execution-local `ToolContext`, not direct access to process-global state
+
+## Tool Calls Versus Direct Operator Commands
+
+Odyssey has two different command-execution paths.
+
+### Agent tool path
+
+When the agent uses `Bash`, the flow is:
+
+- tool selection decides whether `Bash` is available
+- tool permission rules decide whether the specific call is allowed, denied, or needs approval
+- sandbox exec policy decides whether the shell and subcommands are executable
+- events are emitted as tool events and, when a process runs, as `ExecCommand*` events
+
+### Operator command path
+
+When an operator uses `run_session_command` or a local TUI command such as `!ls`, the flow is:
+
+- the runtime resolves the session bundle
+- it prepares the same session sandbox cell
+- it builds an operator-specific command policy
+- it runs the command directly, without the bundle `Bash` tool wrapper
+
+This path is intentionally separate because it is an operator surface, not an agent decision. It
+still emits `ExecCommand*` events, but it does not append a normal turn to session history.
+
+## Scheduler And Execution Status
 
 The scheduler is an in-process queue backed by:
 
 - a Tokio `mpsc` channel for pending jobs
-- a semaphore for concurrency control
-- an in-memory map of `turn_id -> ExecutionStatus`
+- a semaphore that enforces `worker_count`
+- an in-memory `turn_id -> ExecutionStatus` map
 
-`submit` enqueues work and returns immediately. `run` submits the same work but also waits on a
-completion channel for the final `RunOutput`.
+`submit` enqueues work and returns an `ExecutionHandle`. `run` uses the same scheduler but waits on
+a completion channel for the final `RunOutput`.
 
-There is no distributed worker system in the current repository. Concurrency is local to one
-process.
+There is no distributed worker tier in the current repository. All concurrency control is local to
+one runtime process.
 
-## Session Persistence
+## Persistence And Cleanup Boundaries
 
-Sessions are persisted as JSON files under the configured session root. Each file contains:
+### Session persistence
 
-- session metadata
-- model selection
-- every completed turn
-- normalized tool use and tool result history when tool calls happened
+Session state is durable. If the runtime restarts, previously completed turns remain available for:
 
-This means history survives runtime restarts.
+- session inspection
+- future memory construction
+- TUI or API history views
+
+### Approval state
+
+Approval state is not durable. Pending approvals and `allow_always` decisions live only in memory.
+
+### Sandbox cleanup
+
+Deleting a session is a full cleanup operation:
+
+- it waits for in-flight work on that session to finish
+- it removes the persisted session file
+- it clears approval state
+- it shuts down sandbox cells for the session in both sandbox runtimes
+
+That is why `delete_session` is asynchronous in the runtime API.
 
 ## Transport Surfaces
 
-Three entry points sit on top of the same runtime contract:
+Three user-facing surfaces sit on top of the same runtime:
 
-- the CLI constructs `OdysseyRuntime` directly for local commands
-- the HTTP server constructs `OdysseyRuntime` once and exposes bundle and session routes
-- the `odyssey-rs tui` command constructs `OdysseyRuntime` directly and subscribes to its session event stream
+- the CLI constructs `OdysseyRuntime` directly for local workflows
+- the HTTP server constructs one runtime and exposes routes plus SSE event streaming
+- the TUI constructs `OdysseyRuntime` directly and renders the session event stream
 
-The server is not a separate execution engine. It is a thin network wrapper over the same runtime
-type.
+The HTTP server is not a separate engine. It is a thin transport adapter over the same runtime.
+
+## Security Boundary In V1
+
+In the current design, the bundle manifest is trusted configuration authored by the operator. That
+means:
+
+- mounts
+- env passthrough
+- system tool exposure
+- network mode
+- bundle-local executable paths
+
+are all enforced as declared by the bundle author. The runtime is strict about applying that policy,
+but it does not yet treat the manifest itself as hostile input. That is an explicit v1 boundary,
+not an accident.

@@ -28,6 +28,8 @@ serde_json.workspace = true
 sysinfo.workspace = true
 tokio.workspace = true
 uuid.workspace = true
+unicode-width = "0.2.2"
+dirs = "6.0.0"
 
 [dev-dependencies]
 pretty_assertions.workspace = true

@@ -61,7 +61,9 @@ pub fn draw_hero(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // ── Keybinding hints ──────────────────────────────────────────────────────
     lines.push(centered(
         vec![
-            Span::styled("↩", key_style),
+            Span::styled("Ctrl+N", key_style),
+            Span::styled(" new session", dim_style),
+            Span::styled("    ↩", key_style),
             Span::styled(" send", dim_style),
             Span::styled("    /", key_style),
             Span::styled(" commands", dim_style),

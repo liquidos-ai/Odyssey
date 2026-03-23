@@ -2,6 +2,7 @@ use crate::RuntimeError;
 use autoagents_llm::chat::{ChatMessage, ChatRole, MessageType};
 use autoagents_llm::{FunctionCall, ToolCall};
 use chrono::{DateTime, Utc};
+use log::warn;
 use odyssey_rs_protocol::EventMsg;
 use odyssey_rs_protocol::Task;
 use parking_lot::RwLock;
@@ -9,8 +10,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tempfile::NamedTempFile;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -220,6 +223,7 @@ impl SessionStore {
             created_at: Utc::now(),
             turns: Vec::new(),
         };
+        self.persist(&record)?;
         let (sender, _) = broadcast::channel(512);
         self.sessions.write().insert(
             id,
@@ -228,7 +232,6 @@ impl SessionStore {
                 sender,
             },
         );
-        self.persist(&record)?;
         Ok(record)
     }
 
@@ -273,24 +276,31 @@ impl SessionStore {
         let state = sessions
             .get_mut(&id)
             .ok_or_else(|| RuntimeError::UnknownSession(id.to_string()))?;
-        state.record.turns.push(turn);
-        self.persist(&state.record)
+        let mut updated = state.record.clone();
+        updated.turns.push(turn);
+        self.persist(&updated)?;
+        state.record = updated;
+        Ok(())
     }
 
     pub fn delete(&self, id: Uuid) -> Result<(), RuntimeError> {
         let record = self
             .sessions
-            .write()
-            .remove(&id)
-            .ok_or_else(|| RuntimeError::UnknownSession(id.to_string()))?
-            .record;
+            .read()
+            .get(&id)
+            .map(|state| state.record.clone())
+            .ok_or_else(|| RuntimeError::UnknownSession(id.to_string()))?;
         let path = self.root.join(format!("{}.json", record.id));
         if path.exists() {
             fs::remove_file(&path).map_err(|err| RuntimeError::Io {
                 path: path.display().to_string(),
                 message: err.to_string(),
             })?;
+            if let Some(parent) = path.parent() {
+                sync_directory(parent)?;
+            }
         }
+        self.sessions.write().remove(&id);
         Ok(())
     }
 
@@ -300,15 +310,33 @@ impl SessionStore {
     }
 }
 
-fn persist_record(path: &PathBuf, record: &SessionRecord) -> Result<(), RuntimeError> {
-    fs::write(
-        path,
-        serde_json::to_vec_pretty(record).map_err(|err| RuntimeError::Executor(err.to_string()))?,
-    )
-    .map_err(|err| RuntimeError::Io {
+fn persist_record(path: &Path, record: &SessionRecord) -> Result<(), RuntimeError> {
+    let parent = path.parent().ok_or_else(|| RuntimeError::Io {
         path: path.display().to_string(),
+        message: "session path must have a parent directory".to_string(),
+    })?;
+    let bytes =
+        serde_json::to_vec_pretty(record).map_err(|err| RuntimeError::Executor(err.to_string()))?;
+
+    let mut temp = NamedTempFile::new_in(parent).map_err(|err| RuntimeError::Io {
+        path: parent.display().to_string(),
         message: err.to_string(),
-    })
+    })?;
+    temp.write_all(&bytes).map_err(|err| RuntimeError::Io {
+        path: temp.path().display().to_string(),
+        message: err.to_string(),
+    })?;
+    temp.as_file_mut()
+        .sync_all()
+        .map_err(|err| RuntimeError::Io {
+            path: temp.path().display().to_string(),
+            message: err.to_string(),
+        })?;
+    temp.persist(path).map_err(|err| RuntimeError::Io {
+        path: path.display().to_string(),
+        message: err.error.to_string(),
+    })?;
+    sync_directory(parent)
 }
 
 fn normalize_session_record(record: &mut SessionRecord) -> bool {
@@ -321,7 +349,7 @@ fn normalize_session_record(record: &mut SessionRecord) -> bool {
     changed
 }
 
-fn load_sessions(root: &PathBuf) -> Result<HashMap<Uuid, SessionState>, RuntimeError> {
+fn load_sessions(root: &Path) -> Result<HashMap<Uuid, SessionState>, RuntimeError> {
     let mut sessions = HashMap::new();
     for entry in fs::read_dir(root).map_err(|err| RuntimeError::Io {
         path: root.display().to_string(),
@@ -335,19 +363,97 @@ fn load_sessions(root: &PathBuf) -> Result<HashMap<Uuid, SessionState>, RuntimeE
         if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("json") {
             continue;
         }
-        let bytes = fs::read(&path).map_err(|err| RuntimeError::Io {
-            path: path.display().to_string(),
-            message: err.to_string(),
-        })?;
-        let mut record: SessionRecord = serde_json::from_slice(&bytes)
-            .map_err(|err| RuntimeError::Executor(err.to_string()))?;
-        if normalize_session_record(&mut record) {
-            persist_record(&path, &record)?;
-        }
+        let Some(record) = load_session_record(&path)? else {
+            continue;
+        };
         let (sender, _) = broadcast::channel(512);
         sessions.insert(record.id, SessionState { record, sender });
     }
     Ok(sessions)
+}
+
+fn load_session_record(path: &Path) -> Result<Option<SessionRecord>, RuntimeError> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            warn!(
+                "skipping unreadable session record {}: {}",
+                path.display(),
+                err
+            );
+            if let Err(quarantine_error) = quarantine_corrupt_session(path) {
+                warn!(
+                    "failed to quarantine unreadable session record {}: {}",
+                    path.display(),
+                    quarantine_error
+                );
+            }
+            return Ok(None);
+        }
+    };
+
+    let mut record: SessionRecord = match serde_json::from_slice(&bytes) {
+        Ok(record) => record,
+        Err(err) => {
+            warn!(
+                "skipping corrupt session record {}: {}",
+                path.display(),
+                err
+            );
+            if let Err(quarantine_error) = quarantine_corrupt_session(path) {
+                warn!(
+                    "failed to quarantine corrupt session record {}: {}",
+                    path.display(),
+                    quarantine_error
+                );
+            }
+            return Ok(None);
+        }
+    };
+
+    if normalize_session_record(&mut record)
+        && let Err(err) = persist_record(path, &record)
+    {
+        warn!(
+            "failed to persist normalized session record {}: {}",
+            path.display(),
+            err
+        );
+    }
+
+    Ok(Some(record))
+}
+
+fn quarantine_corrupt_session(path: &Path) -> Result<(), RuntimeError> {
+    let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+        return Ok(());
+    };
+    let quarantine = path.with_file_name(format!("{file_name}.corrupt-{}", Uuid::new_v4()));
+    fs::rename(path, &quarantine).map_err(|err| RuntimeError::Io {
+        path: quarantine.display().to_string(),
+        message: err.to_string(),
+    })
+}
+
+fn sync_directory(path: &Path) -> Result<(), RuntimeError> {
+    #[cfg(unix)]
+    {
+        let directory = fs::File::open(path).map_err(|err| RuntimeError::Io {
+            path: path.display().to_string(),
+            message: err.to_string(),
+        })?;
+        directory.sync_all().map_err(|err| RuntimeError::Io {
+            path: path.display().to_string(),
+            message: err.to_string(),
+        })?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -464,5 +570,95 @@ mod tests {
             loaded.model_config,
             Some(json!({ "reasoning_effort": "high" }))
         );
+    }
+
+    #[test]
+    fn new_skips_and_quarantines_corrupt_session_files() {
+        let temp = tempdir().expect("tempdir");
+        let good = SessionRecord {
+            id: Uuid::new_v4(),
+            bundle_ref: "odyssey-cowork@latest".to_string(),
+            agent_id: "odyssey-cowork".to_string(),
+            model_provider: "openai".to_string(),
+            model_id: "gpt-4.1-mini".to_string(),
+            model_config: None,
+            created_at: Utc::now(),
+            turns: Vec::new(),
+        };
+        fs::write(
+            temp.path().join(format!("{}.json", good.id)),
+            serde_json::to_vec_pretty(&good).expect("serialize"),
+        )
+        .expect("write good session");
+        fs::write(temp.path().join("broken.json"), "{not valid json").expect("write corrupt");
+
+        let store = SessionStore::new(temp.path()).expect("store");
+
+        assert_eq!(store.list().len(), 1);
+        assert_eq!(store.get(good.id).expect("good session").id, good.id);
+        assert!(!temp.path().join("broken.json").exists());
+        assert!(
+            fs::read_dir(temp.path())
+                .expect("read dir")
+                .filter_map(Result::ok)
+                .any(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("broken.json.corrupt-")
+                })
+        );
+    }
+
+    #[test]
+    fn create_does_not_mutate_memory_when_persist_fails() {
+        let temp = tempdir().expect("tempdir");
+        let store = SessionStore::new(temp.path()).expect("store");
+        fs::remove_dir_all(temp.path()).expect("remove backing directory");
+
+        let error = store
+            .create(
+                "odyssey-cowork@latest".to_string(),
+                "odyssey-cowork".to_string(),
+                "openai".to_string(),
+                "gpt-4.1-mini".to_string(),
+                None,
+            )
+            .expect_err("persist failure");
+
+        assert!(error.to_string().contains("io error"));
+        assert!(store.list().is_empty());
+    }
+
+    #[test]
+    fn append_turn_does_not_mutate_memory_when_persist_fails() {
+        let temp = tempdir().expect("tempdir");
+        let store = SessionStore::new(temp.path()).expect("store");
+        let session = store
+            .create(
+                "odyssey-cowork@latest".to_string(),
+                "odyssey-cowork".to_string(),
+                "openai".to_string(),
+                "gpt-4.1-mini".to_string(),
+                None,
+            )
+            .expect("session");
+        fs::remove_dir_all(temp.path()).expect("remove backing directory");
+
+        let error = store
+            .append_turn(
+                session.id,
+                TurnRecord {
+                    turn_id: Uuid::new_v4(),
+                    prompt: "hello".to_string(),
+                    response: "world".to_string(),
+                    chat_history: Vec::new(),
+                    created_at: Utc::now(),
+                },
+            )
+            .expect_err("persist failure");
+
+        assert!(error.to_string().contains("io error"));
+        assert!(store.get(session.id).expect("session").turns.is_empty());
     }
 }

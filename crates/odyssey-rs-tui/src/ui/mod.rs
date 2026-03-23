@@ -9,6 +9,7 @@ pub mod widgets;
 use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
+use unicode_width::UnicodeWidthStr;
 
 use widgets::chat::draw_chat;
 use widgets::header::draw_header;
@@ -20,6 +21,34 @@ use widgets::viewer::{draw_viewer, draw_viewer_footer};
 
 /// Height of the header bar (6 content lines + 2 border lines).
 const HEADER_HEIGHT: u16 = 8;
+
+/// Maximum fraction of the terminal height the input box may occupy.
+const INPUT_MAX_PERCENT: u16 = 40;
+
+/// Count the number of visual lines the prompt + input occupy at the given width.
+pub fn input_line_count(input: &str, width: usize) -> u16 {
+    let prompt_w = UnicodeWidthStr::width(widgets::input::PROMPT);
+    let mut col = prompt_w;
+    let mut lines: u16 = 1;
+    for ch in input.chars() {
+        let ch_w = UnicodeWidthStr::width(ch.encode_utf8(&mut [0u8; 4]) as &str);
+        if col + ch_w > width && col > 0 {
+            lines += 1;
+            col = 0;
+        }
+        col += ch_w;
+    }
+    lines
+}
+
+/// Compute the height needed for the input box (content lines + 2 border lines),
+/// capped so it never exceeds `INPUT_MAX_PERCENT`% of the terminal height.
+fn input_height(app: &App, area_width: u16, area_height: u16) -> u16 {
+    let inner_w = area_width.saturating_sub(2).max(1) as usize;
+    let lines = input_line_count(&app.input, inner_w);
+    let max_h = (area_height * INPUT_MAX_PERCENT / 100).max(3);
+    (lines + 2).min(max_h)
+}
 
 /// Draw the complete TUI frame for the current application state.
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
@@ -42,11 +71,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         draw_status_bar(frame, app, status);
     } else if app.messages.is_empty() {
         // Hero screen: no header, give all vertical space to the hero.
+        let ih = input_height(app, area.width, area.height);
         let [hero, input, status] = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(0),
-                Constraint::Length(3),
+                Constraint::Length(ih),
                 Constraint::Length(1),
             ])
             .areas(area);
@@ -59,12 +89,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         draw_status_bar(frame, app, status);
     } else {
         // Chat screen: show full header.
+        let ih = input_height(app, area.width, area.height);
         let [header, chat, input, status] = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(HEADER_HEIGHT),
                 Constraint::Min(0),
-                Constraint::Length(3),
+                Constraint::Length(ih),
                 Constraint::Length(1),
             ])
             .areas(area);

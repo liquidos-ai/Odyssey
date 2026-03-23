@@ -1,0 +1,130 @@
+---
+title: Events And Approvals
+slug: /events-and-approvals
+description: Session event stream and approval flow used by Odyssey runtimes.
+---
+
+## Event Transport
+
+Odyssey emits session-scoped `EventMsg` values over a broadcast channel. You can consume them in
+two ways:
+
+- directly from `OdysseyRuntime::subscribe_session(session_id)`
+- through HTTP server-sent events at `GET /sessions/{id}/events`
+
+The HTTP server serializes each `EventMsg` as JSON and writes it into an SSE `data:` frame.
+
+## Event Categories
+
+`EventPayload` currently includes:
+
+- `TurnStarted`
+- `TurnCompleted`
+- `AgentMessageDelta`
+- `ReasoningDelta`
+- `ReasoningSectionBreak`
+- `ToolCallStarted`
+- `ToolCallDelta`
+- `ToolCallFinished`
+- `ExecCommandBegin`
+- `ExecCommandOutputDelta`
+- `ExecCommandEnd`
+- `PermissionRequested`
+- `ApprovalResolved`
+- `PlanUpdate`
+- `Error`
+
+## Typical Turn Sequence
+
+A normal turn usually looks like this:
+
+1. `TurnStarted`
+2. zero or more `ReasoningDelta` and `ReasoningSectionBreak`
+3. zero or more `AgentMessageDelta`
+4. zero or more tool events:
+   `ToolCallStarted`, `ToolCallDelta`, `ToolCallFinished`
+5. if a tool or command needs approval:
+   `PermissionRequested`, then later `ApprovalResolved`
+6. if a tool or operator command runs a process:
+   `ExecCommandBegin`, `ExecCommandOutputDelta`, `ExecCommandEnd`
+7. `TurnCompleted`
+
+If the turn fails, the stream can include `Error` instead of a successful completion path.
+
+## Tool Events Versus Command Events
+
+There are two related but different event families:
+
+- tool events describe the logical tool call seen by the agent
+- exec-command events describe a real subprocess started inside the sandbox
+
+For example:
+
+- `Read` and `Write` usually emit tool events only
+- `Bash` emits tool events and may also emit `ExecCommand*` events for the shell process
+- `run_session_command` emits `ExecCommand*` events directly because it is an operator command path,
+  not a tool call
+
+`ExecCommandOutputDelta` includes:
+
+- `exec_id`
+- `stream` as `stdout` or `stderr`
+- the output delta text
+
+## Approval Flow
+
+Tool permission rules in `agent.yaml` can resolve to:
+
+- `allow`
+- `deny`
+- `ask`
+
+When a rule resolves to `ask`, the runtime:
+
+1. emits `PermissionRequested`
+2. stores the request in the in-memory approval store
+3. pauses the tool until an approval decision arrives
+
+Approval decisions are:
+
+- `allow_once`
+- `allow_always`
+- `deny`
+
+You can resolve a request through:
+
+- `OdysseyRuntime::resolve_approval(request_id, decision)`
+- `POST /approvals/{request_id}`
+
+## Approval Scope
+
+`allow_always` is session-scoped only.
+
+It is cleared when:
+
+- the runtime restarts
+- the session is deleted
+
+It is not persisted to disk and does not affect other sessions.
+
+## Turn Context In Events
+
+`TurnStarted` includes a `TurnContext` snapshot with the effective runtime values for that turn.
+Today that includes:
+
+- `cwd`
+- `model`
+- `sandbox_mode`
+- optional metadata
+
+This is useful when you allow per-turn model or working-directory overrides and want subscribers to
+see the resolved context that actually executed.
+
+## Minimal SSE Example
+
+```text
+data: {"id":"...","session_id":"...","created_at":"...","payload":{"type":"turn_started","payload":{"turn_id":"...","context":{"cwd":"...","model":{"provider":"openai","name":"gpt-4.1-mini","config":null},"sandbox_mode":"read_only","approval_policy":null,"metadata":{}}}}}
+```
+
+Subscribers should treat the stream as append-only session telemetry. The runtime uses it for TUI
+updates, tool progress, approval prompts, and completion reporting.
