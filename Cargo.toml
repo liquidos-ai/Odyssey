@@ -16,7 +16,7 @@ members = [
 default-members = ["crates/odyssey-rs"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "Apache-2.0"
 description = "Lean bundle-first agent runtime in Rust"
@@ -26,15 +26,15 @@ categories = []
 readme = "README.md"
 
 [workspace.dependencies]
-odyssey-rs = { path = "crates/odyssey-rs", version = "0.1.0" }
-odyssey-rs-manifest = { path = "crates/odyssey-rs-manifest", version = "0.1.0" }
-odyssey-rs-bundle = { path = "crates/odyssey-rs-bundle", version = "0.1.0" }
-odyssey-rs-protocol = { path = "crates/odyssey-rs-protocol", version = "0.1.0" }
-odyssey-rs-runtime = { path = "crates/odyssey-rs-runtime", version = "0.1.0" }
-odyssey-rs-tools = { path = "crates/odyssey-rs-tools", version = "0.1.0" }
-odyssey-rs-sandbox = { path = "crates/odyssey-rs-sandbox", version = "0.1.0" }
-odyssey-rs-server = { path = "crates/odyssey-rs-server", version = "0.1.0" }
-odyssey-rs-tui = { path = "crates/odyssey-rs-tui", version = "0.1.0" }
+odyssey-rs = { path = "crates/odyssey-rs", version = "0.1.1" }
+odyssey-rs-manifest = { path = "crates/odyssey-rs-manifest", version = "0.1.1" }
+odyssey-rs-bundle = { path = "crates/odyssey-rs-bundle", version = "0.1.1" }
+odyssey-rs-protocol = { path = "crates/odyssey-rs-protocol", version = "0.1.1" }
+odyssey-rs-runtime = { path = "crates/odyssey-rs-runtime", version = "0.1.1" }
+odyssey-rs-tools = { path = "crates/odyssey-rs-tools", version = "0.1.1" }
+odyssey-rs-sandbox = { path = "crates/odyssey-rs-sandbox", version = "0.1.1" }
+odyssey-rs-server = { path = "crates/odyssey-rs-server", version = "0.1.1" }
+odyssey-rs-tui = { path = "crates/odyssey-rs-tui", version = "0.1.1" }
 
 autoagents-core = { version = "0.3.6" }
 autoagents-llm = { version = "0.3.6" }
