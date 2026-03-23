@@ -6,6 +6,7 @@ use autoagents_core::tool::ToolT;
 use autoagents_llm::LLMProvider;
 use chrono::Utc;
 use futures_util::StreamExt;
+use log::info;
 use odyssey_rs_protocol::{AutoAgentsEvent, AutoAgentsStreamChunk};
 use odyssey_rs_protocol::{EventMsg, EventPayload, TurnContext};
 use serde_json::{Value, json};
@@ -37,6 +38,7 @@ pub async fn run_executor(run: ExecutorRun) -> Result<String, RuntimeError> {
 }
 
 async fn run_react(run: ExecutorRun) -> Result<String, RuntimeError> {
+    info!("Running ReAct Executor");
     let agent = ReActAgent::new(OdysseyAgent::new(run.system_prompt.clone(), run.tools));
     let mut builder = AgentBuilder::<ReActAgent<OdysseyAgent>, DirectAgent>::new(agent)
         .llm(run.llm)
@@ -48,6 +50,7 @@ async fn run_react(run: ExecutorRun) -> Result<String, RuntimeError> {
         .build()
         .await
         .map_err(|err| RuntimeError::Executor(err.to_string()))?;
+    info!("Built Agent instance");
     let events = handle.subscribe_events();
     let event_task = tokio::spawn(forward_autoagents_events(
         events,
@@ -57,6 +60,7 @@ async fn run_react(run: ExecutorRun) -> Result<String, RuntimeError> {
         run.turn_context.clone(),
     ));
     let task = run.task.with_system_prompt(run.system_prompt);
+    info!("Running agent with streaming");
     let stream = match handle.agent.run_stream(task).await {
         Ok(stream) => stream,
         Err(err) => {
@@ -105,6 +109,7 @@ async fn forward_autoagents_events(
     while let Some(event) = events.next().await {
         let mapped = bridge.map_event(event);
         for payload in mapped.payloads {
+            info!("Forwaring AutoAgents Events");
             emit(&sender, session_id, payload);
         }
         if mapped.terminal {

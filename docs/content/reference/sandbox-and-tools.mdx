@@ -61,6 +61,9 @@ The runtime builds sandbox filesystem policy from the manifest:
 - `system_tools` resolves named host executables and adds those exact binaries to the execute allowlist
 - `Bash` also needs a permitted system shell because it executes commands through `sh -lc ...`
 
+Bundle-local exec paths must stay inside the bundle workspace. Absolute paths, `..` traversal, and
+symlink escapes are rejected during manifest validation and checked again after staging.
+
 For host mounts, `.` is treated as a shorthand for the current working directory of the Odyssey
 process. Other mount entries must still be absolute host paths.
 
@@ -71,6 +74,10 @@ through workspace-relative paths:
 - `mount/read/abs/...` for absolute read mounts
 - `mount/write/current` for a `.` write mount
 - `mount/write/abs/...` for absolute write mounts
+
+In confined Linux sandboxes those paths are real bind mounts created by `bubblewrap`. In
+`danger_full_access`, Odyssey materializes the same paths as host symlinks inside the staged app so
+filesystem tools and direct process commands can use the same `mount/...` aliases.
 
 The sandbox cell root itself is always added as a readable root. In `workspace_write` and
 `danger_full_access`, that cell root is also writable.
@@ -161,6 +168,11 @@ The current v1 sandbox roadmap is intentionally conservative:
 - keep Linux confined execution centered on `bubblewrap`
 - keep host execution limited to `danger_full_access`
 - keep network semantics limited to `[]` and `["*"]`
+- keep bundle manifests treated as trusted operator-authored policy in v1
+
+That trust assumption is temporary. v2 is expected to treat bundles as untrusted inputs and move
+mounts, env passthrough, system tool access, and similar host-facing capabilities behind stricter
+policy or approval controls.
 
 Landlock is not part of the current v1 runtime contract. It may be revisited later as an optional
 hardening layer, but only if it can be added without making normal sandboxed command execution

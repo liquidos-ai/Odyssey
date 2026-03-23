@@ -5,7 +5,7 @@ use anyhow::Result;
 use log::info;
 use odyssey_rs_bundle::{BundleInstallSummary, BundleMetadata, BundleStore};
 use odyssey_rs_protocol::{
-    AgentRef, ApprovalDecision, ExecutionRequest, Session, SessionFilter, SessionSpec,
+    ApprovalDecision, BundleRef, ExecutionRequest, Session, SessionFilter, SessionSpec,
     SessionSummary, SkillSummary, Task,
 };
 use odyssey_rs_runtime::{OdysseyRuntime, RunOutput, SessionCommandOutput};
@@ -67,7 +67,7 @@ impl AgentRuntimeClient {
     /// List available sessions.
     pub async fn list_sessions(&self) -> Result<Vec<SessionSummary>> {
         Ok(self.runtime.list_sessions(Some(&SessionFilter {
-            agent_ref: Some(AgentRef::from(self.bundle_ref())),
+            bundle_ref: Some(BundleRef::from(self.bundle_ref())),
         })))
     }
 
@@ -376,7 +376,7 @@ tools:
         assert_eq!(sessions[0].agent_id, "alpha-agent");
 
         let session = client.get_session(session_id).await.expect("get session");
-        assert_eq!(session.agent_ref, "local/alpha@0.1.0");
+        assert_eq!(session.bundle_ref, "local/alpha@0.1.0");
         assert_eq!(session.agent_id, "alpha-agent");
         assert!(session.messages.is_empty());
 

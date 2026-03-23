@@ -8,7 +8,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use odyssey_rs_protocol::{AgentRef, ExecutionRequest, SessionSpec};
+use odyssey_rs_protocol::{BundleRef, ExecutionRequest, SessionSpec};
 use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
@@ -150,7 +150,7 @@ async fn create_session(
     let session = state
         .runtime
         .create_session(SessionSpec {
-            agent_ref: AgentRef::from(request.agent_ref),
+            bundle_ref: BundleRef::from(request.bundle_ref),
             model: request.model,
             metadata: json!({}),
         })
@@ -449,7 +449,7 @@ tools:
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "agent_ref": "demo@0.1.0"
+                        "bundle_ref": "demo@0.1.0"
                     }))
                     .expect("serialize session request"),
                 ))
@@ -471,7 +471,7 @@ tools:
         )
         .await;
         assert_eq!(fetched["id"], session_id);
-        assert_eq!(fetched["agent_ref"], "demo@0.1.0");
+        assert_eq!(fetched["bundle_ref"], "demo@0.1.0");
 
         let resolved = json_response(
             app.clone(),

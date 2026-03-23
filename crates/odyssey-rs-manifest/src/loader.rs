@@ -1,7 +1,7 @@
 use crate::bundle_manifest::{ManifestVersion, ProviderKind};
 use crate::{AgentSpec, BundleManifest, ManifestError};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 pub struct BundleLoader<'a> {
     root: &'a Path,
@@ -14,8 +14,9 @@ impl<'a> BundleLoader<'a> {
 
     pub fn load_project(&self) -> Result<(BundleManifest, AgentSpec), ManifestError> {
         let manifest = self.load_bundle_manifest(&self.root.join("odyssey.bundle.json5"))?;
-        let agent = self.load_agent_spec(&self.root.join(&manifest.agent_spec))?;
-        self.validate_project(&manifest, &agent)?;
+        let agent_path = self.validate_manifest(&manifest)?;
+        let agent = self.load_agent_spec(&agent_path)?;
+        self.validate_agent(&manifest, &agent)?;
         Ok((manifest, agent))
     }
 
@@ -49,24 +50,34 @@ impl<'a> BundleLoader<'a> {
         manifest: &BundleManifest,
         agent: &AgentSpec,
     ) -> Result<(), ManifestError> {
+        self.validate_manifest(manifest)?;
+        self.validate_agent(manifest, agent)
+    }
+
+    fn validate_manifest(&self, manifest: &BundleManifest) -> Result<PathBuf, ManifestError> {
         match &manifest.manifest_version {
-            ManifestVersion::V1 => self.validate_v1(manifest, agent),
+            ManifestVersion::V1 => self.validate_v1_manifest(manifest),
         }
     }
 
-    fn validate_v1(
+    fn validate_agent(
         &self,
         manifest: &BundleManifest,
         agent: &AgentSpec,
     ) -> Result<(), ManifestError> {
+        match &manifest.manifest_version {
+            ManifestVersion::V1 => validate_agent_config(self.root, agent),
+        }
+    }
+
+    fn validate_v1_manifest(&self, manifest: &BundleManifest) -> Result<PathBuf, ManifestError> {
         validate_manifest_identity(self.root, manifest)?;
         validate_provider_config(self.root, manifest)?;
-        validate_agent_config(self.root, agent)?;
-        validate_project_entries(self.root, manifest)?;
+        let agent_path = validate_project_entries(self.root, manifest)?;
         validate_manifest_tools(self.root, manifest)?;
         validate_mount_points(self.root, manifest)?;
         validate_sandbox_config(self.root, manifest)?;
-        Ok(())
+        Ok(agent_path)
     }
 }
 
@@ -103,12 +114,16 @@ fn validate_agent_config(root: &Path, agent: &AgentSpec) -> Result<(), ManifestE
     Ok(())
 }
 
-fn validate_project_entries(root: &Path, manifest: &BundleManifest) -> Result<(), ManifestError> {
+fn validate_project_entries(
+    root: &Path,
+    manifest: &BundleManifest,
+) -> Result<PathBuf, ManifestError> {
+    let agent_path = ensure_relative_file(root, &manifest.agent_spec, "agent spec path")?;
     ensure_relative_file(root, &manifest.readme, "readme path")?;
     for skill in &manifest.skills {
         ensure_relative_entry(root, &skill.path, "skill path")?;
     }
-    Ok(())
+    Ok(agent_path)
 }
 
 fn validate_manifest_tools(root: &Path, manifest: &BundleManifest) -> Result<(), ManifestError> {
@@ -131,6 +146,9 @@ fn validate_mount_points(root: &Path, manifest: &BundleManifest) -> Result<(), M
 }
 
 fn validate_sandbox_config(root: &Path, manifest: &BundleManifest) -> Result<(), ManifestError> {
+    for path in &manifest.sandbox.permissions.filesystem.exec {
+        ensure_relative_entry(root, path, "sandbox exec path")?;
+    }
     validate_sandbox_env(root, &manifest.sandbox.env)?;
     validate_network_permissions(root, &manifest.sandbox.permissions.network)
 }
@@ -142,27 +160,58 @@ fn validate_non_empty(root: &Path, value: &str, message: &str) -> Result<(), Man
     Ok(())
 }
 
-fn ensure_relative_entry(root: &Path, value: &str, label: &str) -> Result<(), ManifestError> {
+fn ensure_relative_entry(root: &Path, value: &str, label: &str) -> Result<PathBuf, ManifestError> {
     if value.contains("wasm") || value.contains("store") {
-        return invalid(root, &format!("{label} {value} is not supported in v1"));
+        return invalid_path(root, &format!("{label} {value} is not supported in v1"));
     }
-    let path = root.join(value);
+
+    if value.trim().is_empty() {
+        return invalid_path(root, &format!("{label} cannot be empty"));
+    }
+
+    let relative = Path::new(value);
+    if relative.is_absolute() {
+        return invalid_path(
+            root,
+            &format!("{label} must be relative to the project root"),
+        );
+    }
+
+    if relative.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return invalid_path(root, &format!("{label} must stay inside the project root"));
+    }
+
+    let path = root.join(relative);
     if !path.exists() {
         return Err(ManifestError::Invalid {
             path: path.display().to_string(),
             message: format!("{label} does not exist"),
         });
     }
-    Ok(())
+
+    let canonical_root = canonicalize_root(root)?;
+    let canonical = path.canonicalize().map_err(|err| ManifestError::Io {
+        path: path.display().to_string(),
+        message: err.to_string(),
+    })?;
+    if !canonical.starts_with(&canonical_root) {
+        return invalid_path(root, &format!("{label} must stay inside the project root"));
+    }
+
+    Ok(canonical)
 }
 
-fn ensure_relative_file(root: &Path, value: &str, label: &str) -> Result<(), ManifestError> {
-    ensure_relative_entry(root, value, label)?;
-    let path = root.join(value);
+fn ensure_relative_file(root: &Path, value: &str, label: &str) -> Result<PathBuf, ManifestError> {
+    let path = ensure_relative_entry(root, value, label)?;
     if !path.is_file() {
-        return invalid(root, &format!("{label} must be a file"));
+        return invalid_path(root, &format!("{label} must be a file"));
     }
-    Ok(())
+    Ok(path)
 }
 
 fn ensure_absolute_mount(root: &Path, value: &str, label: &str) -> Result<(), ManifestError> {
@@ -300,6 +349,20 @@ fn invalid(root: &Path, message: &str) -> Result<(), ManifestError> {
     Err(ManifestError::Invalid {
         path: root.display().to_string(),
         message: message.to_string(),
+    })
+}
+
+fn invalid_path<T>(root: &Path, message: &str) -> Result<T, ManifestError> {
+    Err(ManifestError::Invalid {
+        path: root.display().to_string(),
+        message: message.to_string(),
+    })
+}
+
+fn canonicalize_root(root: &Path) -> Result<PathBuf, ManifestError> {
+    root.canonicalize().map_err(|err| ManifestError::Io {
+        path: root.display().to_string(),
+        message: err.to_string(),
     })
 }
 
@@ -472,6 +535,189 @@ mod tests {
         BundleLoader::new(temp.path())
             .load_project()
             .expect("current directory mount should be accepted");
+    }
+
+    #[test]
+    fn load_project_rejects_agent_spec_path_traversal_before_loading() {
+        let temp = tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).expect("project dir");
+        fs::write(
+            temp.path().join("outside-agent.yaml"),
+            "id: demo\nprompt: hi\nmodel:\n  provider: openai\n  name: gpt-5\n",
+        )
+        .expect("write outside agent");
+        fs::write(
+            project.join("odyssey.bundle.json5"),
+            r#"{
+                id: 'demo',
+                version: '0.1.0',
+                manifest_version: 'odyssey.bundle/v1',
+                readme: 'README.md',
+                agent_spec: '../outside-agent.yaml',
+                executor: { type: 'prebuilt', id: 'react' },
+                memory: { type: 'prebuilt', id: 'sliding_window' },
+                sandbox: {
+                    permissions: {
+                        filesystem: { exec: [], mounts: { read: [], write: [] } },
+                        network: []
+                    },
+                    system_tools: [],
+                    resources: {}
+                }
+            }"#,
+        )
+        .expect("write manifest");
+        fs::write(project.join("README.md"), "hello").expect("write readme");
+
+        let error = BundleLoader::new(&project)
+            .load_project()
+            .expect_err("agent spec traversal should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("agent spec path must stay inside the project root")
+        );
+    }
+
+    #[test]
+    fn load_project_rejects_absolute_exec_path() {
+        let temp = tempdir().expect("tempdir");
+        fs::write(
+            temp.path().join("odyssey.bundle.json5"),
+            r#"{
+                id: 'demo',
+                version: '0.1.0',
+                manifest_version: 'odyssey.bundle/v1',
+                readme: 'README.md',
+                agent_spec: 'agent.yaml',
+                executor: { type: 'prebuilt', id: 'react' },
+                memory: { type: 'prebuilt', id: 'sliding_window' },
+                sandbox: {
+                    permissions: {
+                        filesystem: {
+                            exec: ['/bin/sh'],
+                            mounts: { read: [], write: [] }
+                        },
+                        network: []
+                    },
+                    system_tools: [],
+                    resources: {}
+                }
+            }"#,
+        )
+        .expect("write manifest");
+        fs::write(temp.path().join("README.md"), "hello").expect("write readme");
+        fs::write(
+            temp.path().join("agent.yaml"),
+            "id: demo\nmodel:\n  provider: openai\n  name: gpt-5\nprompt: hi\n",
+        )
+        .expect("write agent");
+
+        let error = BundleLoader::new(temp.path())
+            .load_project()
+            .expect_err("absolute exec path rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("sandbox exec path must be relative to the project root")
+        );
+    }
+
+    #[test]
+    fn load_project_rejects_exec_path_traversal() {
+        let temp = tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).expect("project dir");
+        fs::write(temp.path().join("outside.sh"), "echo hi\n").expect("outside exec");
+        fs::write(
+            project.join("odyssey.bundle.json5"),
+            r#"{
+                id: 'demo',
+                version: '0.1.0',
+                manifest_version: 'odyssey.bundle/v1',
+                readme: 'README.md',
+                agent_spec: 'agent.yaml',
+                executor: { type: 'prebuilt', id: 'react' },
+                memory: { type: 'prebuilt', id: 'sliding_window' },
+                sandbox: {
+                    permissions: {
+                        filesystem: {
+                            exec: ['../outside.sh'],
+                            mounts: { read: [], write: [] }
+                        },
+                        network: []
+                    },
+                    system_tools: [],
+                    resources: {}
+                }
+            }"#,
+        )
+        .expect("write manifest");
+        fs::write(project.join("README.md"), "hello").expect("write readme");
+        fs::write(
+            project.join("agent.yaml"),
+            "id: demo\nmodel:\n  provider: openai\n  name: gpt-5\nprompt: hi\n",
+        )
+        .expect("write agent");
+
+        let error = BundleLoader::new(&project)
+            .load_project()
+            .expect_err("exec traversal rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("sandbox exec path must stay inside the project root")
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn load_project_rejects_symlinked_agent_spec_escape() {
+        let temp = tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).expect("project dir");
+        fs::write(
+            temp.path().join("outside-agent.yaml"),
+            "id: demo\nprompt: hi\nmodel:\n  provider: openai\n  name: gpt-5\n",
+        )
+        .expect("write outside agent");
+        std::os::unix::fs::symlink(
+            temp.path().join("outside-agent.yaml"),
+            project.join("agent.yaml"),
+        )
+        .expect("symlink agent");
+        fs::write(
+            project.join("odyssey.bundle.json5"),
+            r#"{
+                id: 'demo',
+                version: '0.1.0',
+                manifest_version: 'odyssey.bundle/v1',
+                readme: 'README.md',
+                agent_spec: 'agent.yaml',
+                executor: { type: 'prebuilt', id: 'react' },
+                memory: { type: 'prebuilt', id: 'sliding_window' },
+                sandbox: {
+                    permissions: {
+                        filesystem: { exec: [], mounts: { read: [], write: [] } },
+                        network: []
+                    },
+                    system_tools: [],
+                    resources: {}
+                }
+            }"#,
+        )
+        .expect("write manifest");
+        fs::write(project.join("README.md"), "hello").expect("write readme");
+
+        let error = BundleLoader::new(&project)
+            .load_project()
+            .expect_err("symlink escape rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("agent spec path must stay inside the project root")
+        );
     }
 
     #[test]

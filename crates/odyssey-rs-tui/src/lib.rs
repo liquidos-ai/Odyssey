@@ -30,8 +30,6 @@ pub struct TuiRunConfig {
     pub cwd: Option<PathBuf>,
 }
 
-pub const DEFAULT_BUNDLE_REF: &str = "odyssey@latest";
-
 /// Launch the Odyssey TUI against a pre-configured [`OdysseyRuntime`].
 pub async fn run(runtime: Arc<OdysseyRuntime>, config: TuiRunConfig) -> anyhow::Result<()> {
     let TuiRunConfig { bundle_ref, cwd } = config;
@@ -125,9 +123,6 @@ pub fn resolve_bundle_ref(
     if let Some(bundle_ref) = requested.filter(|bundle| !bundle.trim().is_empty()) {
         return Ok(bundle_ref);
     }
-    if bundles.resolve(DEFAULT_BUNDLE_REF).is_ok() {
-        return Ok(DEFAULT_BUNDLE_REF.to_string());
-    }
 
     Ok(bundles
         .list_installed()?
@@ -143,7 +138,7 @@ fn bundle_summary_ref(bundle: BundleInstallSummary) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_BUNDLE_REF, TuiRunConfig, bundle_summary_ref, resolve_bundle_ref};
+    use super::{TuiRunConfig, bundle_summary_ref, resolve_bundle_ref};
     use odyssey_rs_bundle::BundleInstallSummary;
     use odyssey_rs_runtime::{RuntimeConfig, RuntimeEngine};
     use pretty_assertions::assert_eq;
@@ -243,10 +238,6 @@ tools:
         runtime
             .build_and_install(&odyssey_project)
             .expect("install odyssey");
-        assert_eq!(
-            resolve_bundle_ref(&runtime, None).expect("default bundle"),
-            DEFAULT_BUNDLE_REF
-        );
 
         let temp = tempdir().expect("tempdir");
         let runtime = RuntimeEngine::new(runtime_config(temp.path())).expect("runtime");

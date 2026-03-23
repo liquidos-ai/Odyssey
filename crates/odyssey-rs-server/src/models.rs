@@ -9,7 +9,7 @@ pub struct BuildRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSessionRequest {
-    pub agent_ref: String,
+    pub bundle_ref: String,
     #[serde(default)]
     pub model: Option<ModelSpec>,
 }
@@ -78,7 +78,7 @@ mod tests {
         }))
         .expect("build request");
         let create: CreateSessionRequest = serde_json::from_value(json!({
-            "agent_ref": "demo@0.1.0"
+            "bundle_ref": "demo@0.1.0"
         }))
         .expect("create session request");
         let run: RunRequest = serde_json::from_value(json!({
@@ -109,7 +109,7 @@ mod tests {
         .expect("approval request");
 
         assert_eq!(build.project_path, "/workspace/project");
-        assert_eq!(create.agent_ref, "demo@0.1.0");
+        assert_eq!(create.bundle_ref, "demo@0.1.0");
         assert!(create.model.is_none());
         assert!(run.turn_context.is_none());
         assert_eq!(run.input.prompt, "hello");

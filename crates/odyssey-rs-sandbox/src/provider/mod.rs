@@ -298,6 +298,9 @@ fn resolve_user_path(
     let mut cursor = candidate.as_path();
     loop {
         if cursor.exists() {
+            // Canonicalize the existing prefix and then re-append the unresolved
+            // suffix so we can authorize new files without letting symlinks
+            // smuggle the path outside an approved root.
             let mut resolved = cursor.canonicalize().map_err(SandboxError::Io)?;
             for suffix in unresolved.iter().rev() {
                 resolved.push(suffix);
@@ -380,11 +383,13 @@ fn build_env(
         }
     }
 
-    let tmp_dir = workspace_root.join(".tmp");
     allowed.insert("HOME".to_string());
     env.insert("HOME".to_string(), workspace_root.display().to_string());
     allowed.insert("TMPDIR".to_string());
-    env.insert("TMPDIR".to_string(), tmp_dir.display().to_string());
+    env.insert(
+        "TMPDIR".to_string(),
+        default_tmp_dir().display().to_string(),
+    );
     allowed.insert("ODYSSEY_SANDBOX".to_string());
     env.insert("ODYSSEY_SANDBOX".to_string(), "1".to_string());
 
@@ -399,6 +404,18 @@ fn build_env(
     }
 
     (env, allowed)
+}
+
+fn default_tmp_dir() -> PathBuf {
+    #[cfg(unix)]
+    {
+        PathBuf::from("/tmp")
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::env::temp_dir()
+    }
 }
 
 pub(crate) fn merge_command_env(
@@ -679,6 +696,8 @@ fn build_mounts_from_access(
     let mut mount_modes: BTreeMap<PathBuf, bool> = BTreeMap::new();
     mount_modes.insert(access.workspace_root.clone(), workspace_writable);
 
+    // Mount roots keep the same visible path inside the sandbox so the runtime,
+    // filesystem tools, and direct process execution all agree on one path model.
     for path in access.read.roots.iter().chain(access.exec.roots.iter()) {
         if !path.starts_with(&access.workspace_root) {
             mount_modes.entry(path.clone()).or_insert(false);
@@ -709,7 +728,6 @@ fn build_mounts_from_access(
 
 pub fn build_prepared_sandbox(ctx: &SandboxContext) -> Result<PreparedSandbox, SandboxError> {
     let workspace_root = canonicalize_existing_path(&ctx.workspace_root)?;
-    std::fs::create_dir_all(workspace_root.join(".tmp")).map_err(SandboxError::Io)?;
     let access = AccessPolicy::new(ctx.mode, &ctx.policy, &workspace_root)?;
     let (env, allowed_env_keys) = build_env(&ctx.policy, &workspace_root);
     let mounts = build_mounts_from_access(&access, ctx.mode, &ctx.policy.filesystem.mount_bindings);
@@ -935,7 +953,13 @@ mod tests {
         let prepared = build_prepared_sandbox(&ctx).expect("prepared");
         assert_eq!(prepared.network, SandboxNetworkMode::Disabled);
         assert_eq!(prepared.env.get("FOO"), Some(&"BAR".to_string()));
+        assert_eq!(
+            prepared.env.get("HOME"),
+            Some(&temp.path().display().to_string())
+        );
         assert!(prepared.env.contains_key("PATH"));
+        assert!(prepared.env.contains_key("TMPDIR"));
+        assert!(!temp.path().join(".tmp").exists());
     }
 
     #[test]

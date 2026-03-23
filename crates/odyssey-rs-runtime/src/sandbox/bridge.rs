@@ -18,6 +18,28 @@ pub(crate) struct PreparedToolSandbox {
     pub workspace_mounts: Vec<WorkspaceMount>,
 }
 
+const AGENT_EXECUTION_COMPONENT: &str = "agent-execution";
+const SESSION_COMMAND_COMPONENT: &str = "session-command";
+
+/// Mount aliases need different on-disk prep depending on the backend:
+/// restricted sandboxes need a real file/dir placeholder that bubblewrap can
+/// over-mount, while host danger mode needs a symlink because no kernel mount
+/// step happens later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MountTargetPreparation {
+    Placeholder,
+    HostSymlink,
+}
+
+struct CellPreparationRequest<'a> {
+    session_id: Uuid,
+    agent_id: &'a str,
+    bundle_root: &'a Path,
+    manifest: &'a BundleManifest,
+    override_mode: Option<SandboxMode>,
+    component_id: &'static str,
+}
+
 pub fn build_policy(
     bundle_root: &Path,
     manifest: &BundleManifest,
@@ -65,10 +87,10 @@ fn build_policy_with_resolvers<F>(
 where
     F: FnMut(&str) -> Option<String>,
 {
-    let map_bundle_paths = |entries: &[String]| -> Vec<String> {
+    let map_bundle_paths = |entries: &[String]| -> Result<Vec<String>, RuntimeError> {
         entries
             .iter()
-            .map(|entry| bundle_root.join(entry).display().to_string())
+            .map(|entry| resolve_bundle_exec_root(bundle_root, entry))
             .collect()
     };
     let read_mounts = build_mount_bindings(
@@ -89,7 +111,7 @@ where
         .cloned()
         .collect::<Vec<_>>();
     let explicit_system_tools = resolve_system_tools(&manifest.sandbox.system_tools)?;
-    let mut exec_roots = map_bundle_paths(&manifest.sandbox.permissions.filesystem.exec);
+    let mut exec_roots = map_bundle_paths(&manifest.sandbox.permissions.filesystem.exec)?;
     exec_roots.extend(explicit_system_tools);
     let mut exec_allow_all = false;
     match manifest.sandbox.system_tools_mode {
@@ -233,11 +255,14 @@ pub async fn prepare_cell(
 ) -> Result<PreparedToolSandbox, RuntimeError> {
     prepare_cell_with_policy(
         sandbox,
-        session_id,
-        agent_id,
-        bundle_root,
-        manifest,
-        override_mode,
+        CellPreparationRequest {
+            session_id,
+            agent_id,
+            bundle_root,
+            manifest,
+            override_mode,
+            component_id: AGENT_EXECUTION_COMPONENT,
+        },
         build_policy,
     )
     .await
@@ -253,11 +278,14 @@ pub async fn prepare_operator_command_cell(
 ) -> Result<PreparedToolSandbox, RuntimeError> {
     prepare_cell_with_policy(
         sandbox,
-        session_id,
-        agent_id,
-        bundle_root,
-        manifest,
-        override_mode,
+        CellPreparationRequest {
+            session_id,
+            agent_id,
+            bundle_root,
+            manifest,
+            override_mode,
+            component_id: SESSION_COMMAND_COMPONENT,
+        },
         build_operator_command_policy,
     )
     .await
@@ -265,42 +293,38 @@ pub async fn prepare_operator_command_cell(
 
 async fn prepare_cell_with_policy(
     sandbox: &SandboxRuntime,
-    session_id: Uuid,
-    agent_id: &str,
-    bundle_root: &Path,
-    manifest: &BundleManifest,
-    override_mode: Option<SandboxMode>,
+    request: CellPreparationRequest<'_>,
     policy_builder: fn(&Path, &BundleManifest) -> Result<SandboxPolicy, RuntimeError>,
 ) -> Result<PreparedToolSandbox, RuntimeError> {
-    let mode = build_mode(manifest, override_mode);
-    let key = SandboxCellKey::tooling(session_id, agent_id);
-    let cell_root = sandbox.managed_cell_root(&key)?;
+    let mode = build_mode(request.manifest, request.override_mode);
+    let workspace_key = SandboxCellKey::tooling(request.session_id, request.agent_id);
+    let key = SandboxCellKey::tooling_component(
+        request.session_id,
+        request.agent_id,
+        request.component_id,
+    );
+    let cell_root = sandbox.managed_cell_root(&workspace_key)?;
     let root = cell_root.join("app");
-    let policy = policy_builder(&root, manifest)?;
+    let policy = policy_builder(&root, request.manifest)?;
     validate_provider_support(sandbox.provider_name(), mode, &policy)?;
-    stage_bundle_if_needed(bundle_root, &root, mode)?;
-    prepare_host_mount_targets(&policy.filesystem.mount_bindings)?;
+    stage_bundle_if_needed(request.bundle_root, &root, mode)?;
+    validate_staged_bundle_exec_roots(
+        &root,
+        &request.manifest.sandbox.permissions.filesystem.exec,
+    )?;
+    prepare_host_mount_targets(
+        &policy.filesystem.mount_bindings,
+        host_mount_target_preparation(sandbox.provider_name(), mode),
+    )?;
     let work_dir = root.clone();
-
-    let (read_roots, write_roots, exec_roots) =
-        extend_cell_filesystem_policy(&policy, &cell_root, mode);
+    let lease_policy = policy.clone();
 
     let lease = sandbox
         .lease_cell(SandboxCellSpec::managed_component(
             key,
+            cell_root,
             mode,
-            SandboxPolicy {
-                filesystem: odyssey_rs_sandbox::SandboxFilesystemPolicy {
-                    read_roots,
-                    write_roots,
-                    exec_roots,
-                    exec_allow_all: policy.filesystem.exec_allow_all,
-                    mount_bindings: policy.filesystem.mount_bindings.clone(),
-                },
-                env: policy.env.clone(),
-                network: policy.network.clone(),
-                limits: policy.limits.clone(),
-            },
+            lease_policy,
         ))
         .await?;
 
@@ -337,14 +361,32 @@ fn stage_bundle_if_needed(
     stage_bundle(source, target)
 }
 
-fn prepare_host_mount_targets(mount_bindings: &[SandboxMountBinding]) -> Result<(), RuntimeError> {
+fn host_mount_target_preparation(provider_name: &str, mode: SandboxMode) -> MountTargetPreparation {
+    if provider_name == "host" && mode == SandboxMode::DangerFullAccess {
+        return MountTargetPreparation::HostSymlink;
+    }
+    MountTargetPreparation::Placeholder
+}
+
+fn prepare_host_mount_targets(
+    mount_bindings: &[SandboxMountBinding],
+    preparation: MountTargetPreparation,
+) -> Result<(), RuntimeError> {
     for binding in mount_bindings {
-        prepare_host_mount_target(Path::new(&binding.source), Path::new(&binding.target))?;
+        prepare_host_mount_target(
+            Path::new(&binding.source),
+            Path::new(&binding.target),
+            preparation,
+        )?;
     }
     Ok(())
 }
 
-fn prepare_host_mount_target(source: &Path, target: &Path) -> Result<(), RuntimeError> {
+fn prepare_host_mount_target(
+    source: &Path,
+    target: &Path,
+    preparation: MountTargetPreparation,
+) -> Result<(), RuntimeError> {
     let metadata = std::fs::metadata(source).map_err(|err| RuntimeError::Io {
         path: source.display().to_string(),
         message: err.to_string(),
@@ -356,6 +398,9 @@ fn prepare_host_mount_target(source: &Path, target: &Path) -> Result<(), Runtime
         })?;
     }
     reset_mount_target(target)?;
+    if preparation == MountTargetPreparation::HostSymlink {
+        return create_mount_target_symlink(source, target, metadata.is_dir());
+    }
     if metadata.is_dir() {
         std::fs::create_dir_all(target).map_err(|err| RuntimeError::Io {
             path: target.display().to_string(),
@@ -368,6 +413,44 @@ fn prepare_host_mount_target(source: &Path, target: &Path) -> Result<(), Runtime
         })?;
     }
     Ok(())
+}
+
+fn create_mount_target_symlink(
+    source: &Path,
+    target: &Path,
+    is_dir: bool,
+) -> Result<(), RuntimeError> {
+    #[cfg(unix)]
+    {
+        let _ = is_dir;
+        std::os::unix::fs::symlink(source, target).map_err(|err| RuntimeError::Io {
+            path: target.display().to_string(),
+            message: err.to_string(),
+        })?;
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    {
+        let create = if is_dir {
+            std::os::windows::fs::symlink_dir as fn(&Path, &Path) -> std::io::Result<()>
+        } else {
+            std::os::windows::fs::symlink_file as fn(&Path, &Path) -> std::io::Result<()>
+        };
+        create(source, target).map_err(|err| RuntimeError::Io {
+            path: target.display().to_string(),
+            message: err.to_string(),
+        })?;
+        return Ok(());
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (source, target, is_dir);
+        Err(RuntimeError::Unsupported(
+            "host mount aliases require symlink support on this platform".to_string(),
+        ))
+    }
 }
 
 fn reset_mount_target(path: &Path) -> Result<(), RuntimeError> {
@@ -437,28 +520,65 @@ fn sanitize_mount_segment(value: &str) -> String {
     }
 }
 
-fn extend_cell_filesystem_policy(
-    policy: &SandboxPolicy,
-    cell_root: &Path,
-    mode: SandboxMode,
-) -> (Vec<String>, Vec<String>, Vec<String>) {
-    let cell_root = cell_root.display().to_string();
+fn resolve_bundle_exec_root(bundle_root: &Path, entry: &str) -> Result<String, RuntimeError> {
+    validate_bundle_exec_entry(entry)?;
+    Ok(bundle_root.join(entry).display().to_string())
+}
 
-    let mut read_roots = policy.filesystem.read_roots.clone();
-    read_roots.push(cell_root.clone());
-
-    let mut write_roots = policy.filesystem.write_roots.clone();
-    if matches!(
-        mode,
-        SandboxMode::WorkspaceWrite | SandboxMode::DangerFullAccess
-    ) {
-        write_roots.push(cell_root.clone());
+fn validate_bundle_exec_entry(entry: &str) -> Result<(), RuntimeError> {
+    if entry.trim().is_empty() {
+        return invalid_exec_entry(entry, "entries cannot be empty");
     }
 
-    let mut exec_roots = policy.filesystem.exec_roots.clone();
-    exec_roots.push(cell_root);
+    let path = Path::new(entry);
+    if path.is_absolute() {
+        return invalid_exec_entry(entry, "entries must stay inside the staged bundle root");
+    }
 
-    (read_roots, write_roots, exec_roots)
+    for component in path.components() {
+        if matches!(
+            component,
+            Component::Prefix(_) | Component::RootDir | Component::ParentDir
+        ) {
+            return invalid_exec_entry(entry, "entries must stay inside the staged bundle root");
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_staged_bundle_exec_roots(
+    bundle_root: &Path,
+    entries: &[String],
+) -> Result<(), RuntimeError> {
+    let bundle_root = bundle_root.canonicalize().map_err(|err| RuntimeError::Io {
+        path: bundle_root.display().to_string(),
+        message: err.to_string(),
+    })?;
+
+    for entry in entries {
+        let candidate = bundle_root.join(entry);
+        let resolved = candidate.canonicalize().map_err(|err| RuntimeError::Io {
+            path: candidate.display().to_string(),
+            message: err.to_string(),
+        })?;
+        if !resolved.starts_with(&bundle_root) {
+            return invalid_exec_entry(
+                entry,
+                "entries must stay inside the staged bundle root after staging",
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn invalid_exec_entry(entry: &str, message: &str) -> Result<(), RuntimeError> {
+    Err(RuntimeError::Sandbox(
+        odyssey_rs_sandbox::SandboxError::InvalidConfig(format!(
+            "sandbox.permissions.filesystem.exec entry `{entry}` {message}"
+        )),
+    ))
 }
 
 #[cfg(test)]
@@ -603,10 +723,10 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_mode, build_network_policy, build_operator_command_policy, build_permission_rules,
-        build_policy, build_policy_with_resolvers, extend_cell_filesystem_policy,
-        prepare_host_mount_targets, stage_bundle, stage_bundle_if_needed, target_has_entries,
-        validate_provider_support, verify_system_tools,
+        MountTargetPreparation, build_mode, build_network_policy, build_operator_command_policy,
+        build_permission_rules, build_policy, build_policy_with_resolvers, prepare_cell,
+        prepare_host_mount_targets, prepare_operator_command_cell, stage_bundle,
+        stage_bundle_if_needed, target_has_entries, validate_provider_support, verify_system_tools,
     };
     use odyssey_rs_manifest::{
         AgentSpec, AgentToolPolicy, BundleExecutor, BundleManifest, BundleMemory, BundleSandbox,
@@ -614,12 +734,17 @@ mod tests {
         BundleSandboxPermissions, BundleSystemToolsMode, ManifestVersion, ProviderKind,
     };
     use odyssey_rs_protocol::SandboxMode;
-    use odyssey_rs_sandbox::{SandboxMountBinding, SandboxNetworkMode, SandboxPolicy};
+    use odyssey_rs_sandbox::{
+        LocalSandboxProvider, SandboxMountBinding, SandboxNetworkMode, SandboxPolicy,
+        SandboxRuntime,
+    };
     use odyssey_rs_tools::{PermissionAction, ToolPermissionMatcher, ToolPermissionRule};
     use serde_json::Value;
     use std::collections::BTreeMap;
     use std::path::Path;
+    use std::sync::Arc;
     use tempfile::tempdir;
+    use uuid::Uuid;
 
     #[test]
     fn build_policy_includes_host_mounts() {
@@ -758,11 +883,14 @@ mod tests {
             .join("read")
             .join("current");
 
-        prepare_host_mount_targets(&[SandboxMountBinding {
-            source: current_dir.path().display().to_string(),
-            target: target_path.display().to_string(),
-            writable: false,
-        }])
+        prepare_host_mount_targets(
+            &[SandboxMountBinding {
+                source: current_dir.path().display().to_string(),
+                target: target_path.display().to_string(),
+                writable: false,
+            }],
+            MountTargetPreparation::Placeholder,
+        )
         .expect("prepare mount targets");
 
         let metadata = std::fs::metadata(&target_path).expect("target metadata");
@@ -774,6 +902,39 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn prepare_host_mount_targets_symlink_mounts_in_host_mode() {
+        let bundle_root = tempdir().expect("bundle root");
+        let current_dir = tempdir().expect("current dir");
+        std::fs::write(current_dir.path().join("mounted.txt"), "hello mount").expect("file");
+        let target_path = bundle_root
+            .path()
+            .join("mount")
+            .join("read")
+            .join("current");
+
+        prepare_host_mount_targets(
+            &[SandboxMountBinding {
+                source: current_dir.path().display().to_string(),
+                target: target_path.display().to_string(),
+                writable: false,
+            }],
+            MountTargetPreparation::HostSymlink,
+        )
+        .expect("prepare mount targets");
+
+        let metadata = std::fs::symlink_metadata(&target_path).expect("target metadata");
+        assert!(metadata.file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_link(&target_path).expect("read link"),
+            current_dir.path()
+        );
+        let content =
+            std::fs::read_to_string(target_path.join("mounted.txt")).expect("mounted content");
+        assert_eq!(content, "hello mount");
     }
 
     #[test]
@@ -837,17 +998,125 @@ mod tests {
     }
 
     #[test]
-    fn read_only_mode_does_not_add_managed_cell_write_root() {
-        let policy = SandboxPolicy::default();
-        let cell_root = Path::new("/sandbox-test/cell");
+    fn build_policy_rejects_unsafe_exec_entries() {
+        let mut manifest = BundleManifest {
+            id: "demo".to_string(),
+            version: "0.1.0".to_string(),
+            manifest_version: ManifestVersion::V1,
+            readme: "README.md".to_string(),
+            agent_spec: "agent.yaml".to_string(),
+            executor: BundleExecutor {
+                kind: ProviderKind::Prebuilt,
+                id: "react".to_string(),
+                config: Value::Null,
+            },
+            memory: BundleMemory::default(),
+            skills: Vec::new(),
+            tools: Vec::new(),
+            sandbox: BundleSandbox {
+                mode: SandboxMode::WorkspaceWrite,
+                permissions: BundleSandboxPermissions {
+                    filesystem: BundleSandboxFilesystem {
+                        exec: vec!["../bin/run".to_string()],
+                        mounts: BundleSandboxMounts::default(),
+                    },
+                    network: vec!["*".to_string()],
+                },
+                env: BTreeMap::new(),
+                system_tools_mode: BundleSystemToolsMode::Explicit,
+                system_tools: Vec::new(),
+                resources: BundleSandboxLimits::default(),
+            },
+        };
 
-        let (_, read_only_writes, _) =
-            extend_cell_filesystem_policy(&policy, cell_root, SandboxMode::ReadOnly);
-        let (_, workspace_writes, _) =
-            extend_cell_filesystem_policy(&policy, cell_root, SandboxMode::WorkspaceWrite);
+        let traversal = build_policy(Path::new("/bundle-root"), &manifest)
+            .expect_err("traversal exec root should fail");
+        assert!(
+            traversal
+                .to_string()
+                .contains("must stay inside the staged bundle root")
+        );
 
-        assert!(!read_only_writes.contains(&"/sandbox-test/cell".to_string()));
-        assert!(workspace_writes.contains(&"/sandbox-test/cell".to_string()));
+        manifest.sandbox.permissions.filesystem.exec = vec!["/usr/bin/sh".to_string()];
+        let absolute = build_policy(Path::new("/bundle-root"), &manifest)
+            .expect_err("absolute exec root should fail");
+        assert!(
+            absolute
+                .to_string()
+                .contains("must stay inside the staged bundle root")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_and_operator_cells_share_workspace_without_policy_collision() {
+        let temp = tempdir().expect("tempdir");
+        let sandbox = SandboxRuntime::new(
+            "host",
+            Arc::new(LocalSandboxProvider::default()),
+            temp.path().join("sandbox"),
+        )
+        .expect("sandbox runtime");
+        let bundle_root = temp.path().join("bundle");
+        std::fs::create_dir_all(&bundle_root).expect("bundle root");
+        std::fs::write(
+            bundle_root.join("agent.yaml"),
+            "id: demo\nprompt: hi\nmodel:\n  provider: openai\n  name: gpt-4.1-mini\n",
+        )
+        .expect("agent");
+
+        let manifest = BundleManifest {
+            id: "demo".to_string(),
+            version: "0.1.0".to_string(),
+            manifest_version: ManifestVersion::V1,
+            readme: "README.md".to_string(),
+            agent_spec: "agent.yaml".to_string(),
+            executor: BundleExecutor {
+                kind: ProviderKind::Prebuilt,
+                id: "react".to_string(),
+                config: Value::Null,
+            },
+            memory: BundleMemory::default(),
+            skills: Vec::new(),
+            tools: Vec::new(),
+            sandbox: BundleSandbox {
+                mode: SandboxMode::DangerFullAccess,
+                permissions: BundleSandboxPermissions {
+                    filesystem: BundleSandboxFilesystem::default(),
+                    network: vec!["*".to_string()],
+                },
+                env: BTreeMap::new(),
+                system_tools_mode: BundleSystemToolsMode::Explicit,
+                system_tools: Vec::new(),
+                resources: BundleSandboxLimits::default(),
+            },
+        };
+
+        let session_id = Uuid::new_v4();
+        let agent = prepare_cell(&sandbox, session_id, "demo", &bundle_root, &manifest, None)
+            .await
+            .expect("agent cell");
+        let command = prepare_operator_command_cell(
+            &sandbox,
+            session_id,
+            "demo",
+            &bundle_root,
+            &manifest,
+            None,
+        )
+        .await
+        .expect("command cell");
+
+        let agent_lease = agent.sandbox.lease.as_ref().expect("agent lease");
+        let command_lease = command.sandbox.lease.as_ref().expect("command lease");
+
+        assert_eq!(agent.root, command.root);
+        assert_eq!(agent_lease.cell_root(), command_lease.cell_root());
+        assert_eq!(agent_lease.workspace_root(), agent.root.as_path());
+        assert_eq!(command_lease.workspace_root(), command.root.as_path());
+        assert_ne!(
+            agent_lease.key().component_id,
+            command_lease.key().component_id
+        );
     }
 
     #[test]

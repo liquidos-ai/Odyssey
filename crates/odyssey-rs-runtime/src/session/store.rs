@@ -23,8 +23,7 @@ pub struct SessionStore {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct SessionRecord {
     pub id: Uuid,
-    #[serde(alias = "bundle_ref")]
-    pub agent_ref: String,
+    pub bundle_ref: String,
     pub agent_id: String,
     #[serde(default = "default_model_provider")]
     pub model_provider: String,
@@ -204,7 +203,7 @@ impl SessionStore {
 
     pub fn create(
         &self,
-        agent_ref: String,
+        bundle_ref: String,
         agent_id: String,
         model_provider: String,
         model_id: String,
@@ -213,7 +212,7 @@ impl SessionStore {
         let id = Uuid::new_v4();
         let record = SessionRecord {
             id,
-            agent_ref,
+            bundle_ref,
             agent_id,
             model_provider,
             model_id,
@@ -368,7 +367,7 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let record = SessionRecord {
             id: Uuid::new_v4(),
-            agent_ref: "odyssey-cowork@latest".to_string(),
+            bundle_ref: "odyssey-cowork@latest".to_string(),
             agent_id: "odyssey-cowork".to_string(),
             model_provider: "openai".to_string(),
             model_id: "gpt-4.1-mini".to_string(),
@@ -395,7 +394,7 @@ mod tests {
         let loaded = store.get(record.id).expect("load session");
 
         assert_eq!(loaded.id, record.id);
-        assert_eq!(loaded.agent_ref, record.agent_ref);
+        assert_eq!(loaded.bundle_ref, record.bundle_ref);
         assert_eq!(loaded.turns.len(), 1);
         assert_eq!(loaded.turns[0].prompt, "");
         assert_eq!(loaded.turns[0].response, "");

@@ -30,12 +30,12 @@ impl RemoteRuntimeClient {
             .await
     }
 
-    pub(crate) async fn run(&self, agent_ref: String, input: String) -> Result<RunOutput> {
+    pub(crate) async fn run(&self, bundle_ref: String, input: String) -> Result<RunOutput> {
         let session: SessionSummary = self
             .post(
                 "/sessions",
                 serde_json::json!({
-                    "agent_ref": agent_ref
+                    "bundle_ref": bundle_ref
                 }),
             )
             .await?;

@@ -89,7 +89,9 @@ default template:
 - `memory.type` must be `prebuilt`
 - `executor.id` and `memory.id` must be non-empty
 - `readme` must point to an existing file inside the project
+- `agent_spec` must point to an existing file inside the project
 - Each skill path must exist inside the project
+- `sandbox.permissions.filesystem.exec` entries must point to existing paths inside the project; absolute paths, `..`, and symlink escapes are rejected
 - Host mount paths in `sandbox.permissions.filesystem.mounts.read` and `.write` must be absolute, except `.` which resolves to the current working directory
 - `sandbox.env` keys and values must be valid environment variable names using ASCII letters, digits, and underscores, and must not start with a digit
 - `sandbox.permissions.network` only supports `[]` or `["*"]` in v1
@@ -104,6 +106,7 @@ default template:
 - Network hostname allowlists are not implemented in v1; network policy is either disabled or unrestricted
 - `sandbox.env` reads host variables at runtime and injects them under the configured sandbox variable names; missing host variables are silently omitted
 - `system_tools_mode: "all"` allows sandboxed process execution to resolve any executable path the sandbox can see, so it should only be used for trusted workspace agents
+- v1 treats bundle manifests as trusted configuration. Mounts, system tools, env passthrough, and bundle-local exec paths are enforced as declared by the bundle author. v2 is expected to treat bundles as untrusted input and add stricter approval or policy layers around those capabilities.
 
 ## Agent Spec
 

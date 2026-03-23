@@ -1,16 +1,17 @@
 use chrono::Utc;
-use odyssey_rs_protocol::{AgentRef, EventMsg, ExecutionRequest, ModelSpec, Task, TurnContext};
+use log::{debug, info};
+use odyssey_rs_protocol::{BundleRef, EventMsg, ExecutionRequest, ModelSpec, Task, TurnContext};
 use odyssey_rs_sandbox::SandboxMode;
 use odyssey_rs_tools::{ToolContext, tools_to_adaptors};
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::{sync::broadcast, time::Instant};
 use uuid::Uuid;
 
 use crate::{
     RunOutput, RuntimeError,
     agent::{ExecutorRun, run_executor},
     memory::build_memory,
-    resolver::{agent::ResolvedAgentSpec, agent::resolve_agent, llm::LLMResolver},
+    resolver::{bundle::ResolvedBundle, bundle::resolve_bundle_from_ref, llm::LLMResolver},
     runtime::{
         engine::OdysseyRuntimeInner,
         history::TurnHistoryCollector,
@@ -39,15 +40,21 @@ impl ScheduleExecutor {
         turn_id: Uuid,
         request: ExecutionRequest,
     ) -> Result<RunOutput, RuntimeError> {
+        info!("Received execution request : {}", request.request_id);
+        let _session_guard = self
+            .runtime
+            .lock_session_execution(request.session_id)
+            .await;
         let session = self.runtime.sessions.get(request.session_id)?;
-        let resolved = resolve_agent(
+        let resolved = resolve_bundle_from_ref(
             &self.runtime.store,
-            &AgentRef::from(session.agent_ref.clone()),
+            &BundleRef::from(session.bundle_ref.clone()),
         )?;
         let sender = self.runtime.sessions.sender(request.session_id)?;
         let receiver = self.runtime.sessions.subscribe(request.session_id)?;
+        let start_time = Instant::now();
         let response = self
-            .execute_resolved_agent(
+            .execute_resolved_bundle(
                 resolved,
                 session.clone(),
                 turn_id,
@@ -56,6 +63,11 @@ impl ScheduleExecutor {
                 sender.clone(),
             )
             .await?;
+        info!(
+            "Execution : {}, completed with time: {}",
+            request.request_id,
+            start_time.elapsed().as_millis()
+        );
         let chat_history = collect_turn_chat_history(turn_id, &request.input, &response, receiver);
         self.runtime.sessions.append_turn(
             request.session_id,
@@ -74,9 +86,9 @@ impl ScheduleExecutor {
         })
     }
 
-    async fn execute_resolved_agent(
+    async fn execute_resolved_bundle(
         &self,
-        resolved: ResolvedAgentSpec,
+        resolved: ResolvedBundle,
         session: SessionRecord,
         turn_id: Uuid,
         task: Task,
@@ -85,9 +97,16 @@ impl ScheduleExecutor {
     ) -> Result<String, RuntimeError> {
         let session_id = session.id;
         let mode_override = self.runtime.config.sandbox_mode_override;
+
         let mode = effective_sandbox_mode(&resolved.manifest, mode_override);
-        let cell = prepare_resolved_agent_cell(&self.runtime, &resolved, session_id).await?;
-        let permissions = build_permission_rules(&resolved.agent);
+        debug!("Effective Sandbox mode: {:?}", mode);
+
+        //Prepare sandbox cell
+        let cell =
+            prepare_resolved_bundle_cell(&mode, &self.runtime, &resolved, session_id).await?;
+        info!("Prepared bundle cell");
+        let permissions = build_permission_rules(&resolved.default_agent);
+        info!("Built permission rules");
         let event_sink = Arc::new(RuntimeToolEventSink {
             session_id,
             turn_id,
@@ -102,10 +121,11 @@ impl ScheduleExecutor {
         });
         let skills = Arc::new(BundleSkillStore::load(&cell.root)?);
         let system_prompt = build_system_prompt(
-            &resolved.agent.prompt,
+            &resolved.default_agent.prompt,
             &skills,
             !resolved.manifest.skills.is_empty(),
         );
+        info!("Prepared System Prompt");
         let ctx = ToolContext {
             session_id,
             turn_id,
@@ -118,19 +138,28 @@ impl ScheduleExecutor {
             approval_handler: Some(approval_handler),
             skills: Some(skills),
         };
-        let selected = select_tools(&self.runtime.tools, &resolved.manifest, &resolved.agent);
+        let selected = select_tools(
+            &self.runtime.tools,
+            &resolved.manifest,
+            &resolved.default_agent,
+        );
+        info!("Prepared Tool Context");
         let adapted = tools_to_adaptors(selected, ctx.clone());
         let model = resolve_model_spec(&session, &resolved, turn_context_override.as_ref());
         let llm_resolver = LLMResolver::new(&model);
         let llm = llm_resolver.build_llm()?;
+        info!("Built LLM using resolver");
         let memory = build_memory(&resolved.manifest, &session.turns)?;
+        info!("Built Memory");
         let turn_context = build_turn_context(
             cell.work_dir.display().to_string(),
             model.clone(),
             mode,
             turn_context_override.as_ref(),
         );
-        run_executor(ExecutorRun {
+        info!("Starting executor");
+        let start_time = Instant::now();
+        let result = run_executor(ExecutorRun {
             executor_id: resolved.manifest.executor.id.clone(),
             llm,
             system_prompt,
@@ -142,7 +171,12 @@ impl ScheduleExecutor {
             sender,
             turn_context,
         })
-        .await
+        .await;
+        info!(
+            "Completed executor - Time taken: {}",
+            start_time.elapsed().as_millis()
+        );
+        result
     }
 }
 
@@ -159,22 +193,22 @@ fn collect_turn_chat_history(
     collector.finish(response)
 }
 
-pub(crate) async fn prepare_resolved_agent_cell(
+pub(crate) async fn prepare_resolved_bundle_cell(
+    mode: &SandboxMode,
     runtime: &Arc<OdysseyRuntimeInner>,
-    resolved: &ResolvedAgentSpec,
+    resolved: &ResolvedBundle,
     session_id: Uuid,
 ) -> Result<PreparedToolSandbox, RuntimeError> {
-    let mode = effective_sandbox_mode(&resolved.manifest, runtime.config.sandbox_mode_override);
-    let sandbox_runtime = if mode == SandboxMode::DangerFullAccess {
+    let sandbox_runtime = if mode == &SandboxMode::DangerFullAccess {
         runtime.host_sandbox.clone()
     } else {
-        Arc::new(build_sandbox_runtime(&runtime.config, mode)?)
+        Arc::new(build_sandbox_runtime(&runtime.config, *mode)?)
     };
 
     prepare_cell(
         &sandbox_runtime,
         session_id,
-        &resolved.agent.id,
+        &resolved.default_agent.id,
         &resolved.install_path,
         &resolved.manifest,
         runtime.config.sandbox_mode_override,
@@ -182,22 +216,22 @@ pub(crate) async fn prepare_resolved_agent_cell(
     .await
 }
 
-pub(crate) async fn prepare_resolved_agent_command_cell(
+pub(crate) async fn prepare_resolved_bundle_command_cell(
+    mode: &SandboxMode,
     runtime: &Arc<OdysseyRuntimeInner>,
-    resolved: &ResolvedAgentSpec,
+    resolved: &ResolvedBundle,
     session_id: Uuid,
 ) -> Result<PreparedToolSandbox, RuntimeError> {
-    let mode = effective_sandbox_mode(&resolved.manifest, runtime.config.sandbox_mode_override);
-    let sandbox_runtime = if mode == SandboxMode::DangerFullAccess {
+    let sandbox_runtime = if mode == &SandboxMode::DangerFullAccess {
         runtime.host_sandbox.clone()
     } else {
-        Arc::new(build_sandbox_runtime(&runtime.config, mode)?)
+        Arc::new(build_sandbox_runtime(&runtime.config, *mode)?)
     };
 
     prepare_operator_command_cell(
         &sandbox_runtime,
         session_id,
-        &resolved.agent.id,
+        &resolved.default_agent.id,
         &resolved.install_path,
         &resolved.manifest,
         runtime.config.sandbox_mode_override,
@@ -233,14 +267,14 @@ fn build_turn_context(
 
 fn resolve_model_spec(
     session: &SessionRecord,
-    resolved: &ResolvedAgentSpec,
+    resolved: &ResolvedBundle,
     override_ctx: Option<&odyssey_rs_protocol::TurnContextOverride>,
 ) -> ModelSpec {
     if let Some(model) = override_ctx.and_then(|ctx| ctx.model.clone()) {
         return model;
     }
 
-    let default_model = &resolved.default_model;
+    let default_model = &resolved.model;
     let config = if session.model_provider == default_model.provider
         && session.model_id == default_model.name
     {
@@ -274,7 +308,7 @@ mod tests {
     use tokio::sync::broadcast;
     use uuid::Uuid;
 
-    use crate::resolver::agent::ResolvedAgentSpec;
+    use crate::resolver::bundle::ResolvedBundle;
     use crate::runtime::executor::{
         build_turn_context, collect_turn_chat_history, effective_sandbox_mode, resolve_model_spec,
     };
@@ -402,7 +436,7 @@ mod tests {
     fn resolve_model_spec_falls_back_to_bundle_default_config() {
         let session = SessionRecord {
             id: Uuid::new_v4(),
-            agent_ref: "demo@latest".to_string(),
+            bundle_ref: "demo@latest".to_string(),
             agent_id: "demo".to_string(),
             model_provider: "openai".to_string(),
             model_id: "gpt-5".to_string(),
@@ -410,10 +444,10 @@ mod tests {
             created_at: Utc::now(),
             turns: Vec::new(),
         };
-        let resolved = ResolvedAgentSpec {
+        let resolved = ResolvedBundle {
             install_path: std::path::PathBuf::from("/workspace/demo"),
             manifest: manifest(SandboxMode::WorkspaceWrite),
-            agent: odyssey_rs_manifest::AgentSpec {
+            default_agent: odyssey_rs_manifest::AgentSpec {
                 id: "demo".to_string(),
                 description: String::default(),
                 prompt: "You are demo".to_string(),
@@ -424,7 +458,7 @@ mod tests {
                 },
                 tools: odyssey_rs_manifest::AgentToolPolicy::default(),
             },
-            default_model: ModelSpec {
+            model: ModelSpec {
                 provider: "openai".to_string(),
                 name: "gpt-5".to_string(),
                 config: Some(json!({ "reasoning_effort": "medium" })),
@@ -440,7 +474,7 @@ mod tests {
     fn resolve_model_spec_prefers_turn_override() {
         let session = SessionRecord {
             id: Uuid::new_v4(),
-            agent_ref: "demo@latest".to_string(),
+            bundle_ref: "demo@latest".to_string(),
             agent_id: "demo".to_string(),
             model_provider: "openai".to_string(),
             model_id: "gpt-5".to_string(),
@@ -448,10 +482,10 @@ mod tests {
             created_at: Utc::now(),
             turns: Vec::new(),
         };
-        let resolved = ResolvedAgentSpec {
+        let resolved = ResolvedBundle {
             install_path: std::path::PathBuf::from("/workspace/demo"),
             manifest: manifest(SandboxMode::WorkspaceWrite),
-            agent: odyssey_rs_manifest::AgentSpec {
+            default_agent: odyssey_rs_manifest::AgentSpec {
                 id: "demo".to_string(),
                 description: String::default(),
                 prompt: "You are demo".to_string(),
@@ -462,7 +496,7 @@ mod tests {
                 },
                 tools: odyssey_rs_manifest::AgentToolPolicy::default(),
             },
-            default_model: ModelSpec {
+            model: ModelSpec {
                 provider: "openai".to_string(),
                 name: "gpt-5".to_string(),
                 config: Some(json!({ "reasoning_effort": "medium" })),

@@ -20,11 +20,11 @@ pub use autoagents_protocol::Task;
 pub use autoagents_protocol::{Event as AutoAgentsEvent, StreamChunk as AutoAgentsStreamChunk};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct AgentRef {
+pub struct BundleRef {
     pub reference: String,
 }
 
-impl AgentRef {
+impl BundleRef {
     pub fn new(reference: impl Into<String>) -> Self {
         Self {
             reference: reference.into(),
@@ -36,19 +36,19 @@ impl AgentRef {
     }
 }
 
-impl From<String> for AgentRef {
+impl From<String> for BundleRef {
     fn from(value: String) -> Self {
         Self::new(value)
     }
 }
 
-impl From<&str> for AgentRef {
+impl From<&str> for BundleRef {
     fn from(value: &str) -> Self {
         Self::new(value)
     }
 }
 
-impl std::fmt::Display for AgentRef {
+impl std::fmt::Display for BundleRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.reference)
     }
@@ -80,8 +80,7 @@ pub struct SessionSummary {
 pub struct Session {
     pub id: SessionId,
     pub agent_id: String,
-    #[serde(alias = "bundle_ref")]
-    pub agent_ref: String,
+    pub bundle_ref: String,
     pub model_id: String,
     pub created_at: DateTime<Utc>,
     pub messages: Vec<Message>,
@@ -89,7 +88,7 @@ pub struct Session {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSpec {
-    pub agent_ref: AgentRef,
+    pub bundle_ref: BundleRef,
     #[serde(default)]
     pub model: Option<ModelSpec>,
     #[serde(default = "empty_json_object")]
@@ -99,13 +98,13 @@ pub struct SessionSpec {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionFilter {
     #[serde(default)]
-    pub agent_ref: Option<AgentRef>,
+    pub bundle_ref: Option<BundleRef>,
 }
 
 impl From<&str> for SessionSpec {
     fn from(value: &str) -> Self {
         Self {
-            agent_ref: AgentRef::from(value),
+            bundle_ref: BundleRef::from(value),
             model: None,
             metadata: empty_json_object(),
         }

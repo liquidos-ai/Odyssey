@@ -1,25 +1,28 @@
 use super::scheduler::ExecutionScheduler;
 use super::templates::initialize_bundle;
 use super::tool_event::RuntimeToolEventSink;
-use crate::resolver::agent::resolve_agent;
+use crate::resolver::bundle::resolve_bundle_from_ref;
 use crate::sandbox::{build_permission_rules, build_sandbox_runtime};
 use crate::session::{ApprovalStore, SessionRecord, SessionStore, TurnChatMessageKind};
 use crate::skill::BundleSkillStore;
 use crate::{RuntimeConfig, RuntimeError};
-use log::info;
+use log::{debug, info};
 use odyssey_rs_bundle::{
     BundleArtifact, BundleBuilder, BundleInstall, BundleMetadata, BundleProject, BundleStore,
 };
 use odyssey_rs_protocol::SandboxMode;
 use odyssey_rs_protocol::{
-    AgentRef, EventMsg, ExecutionHandle, ExecutionRequest, ExecutionStatus, Message, Role, Session,
-    SessionFilter, SessionSpec, SessionSummary, SkillSummary,
+    BundleRef, EventMsg, ExecutionHandle, ExecutionRequest, ExecutionStatus, Message, Role,
+    Session, SessionFilter, SessionSpec, SessionSummary, SkillSummary,
 };
 use odyssey_rs_sandbox::SandboxRuntime;
 use odyssey_rs_tools::{SkillProvider, ToolContext, ToolRegistry, ToolSandbox, builtin_registry};
+use parking_lot::Mutex;
+use std::collections::{HashMap, hash_map::Entry};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use tokio::time::Instant;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -40,6 +43,50 @@ pub struct SessionCommandOutput {
     pub stderr_truncated: bool,
 }
 
+#[derive(Default)]
+struct SessionExecutionGuards {
+    guards: Mutex<HashMap<Uuid, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+}
+
+pub(crate) struct SessionExecutionGuard {
+    _lock: Arc<tokio::sync::Mutex<()>>,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl SessionExecutionGuards {
+    async fn acquire(&self, session_id: Uuid) -> SessionExecutionGuard {
+        let lock = {
+            let mut guards = self.guards.lock();
+            match guards.entry(session_id) {
+                Entry::Occupied(mut entry) => {
+                    if let Some(lock) = entry.get().upgrade() {
+                        lock
+                    } else {
+                        let lock = Arc::new(tokio::sync::Mutex::new(()));
+                        entry.insert(Arc::downgrade(&lock));
+                        lock
+                    }
+                }
+                Entry::Vacant(entry) => {
+                    let lock = Arc::new(tokio::sync::Mutex::new(()));
+                    entry.insert(Arc::downgrade(&lock));
+                    lock
+                }
+            }
+        };
+
+        let guard = lock.clone().lock_owned().await;
+        SessionExecutionGuard {
+            _lock: lock,
+            _guard: guard,
+        }
+    }
+
+    fn remove(&self, session_id: Uuid) {
+        self.guards.lock().remove(&session_id);
+    }
+}
+
 pub(crate) struct OdysseyRuntimeInner {
     pub(crate) config: RuntimeConfig,
     pub(crate) store: BundleStore,
@@ -47,6 +94,7 @@ pub(crate) struct OdysseyRuntimeInner {
     pub(crate) host_sandbox: Arc<SandboxRuntime>,
     pub(crate) tools: ToolRegistry,
     pub(crate) approvals: ApprovalStore,
+    execution_guards: SessionExecutionGuards,
 }
 
 #[derive(Clone)]
@@ -74,6 +122,7 @@ impl OdysseyRuntime {
             host_sandbox,
             tools: builtin_registry(),
             approvals: ApprovalStore::default(),
+            execution_guards: SessionExecutionGuards::default(),
         });
         let scheduler = ExecutionScheduler::new(inner.clone(), worker_count, queue_capacity);
         info!("OdysseyRuntime Initiated");
@@ -138,21 +187,27 @@ impl OdysseyRuntime {
             .map_err(RuntimeError::from)
     }
 
-    pub fn list_agents(&self, agent_ref: impl Into<AgentRef>) -> Result<Vec<String>, RuntimeError> {
-        let resolved = resolve_agent(&self.inner.store, &agent_ref.into())?;
-        Ok(vec![resolved.agent.id])
+    pub fn list_agents(
+        &self,
+        bundle_ref: impl Into<BundleRef>,
+    ) -> Result<Vec<String>, RuntimeError> {
+        let resolved = resolve_bundle_from_ref(&self.inner.store, &bundle_ref.into())?;
+        Ok(vec![resolved.default_agent.id])
     }
 
-    pub fn list_models(&self, agent_ref: impl Into<AgentRef>) -> Result<Vec<String>, RuntimeError> {
-        let resolved = resolve_agent(&self.inner.store, &agent_ref.into())?;
-        Ok(vec![resolved.agent.model.name])
+    pub fn list_models(
+        &self,
+        bundle_ref: impl Into<BundleRef>,
+    ) -> Result<Vec<String>, RuntimeError> {
+        let resolved = resolve_bundle_from_ref(&self.inner.store, &bundle_ref.into())?;
+        Ok(vec![resolved.default_agent.model.name])
     }
 
     pub fn list_skills(
         &self,
-        agent_ref: impl Into<AgentRef>,
+        bundle_ref: impl Into<BundleRef>,
     ) -> Result<Vec<SkillSummary>, RuntimeError> {
-        let resolved = resolve_agent(&self.inner.store, &agent_ref.into())?;
+        let resolved = resolve_bundle_from_ref(&self.inner.store, &bundle_ref.into())?;
         let store = BundleSkillStore::load(&resolved.install_path)?;
         Ok(store
             .list()
@@ -170,11 +225,11 @@ impl OdysseyRuntime {
         spec: impl Into<SessionSpec>,
     ) -> Result<SessionSummary, RuntimeError> {
         let spec = spec.into();
-        let resolved = resolve_agent(&self.inner.store, &spec.agent_ref)?;
-        let model = spec.model.unwrap_or_else(|| resolved.default_model.clone());
+        let resolved = resolve_bundle_from_ref(&self.inner.store, &spec.bundle_ref)?;
+        let model = spec.model.unwrap_or_else(|| resolved.model.clone());
         let record = self.inner.sessions.create(
-            spec.agent_ref.to_string(),
-            resolved.agent.id,
+            spec.bundle_ref.to_string(),
+            resolved.default_agent.id,
             model.provider,
             model.name,
             model.config,
@@ -188,8 +243,8 @@ impl OdysseyRuntime {
             .list()
             .into_iter()
             .filter(
-                |record| match filter.and_then(|value| value.agent_ref.as_ref()) {
-                    Some(agent_ref) => record.agent_ref == agent_ref.as_str(),
+                |record| match filter.and_then(|value| value.bundle_ref.as_ref()) {
+                    Some(bundle_ref) => record.bundle_ref == bundle_ref.as_str(),
                     None => true,
                 },
             )
@@ -203,7 +258,9 @@ impl OdysseyRuntime {
     }
 
     pub fn delete_session(&self, session_id: Uuid) -> Result<(), RuntimeError> {
-        self.inner.sessions.delete(session_id)
+        self.inner.sessions.delete(session_id)?;
+        self.inner.remove_session_execution_guard(session_id);
+        Ok(())
     }
 
     pub fn resolve_approval(
@@ -249,10 +306,6 @@ impl OdysseyRuntime {
     }
 
     /// Execute a direct process command inside the active session sandbox.
-    ///
-    /// The command line is parsed into argv tokens, resolved against the
-    /// session sandbox policy, and streamed through the session event bus as
-    /// `ExecCommand*` events.
     pub async fn run_session_command(
         &self,
         session_id: Uuid,
@@ -265,9 +318,17 @@ impl OdysseyRuntime {
             ));
         }
 
+        let _session_guard = self.inner.lock_session_execution(session_id).await;
         let session = self.inner.sessions.get(session_id)?;
-        let resolved = resolve_agent(&self.inner.store, &AgentRef::from(session.agent_ref))?;
-        let cell = super::executor::prepare_resolved_agent_command_cell(
+        let resolved =
+            resolve_bundle_from_ref(&self.inner.store, &BundleRef::from(session.bundle_ref))?;
+        let mode = super::executor::effective_sandbox_mode(
+            &resolved.manifest,
+            self.inner.config.sandbox_mode_override,
+        );
+        debug!("Effective Sandbox mode: {:?}", mode);
+        let cell = super::executor::prepare_resolved_bundle_command_cell(
+            &mode,
             &self.inner,
             &resolved,
             session_id,
@@ -298,13 +359,22 @@ impl OdysseyRuntime {
                 handle: cell.sandbox.handle,
                 lease: cell.sandbox.lease,
             },
-            permission_rules: build_permission_rules(&resolved.agent),
+            permission_rules: build_permission_rules(&resolved.default_agent),
             event_sink: Some(event_sink),
             approval_handler: Some(approval_handler),
             skills: None,
         };
+        info!("Built tool context");
+
         let spec = build_session_command_spec(&ctx, command_line)?;
+
+        info!("Running command in sandbox session with spec: {:?}", spec);
+        let start_time = Instant::now();
         let output = ctx.run_command("SessionCommand", spec).await?;
+        info!(
+            "Command execution completed in : {}",
+            start_time.elapsed().as_millis()
+        );
 
         Ok(SessionCommandOutput {
             session_id,
@@ -322,6 +392,16 @@ impl OdysseyRuntime {
         session_id: Uuid,
     ) -> Result<broadcast::Sender<EventMsg>, RuntimeError> {
         self.inner.sessions.sender(session_id)
+    }
+}
+
+impl OdysseyRuntimeInner {
+    pub(crate) async fn lock_session_execution(&self, session_id: Uuid) -> SessionExecutionGuard {
+        self.execution_guards.acquire(session_id).await
+    }
+
+    fn remove_session_execution_guard(&self, session_id: Uuid) {
+        self.execution_guards.remove(session_id);
     }
 }
 
@@ -418,7 +498,7 @@ fn session_from_record(record: SessionRecord) -> Session {
     Session {
         id: record.id,
         agent_id: record.agent_id,
-        agent_ref: record.agent_ref,
+        bundle_ref: record.bundle_ref,
         model_id: record.model_id,
         created_at: record.created_at,
         messages,
@@ -428,7 +508,8 @@ fn session_from_record(record: SessionRecord) -> Session {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_sandbox_runtime, build_session_command_spec, session_from_record, summary_from_record,
+        SessionExecutionGuards, build_sandbox_runtime, build_session_command_spec,
+        session_from_record, summary_from_record,
     };
     use crate::OdysseyRuntime;
     use crate::RuntimeConfig;
@@ -446,6 +527,7 @@ mod tests {
     use std::sync::Arc;
     use tempfile::tempdir;
     use tokio::sync::broadcast;
+    use tokio::time::{Duration, timeout};
     use uuid::Uuid;
 
     #[test]
@@ -461,7 +543,7 @@ mod tests {
         };
         let record = SessionRecord {
             id: session_id,
-            agent_ref: "local/demo@0.1.0".to_string(),
+            bundle_ref: "local/demo@0.1.0".to_string(),
             agent_id: "demo".to_string(),
             model_provider: "openai".to_string(),
             model_id: "gpt-4.1-mini".to_string(),
@@ -504,7 +586,7 @@ mod tests {
 
         let session = session_from_record(record);
         assert_eq!(session.id, session_id);
-        assert_eq!(session.agent_ref, "local/demo@0.1.0");
+        assert_eq!(session.bundle_ref, "local/demo@0.1.0");
         assert_eq!(session.messages[0].role, Role::User);
         assert_eq!(session.messages[0].content, "hello");
         assert_eq!(session.messages[1].role, Role::Assistant);
@@ -607,6 +689,69 @@ tools:
         .expect("write resource");
     }
 
+    fn write_bundle_project_with_read_mount(
+        root: &Path,
+        bundle_id: &str,
+        agent_id: &str,
+        read_mount: &Path,
+    ) {
+        let read_mounts =
+            serde_json::to_string(&vec![read_mount.display().to_string()]).expect("read mounts");
+        fs::create_dir_all(root.join("skills").join("repo-hygiene")).expect("create skill dir");
+        fs::create_dir_all(root.join("resources").join("data")).expect("create data dir");
+        fs::write(
+            root.join("odyssey.bundle.json5"),
+            format!(
+                r#"{{
+                    id: "{bundle_id}",
+                    version: "0.1.0",
+                    manifest_version: "odyssey.bundle/v1",
+                    readme: "README.md",
+                    agent_spec: "agent.yaml",
+                    executor: {{ type: "prebuilt", id: "react" }},
+                    memory: {{ type: "prebuilt", id: "sliding_window" }},
+                    skills: [{{ name: "repo-hygiene", path: "skills/repo-hygiene" }}],
+                    tools: [{{ name: "Read", source: "builtin" }}],
+                    sandbox: {{
+                        permissions: {{
+                            filesystem: {{ exec: [], mounts: {{ read: {read_mounts}, write: [] }} }},
+                            network: ["*"]
+                        }},
+                        system_tools: ["sh"],
+                        resources: {{}}
+                    }}
+                }}"#
+            ),
+        )
+        .expect("write manifest");
+        fs::write(
+            root.join("agent.yaml"),
+            format!(
+                r#"id: {agent_id}
+description: test bundle
+prompt: keep responses concise
+model:
+  provider: openai
+  name: gpt-4.1-mini
+tools:
+  allow: ["Read", "Skill"]
+"#
+            ),
+        )
+        .expect("write agent");
+        fs::write(root.join("README.md"), format!("# {bundle_id}\n")).expect("write readme");
+        fs::write(
+            root.join("skills").join("repo-hygiene").join("SKILL.md"),
+            "Keep commits focused.\n",
+        )
+        .expect("write skill");
+        fs::write(
+            root.join("resources").join("data").join("notes.txt"),
+            "hello world\n",
+        )
+        .expect("write resource");
+    }
+
     #[test]
     fn build_session_command_spec_rejects_empty_commands() {
         let temp = tempdir().expect("tempdir");
@@ -671,6 +816,48 @@ tools:
     }
 
     #[tokio::test]
+    async fn session_execution_guards_serialize_same_session_work() {
+        let guards = Arc::new(SessionExecutionGuards::default());
+        let session_id = Uuid::new_v4();
+        let first = guards.acquire(session_id).await;
+        let guards_clone = guards.clone();
+        let (signal_tx, mut signal_rx) = tokio::sync::oneshot::channel();
+
+        let waiter = tokio::spawn(async move {
+            let _second = guards_clone.acquire(session_id).await;
+            let _ = signal_tx.send(());
+        });
+
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(matches!(
+            signal_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+
+        drop(first);
+        timeout(Duration::from_secs(1), async {
+            signal_rx.await.expect("signal");
+        })
+        .await
+        .expect("same-session waiter should resume");
+        waiter.await.expect("waiter joined");
+    }
+
+    #[tokio::test]
+    async fn session_execution_guards_allow_different_sessions_in_parallel() {
+        let guards = Arc::new(SessionExecutionGuards::default());
+        let _first = guards.acquire(Uuid::new_v4()).await;
+        let guards_clone = guards.clone();
+
+        timeout(Duration::from_secs(1), async move {
+            let _second = guards_clone.acquire(Uuid::new_v4()).await;
+        })
+        .await
+        .expect("different sessions should not block");
+    }
+
+    #[tokio::test]
     async fn run_session_command_executes_and_streams_exec_events() {
         let temp = tempdir().expect("tempdir");
         let runtime = Arc::new(OdysseyRuntime::new(runtime_config(temp.path())).expect("runtime"));
@@ -708,8 +895,46 @@ tools:
         ));
     }
 
-    #[cfg(target_os = "linux")]
     #[tokio::test]
+    #[cfg(unix)]
+    async fn run_session_command_exposes_host_mount_aliases_in_danger_mode() {
+        let temp = tempdir().expect("tempdir");
+        let runtime = Arc::new(OdysseyRuntime::new(runtime_config(temp.path())).expect("runtime"));
+        let host_read = temp.path().join("host-read");
+        fs::create_dir_all(&host_read).expect("host read dir");
+        fs::write(host_read.join("mounted.txt"), "mounted via alias").expect("mounted file");
+        let project = temp.path().join("alpha-project");
+        fs::create_dir_all(&project).expect("create project");
+        write_bundle_project_with_read_mount(&project, "alpha", "alpha-agent", &host_read);
+        runtime.build_and_install(&project).expect("install bundle");
+
+        let session_id = runtime
+            .create_session("local/alpha@0.1.0")
+            .expect("create session")
+            .id;
+        let visible_mount = std::path::PathBuf::from("mount")
+            .join("read")
+            .join("abs")
+            .join(
+                host_read
+                    .strip_prefix(std::path::Path::new("/"))
+                    .expect("absolute host path"),
+            );
+        let output = runtime
+            .run_session_command(
+                session_id,
+                format!("cat {}/mounted.txt", visible_mount.display()),
+            )
+            .await
+            .expect("run command");
+
+        assert_eq!(output.status_code, Some(0));
+        assert_eq!(output.stdout, "mounted via alias");
+        assert_eq!(output.stderr, "");
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
     async fn run_session_command_uses_operator_exec_policy_in_restricted_sandbox() {
         if which::which("bwrap").is_err() {
             return;
@@ -737,8 +962,8 @@ tools:
         assert!(output.stdout.contains("agent.yaml"));
     }
 
-    #[cfg(target_os = "linux")]
     #[tokio::test]
+    #[cfg(target_os = "linux")]
     async fn workspace_write_session_commands_persist_staged_changes_within_session() {
         if which::which("bwrap").is_err() {
             return;
