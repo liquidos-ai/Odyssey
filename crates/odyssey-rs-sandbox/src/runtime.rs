@@ -53,38 +53,16 @@ impl SandboxCellKey {
     }
 }
 
-/// Describes whether a cell reuses an existing workspace or owns a private runtime layout.
-#[derive(Debug, Clone)]
-pub enum SandboxCellRoot {
-    SharedWorkspace(PathBuf),
-    ManagedPrivate(PathBuf),
-}
-
-/// Runtime request used to create or reuse a sandbox cell.
+/// Runtime request used to create or reuse a managed sandbox cell.
 #[derive(Debug, Clone)]
 pub struct SandboxCellSpec {
     pub key: SandboxCellKey,
-    pub root: SandboxCellRoot,
+    pub cell_root: PathBuf,
     pub mode: SandboxMode,
     pub policy: SandboxPolicy,
 }
 
 impl SandboxCellSpec {
-    pub fn tooling(
-        session_id: Uuid,
-        agent_id: impl Into<String>,
-        workspace_root: PathBuf,
-        mode: SandboxMode,
-        policy: SandboxPolicy,
-    ) -> Self {
-        Self {
-            key: SandboxCellKey::tooling(session_id, agent_id),
-            root: SandboxCellRoot::SharedWorkspace(workspace_root),
-            mode,
-            policy,
-        }
-    }
-
     pub fn managed_component(
         key: SandboxCellKey,
         cell_root: PathBuf,
@@ -93,7 +71,7 @@ impl SandboxCellSpec {
     ) -> Self {
         Self {
             key,
-            root: SandboxCellRoot::ManagedPrivate(cell_root),
+            cell_root,
             mode,
             policy,
         }
@@ -190,7 +168,6 @@ struct SandboxCellState {
     handle: SandboxHandle,
     workspace_root: PathBuf,
     cell_root: PathBuf,
-    managed_private: bool,
     mode: SandboxMode,
     policy: SandboxPolicy,
 }
@@ -328,33 +305,24 @@ impl SandboxRuntime {
         self.ensure_managed_cell_dirs(&root)
     }
 
+    /// Create or reuse a managed sandbox cell for the given key and config.
+    ///
+    /// The runtime normalizes the managed layout under `cell_root`, augments the
+    /// policy with runtime-owned writable paths, and returns the existing cell
+    /// when the key has already been prepared with the same root, mode, and policy.
     pub async fn lease_cell(
         &self,
         spec: SandboxCellSpec,
     ) -> Result<Arc<SandboxCellLease>, SandboxError> {
-        let managed_private = matches!(&spec.root, SandboxCellRoot::ManagedPrivate(_));
-        let (cell_root, workspace_root, policy) = match &spec.root {
-            SandboxCellRoot::SharedWorkspace(path) => (
-                self.materialize_cell_root(&spec.key)?,
-                canonicalize_existing_path(path)?,
-                spec.policy.clone(),
-            ),
-            SandboxCellRoot::ManagedPrivate(cell_root) => {
-                let cell_root = self.ensure_managed_cell_dirs(cell_root)?;
-                let layout = ManagedCellLayout::new(cell_root.clone());
-                (
-                    cell_root,
-                    canonicalize_existing_path(&layout.app_dir())?,
-                    augment_managed_cell_policy(spec.mode, spec.policy.clone(), &layout),
-                )
-            }
-        };
+        let cell_root = self.ensure_managed_cell_dirs(&spec.cell_root)?;
+        let layout = ManagedCellLayout::new(cell_root.clone());
+        let workspace_root = canonicalize_existing_path(&layout.app_dir())?;
+        let policy = augment_managed_cell_policy(spec.mode, spec.policy.clone(), &layout);
 
         let mut cells = self.cells.lock().await;
         if let Some(state) = cells.get(&spec.key) {
             if state.workspace_root != workspace_root
                 || state.cell_root != cell_root
-                || state.managed_private != managed_private
                 || state.mode != spec.mode
                 || state.policy != policy
             {
@@ -381,7 +349,6 @@ impl SandboxRuntime {
             handle,
             workspace_root,
             cell_root,
-            managed_private,
             mode: spec.mode,
             policy,
         });
@@ -439,7 +406,7 @@ fn ensure_child_directory(parent: &Path, name: &str) -> Result<PathBuf, SandboxE
             }
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::create_dir(&child).map_err(SandboxError::Io)?;
+            std::fs::create_dir_all(&child).map_err(SandboxError::Io)?;
         }
         Err(err) => return Err(SandboxError::Io(err)),
     }
@@ -542,7 +509,7 @@ fn has_same_sanitized_prefix(left: &str, right: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        SandboxCellKey, SandboxCellKind, SandboxCellRoot, SandboxCellSpec, SandboxRuntime,
+        SandboxCellKey, SandboxCellKind, SandboxCellSpec, SandboxRuntime,
         augment_managed_cell_policy, has_same_sanitized_prefix, sanitize_segment,
     };
     use crate::{
@@ -567,24 +534,27 @@ mod tests {
             temp.path().join("sandbox"),
         )
         .expect("runtime");
-        let workspace = temp.path().join("workspace");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let key = SandboxCellKey {
+            session_id: Some(Uuid::nil()),
+            agent_id: "agent".to_string(),
+            kind: SandboxCellKind::Tooling,
+            component_id: "writer".to_string(),
+        };
+        let root = runtime.managed_cell_root(&key).expect("managed root");
 
         let first = runtime
-            .lease_cell(SandboxCellSpec::tooling(
-                Uuid::nil(),
-                "agent",
-                workspace.clone(),
+            .lease_cell(SandboxCellSpec::managed_component(
+                key.clone(),
+                root.clone(),
                 SandboxMode::DangerFullAccess,
                 SandboxPolicy::default(),
             ))
             .await
             .expect("first lease");
         let second = runtime
-            .lease_cell(SandboxCellSpec::tooling(
-                Uuid::nil(),
-                "agent",
-                workspace,
+            .lease_cell(SandboxCellSpec::managed_component(
+                key,
+                root,
                 SandboxMode::DangerFullAccess,
                 SandboxPolicy::default(),
             ))
@@ -623,7 +593,7 @@ mod tests {
         let lease = runtime
             .lease_cell(SandboxCellSpec {
                 key,
-                root: SandboxCellRoot::ManagedPrivate(root),
+                cell_root: root,
                 mode: SandboxMode::DangerFullAccess,
                 policy: SandboxPolicy::default(),
             })
@@ -709,16 +679,20 @@ mod tests {
             temp.path().join("sandbox"),
         )
         .expect("runtime");
-        let workspace = temp.path().join("workspace");
         let alternate = temp.path().join("alternate");
-        std::fs::create_dir_all(&workspace).expect("workspace");
         std::fs::create_dir_all(&alternate).expect("alternate");
+        let key = SandboxCellKey {
+            session_id: Some(Uuid::nil()),
+            agent_id: "agent".to_string(),
+            kind: SandboxCellKind::Tooling,
+            component_id: "writer".to_string(),
+        };
+        let root = runtime.managed_cell_root(&key).expect("managed root");
 
         runtime
-            .lease_cell(SandboxCellSpec::tooling(
-                Uuid::nil(),
-                "agent",
-                workspace,
+            .lease_cell(SandboxCellSpec::managed_component(
+                key.clone(),
+                root,
                 SandboxMode::DangerFullAccess,
                 SandboxPolicy::default(),
             ))
@@ -726,9 +700,8 @@ mod tests {
             .expect("first lease");
 
         let error = match runtime
-            .lease_cell(SandboxCellSpec::tooling(
-                Uuid::nil(),
-                "agent",
+            .lease_cell(SandboxCellSpec::managed_component(
+                key,
                 alternate,
                 SandboxMode::DangerFullAccess,
                 SandboxPolicy::default(),

@@ -12,8 +12,8 @@ pub use provider::{
 };
 pub use runner::SandboxRunner;
 pub use runtime::{
-    SandboxCellKey, SandboxCellKind, SandboxCellLease, SandboxCellRoot, SandboxCellSpec,
-    SandboxExecutionLayout, SandboxRuntime,
+    SandboxCellKey, SandboxCellKind, SandboxCellLease, SandboxCellSpec, SandboxExecutionLayout,
+    SandboxRuntime,
 };
 pub use types::{
     AccessDecision, AccessMode, CommandResult, CommandSpec, SandboxContext, SandboxEnvPolicy,

@@ -432,15 +432,17 @@ fn create_mount_target_symlink(
 
     #[cfg(windows)]
     {
-        let create = if is_dir {
-            std::os::windows::fs::symlink_dir as fn(&Path, &Path) -> std::io::Result<()>
+        if is_dir {
+            std::os::windows::fs::symlink_dir(source, target).map_err(|err| RuntimeError::Io {
+                path: target.display().to_string(),
+                message: err.to_string(),
+            })?;
         } else {
-            std::os::windows::fs::symlink_file as fn(&Path, &Path) -> std::io::Result<()>
-        };
-        create(source, target).map_err(|err| RuntimeError::Io {
-            path: target.display().to_string(),
-            message: err.to_string(),
-        })?;
+            std::os::windows::fs::symlink_file(source, target).map_err(|err| RuntimeError::Io {
+                path: target.display().to_string(),
+                message: err.to_string(),
+            })?;
+        }
         return Ok(());
     }
 

@@ -82,6 +82,22 @@ filesystem tools and direct process commands can use the same `mount/...` aliase
 The sandbox cell root itself is always added as a readable root. In `workspace_write` and
 `danger_full_access`, that cell root is also writable.
 
+For runtime-managed cells, Odyssey keeps the staged bundle under `app/` and keeps mutable runtime
+state in separate directories such as `data/`, `cache/`, `tmp/`, and `runs/`.
+
+That split matters because many tools need writable paths even when the bundle itself should remain
+stable:
+
+- `HOME` is used for user-local config, auth state, and tool metadata
+- temp space is used for intermediate files and shell or language runtime behavior
+- caches are used by package managers, compilers, and interpreters
+- per-run scratch directories are used for execution-specific work files and IPC-style data
+
+Without that separation, a confined sandbox would have to choose between making the staged app tree
+writable or letting normal tools fail with permission errors when they try to write under the app
+root. By keeping `app/` separate from writable runtime-owned directories, Odyssey can keep the
+staged bundle read-only in restricted modes while still giving processes safe writable locations.
+
 ## Environment Policy
 
 The bundle manifest can inject environment variables into the sandbox with `sandbox.env`.

@@ -64,6 +64,12 @@ For each submitted `ExecutionRequest`, the runtime currently does the following:
 `run` waits for completion and returns `RunOutput`. `submit` only enqueues the request and returns
 an `ExecutionHandle`.
 
+When the runtime stages a bundle into a managed sandbox cell, it keeps the bundle contents under
+`app/` and keeps mutable runtime state in sibling directories such as `data/`, `cache/`, `tmp/`,
+and `runs/`. This lets Odyssey keep the staged app tree read-only in restricted modes while still
+providing writable locations for `HOME`, temp files, caches, and per-execution scratch data that
+normal tools expect.
+
 `run_session_command` is the direct operator command path for an existing session. It resolves the
 session bundle, stages the bundle into the session sandbox cell, parses the command line into an
 argv-style process invocation, and runs that process directly inside the session sandbox. It emits
