@@ -1,0 +1,75 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/*",
+    "examples/*",
+]
+
+default-members = ["crates/odyssey-rs"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Agent Orchestrator for Next Gen Agentic AI"
+repository = "https://github.com/liquidos-ai/odyssey"
+keywords = ["agents", "llm"]
+categories = []
+readme = "README.md"
+
+[workspace.dependencies]
+# Core Crates
+odyssey-rs = { path = "crates/odyssey-rs", version = "0.1.0" }
+odyssey-rs-core = { path = "crates/odyssey-rs-core", version = "0.1.0" }
+odyssey-rs-config = { path = "crates/odyssey-rs-config", version = "0.1.0" }
+odyssey-rs-memory = { path = "crates/odyssey-rs-memory", version = "0.1.0" }
+odyssey-rs-protocol = { path = "crates/odyssey-rs-protocol", version = "0.1.0" }
+odyssey-rs-sandbox = { path = "crates/odyssey-rs-sandbox", version = "0.1.0" }
+odyssey-rs-tools = { path = "crates/odyssey-rs-tools", version = "0.1.0" }
+odyssey-rs-server = { path = "crates/odyssey-rs-server", version = "0.1.0" }
+odyssey-rs-tui = { path = "crates/odyssey-rs-tui", version = "0.1.0" }
+odyssey-rs-test-utils = { path = "crates/odyssey-rs-test-utils", version = "0.1.0" }
+
+# AutoAgents
+autoagents = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.3" }
+autoagents-core = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.3" }
+autoagents-derive = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.3" }
+autoagents-llm = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.3" }
+autoagents-llamacpp = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.3" }
+autoagents-toolkit = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.3" }
+autoagents-protocol = { git = "https://github.com/liquidos-ai/AutoAgents", version = "0.3.3" }
+
+anyhow = "1.0.96"
+async-trait = "0.1.86"
+axum = { version = "0.8.1", features = ["json", "macros"] }
+chrono = { version = "0.4.39", features = ["serde", "clock"] }
+clap = { version = "4.5.31", features = ["derive"] }
+crossterm = "0.27.0"
+directories = "6.0.0"
+futures-util = "0.3.31"
+globset = "0.4.15"
+parking_lot = "0.12.3"
+rand = "0.9.0"
+ratatui = { version = "0.29.0", features = ["unstable-rendered-line-info"] }
+regex = "1.11.1"
+reqwest = { version = "0.12.12", features = ["json", "stream"] }
+rocket = { version = "0.5.0", features = ["json"] }
+rocket_ws = "0.1.0"
+serde = { version = "1.0.226", features = ["derive"] }
+serde_json = "1.0.145"
+serde_yaml = "0.9.34"
+thiserror = "2.0.11"
+tokio = { version = "1.44.0", features = ["full"] }
+tokio-stream = { version = "0.1.17", features = ["sync"] }
+tokio-tungstenite = "0.23.1"
+tower = "0.5.2"
+tower-http = { version = "0.6.2", features = ["trace"] }
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
+uuid = { version = "1.15.1", features = ["v4", "serde"] }
+walkdir = "2.5.0"
+rusqlite = { version = "0.32.1", features = ["bundled", "chrono"] }
+which = "6.0.1"
+libc = "0.2.170"
+log = "0.4"
+env_logger = { version = "0.11" }

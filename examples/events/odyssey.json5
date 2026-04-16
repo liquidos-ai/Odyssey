@@ -1,0 +1,33 @@
+// Minimal Odyssey SDK config example
+{
+  orchestrator: {
+    system_prompt: "You are the Odyssey Orchestrator.",
+  },
+  agents: {
+    list: [
+      {
+        id: "assistant",
+        model: { provider: "openai", name: "gpt-4.1-mini" },
+        tools: { allow: ["*"], deny: [] },
+      },
+    ],
+  },
+  memory: {
+    provider: "file",
+    path: "../../.odyssey/memory",
+  },
+  skills: {
+    enabled: true,
+    setting_sources: ["user", "project"],
+    paths: ["../../.odyssey/skills"],
+  },
+  sandbox: {
+    enabled: false,
+    mode: "workspace_write",
+  },
+  sessions: {
+    enabled: true,
+    provider: "jsonl",
+    path: "../../.odyssey/sessions",
+  },
+}

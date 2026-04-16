@@ -1,0 +1,6 @@
+[book]
+title = "Odyssey"
+description = "Odyssey orchestrator and SDK documentation"
+authors = ["liquidOS"]
+language = "en"
+src = "src"

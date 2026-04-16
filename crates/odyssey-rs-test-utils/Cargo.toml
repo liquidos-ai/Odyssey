@@ -1,0 +1,19 @@
+[package]
+name = "odyssey-rs-test-utils"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Test utilities for Odyssey Rust crates"
+publish = false
+
+[dependencies]
+async-trait.workspace = true
+autoagents-core.workspace = true
+autoagents-llm.workspace = true
+futures-util.workspace = true
+odyssey-rs-memory.workspace = true
+odyssey-rs-protocol.workspace = true
+odyssey-rs-tools.workspace = true
+parking_lot.workspace = true
+serde_json.workspace = true
+uuid.workspace = true

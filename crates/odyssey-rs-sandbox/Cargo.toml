@@ -1,0 +1,28 @@
+[package]
+name = "odyssey-rs-sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[dependencies]
+odyssey-rs-protocol.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+parking_lot.workspace = true
+which.workspace = true
+libc.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+tempfile = "3.10.1"
+pretty_assertions = "1.4.1"
+criterion = "0.8.2"
+
+[[bench]]
+name = "sandbox_run"
+harness = false

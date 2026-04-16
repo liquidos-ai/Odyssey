@@ -1,0 +1,17 @@
+[package]
+name = "odyssey-rs-streaming-example"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+autoagents = { workspace = true, features = ["openai", "logging"] }
+autoagents-derive = { workspace = true }
+odyssey-rs = { workspace = true, features = ["logging"] }
+odyssey-rs-tools = { workspace = true }
+odyssey-rs-sandbox = { workspace = true }
+serde_json = { workspace = true }
+tokio-stream = { workspace = true }
