@@ -1,0 +1,18 @@
+{
+  "repo_notes": [
+    {
+      "content": ""
+    }
+  ],
+  "pages": [
+    {
+      "title": "Overview",
+      "purpose": "Introduce the Odyssey repository: what it is (a Rust-based bundle-first agent runtime), what problem it solves, its current development status, key features, and a high-level map of the wiki. Explain the core idea: define agents as portable bundles, run them with built-in sandboxing and approvals, expose the same runtime through CLI, HTTP, and TUI surfaces.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    }
+  ]
+}
